@@ -1,7 +1,7 @@
 # kind(로컬) 시연용 ureka-auth values. chart: charts/ureka-backend
 name: ureka-auth
 
-replicaCount: 1
+replicaCount: 2
 
 image:
   # 로컬에서 빌드한 뒤 `kind load docker-image`로 넣은 이미지 (태그 = ureka-auth main 커밋)
