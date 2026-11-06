@@ -1,0 +1,25 @@
+# kind 시연용 Argo CD Application. 이 저장소(PUBLIC)를 읽어 ureka-auth를 dev에 배포한다.
+# 정식 경로(S6~)에서는 targetRevision을 main으로 두고, 이미지 변경은 GitOps PR로만 한다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-auth-kind
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+    # 시연 동안은 Draft PR 브랜치를 본다. 병합 후 main으로 바꾼다.
+    targetRevision: feat/3-kind-backend-chart
+    path: charts/ureka-backend
+    helm:
+      releaseName: auth
+      valueFiles:
+        - ../../environments/kind/ureka-auth.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

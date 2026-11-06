@@ -1,0 +1,14 @@
+# kind(로컬) 시연용 ureka-auth values. chart: charts/ureka-backend
+name: ureka-auth
+
+replicaCount: 1
+
+image:
+  # 로컬에서 빌드한 뒤 `kind load docker-image`로 넣은 이미지 (태그 = ureka-auth main 커밋)
+  repository: ureka-auth
+  tag: local-cd2cf33
+  # 정식 경로(S6~, ECR 게시 후)에서는 아래처럼 digest로 고정한다. 계정 ID는 이 PUBLIC 저장소에 적지 않는다.
+  # repository: <ECR 레지스트리>/ureka/auth
+  # digest: sha256:<CI가 게시한 digest>
+  # kind 노드 안에 이미 있는 이미지만 쓴다. 없으면 외부에서 받으려 하지 않고 바로 실패한다.
+  pullPolicy: Never
