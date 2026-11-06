@@ -1,0 +1,49 @@
+# Gitleaks 기본 규칙 + Ureka 추가 규칙. 이 저장소는 PUBLIC이라 계정 ID가 든 ARN도 막는다.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "aws-arn-with-account-id"
+description = "AWS ARN containing a 12-digit account ID"
+regex = '''arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:([0-9]{12}):'''
+secretGroup = 1
+keywords = ["arn:aws"]
+
+[[rules.allowlists]]
+description = "Test and placeholder account IDs"
+regexTarget = "secret"
+regexes = ['''^(123456789012|000000000000)$''']
+
+[[rules]]
+id = "aws-ecr-registry-host"
+description = "ECR registry host containing an account ID"
+regex = '''([0-9]{12})\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com'''
+secretGroup = 1
+keywords = [".dkr.ecr."]
+
+[[rules.allowlists]]
+description = "Test and placeholder account IDs"
+regexTarget = "secret"
+regexes = ['''^(123456789012|000000000000)$''']
+
+# ARN·ECR 형식이 아닌 일반 12자리 계정 ID도 커밋 이력 전체에서 막는다.
+# (scripts/check-forbidden-files.sh는 현재 트리만 보므로, 중간 커밋에 넣었다 지운 ID는 이 규칙이 잡는다.)
+[[rules]]
+id = "aws-account-id"
+description = "12-digit number that looks like an AWS account ID"
+# 구분자를 소비하지 않도록 영숫자 토큰 전체를 잡고(Go RE2는 lookaround가 없다), 정확히 12자리 숫자인 토큰만 남긴다.
+# 그래서 "<예시ID>,<다른ID>"처럼 붙어 있어도 두 번째 ID를 따로 본다(scripts/check-forbidden-files.sh와 같은 기준).
+regex = '''[0-9A-Za-z]*[0-9]{12}[0-9A-Za-z]*'''
+
+[[rules.allowlists]]
+description = "Test/placeholder IDs, tokens with letters (hashes, identifiers), and digit runs longer than 12"
+regexTarget = "secret"
+regexes = [
+  '''^(123456789012|000000000000)$''',
+  '''[A-Za-z]''',
+  '''^[0-9]{13,}$''',
+]
+
+[[rules.allowlists]]
+description = "Provider lock file hashes"
+paths = ['''(^|/)\.terraform\.lock\.hcl$''']
