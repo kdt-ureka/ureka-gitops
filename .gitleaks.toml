@@ -31,13 +31,18 @@ regexes = ['''^(123456789012|000000000000)$''']
 [[rules]]
 id = "aws-account-id"
 description = "12-digit number that looks like an AWS account ID"
-regex = '''(?:^|[^0-9A-Za-z])([0-9]{12})(?:[^0-9A-Za-z]|$)'''
-secretGroup = 1
+# 구분자를 소비하지 않도록 영숫자 토큰 전체를 잡고(Go RE2는 lookaround가 없다), 정확히 12자리 숫자인 토큰만 남긴다.
+# 그래서 "<예시ID>,<다른ID>"처럼 붙어 있어도 두 번째 ID를 따로 본다(scripts/check-forbidden-files.sh와 같은 기준).
+regex = '''[0-9A-Za-z]*[0-9]{12}[0-9A-Za-z]*'''
 
 [[rules.allowlists]]
-description = "Test and placeholder account IDs"
+description = "Test/placeholder IDs, tokens with letters (hashes, identifiers), and digit runs longer than 12"
 regexTarget = "secret"
-regexes = ['''^(123456789012|000000000000)$''']
+regexes = [
+  '''^(123456789012|000000000000)$''',
+  '''[A-Za-z]''',
+  '''^[0-9]{13,}$''',
+]
 
 [[rules.allowlists]]
 description = "Provider lock file hashes"

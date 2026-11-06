@@ -38,7 +38,7 @@ while IFS= read -r -d '' f; do
   ' -- "$f")" || { echo "::error::검사 실패: ${f}"; exit 1; }
   if [ -n "$lines" ]; then
     while IFS= read -r n; do
-      echo "::error file=${f},line=${n}::AWS 계정 ID로 보이는 12자리 숫자 (값은 출력하지 않음)"
+      echo "::error file=${f},line=${n}::[account-id] AWS 계정 ID로 보이는 12자리 숫자 (값은 출력하지 않음)"
     done <<< "$lines"
     id_hits=1
   fi
