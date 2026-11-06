@@ -8,6 +8,9 @@ terraform {
     }
   }
 
-  # 원격 state(S3 + use_lockfile)는 버킷 위치를 정한 뒤 붙인다.
-  # 그 전까지는 local state로 plan만 실행하고 apply하지 않는다.
+  # 원격 state: S3 + S3 네이티브 잠금(use_lockfile, DynamoDB 없음).
+  # 버킷 이름 등 실제 값은 커밋하지 않는 backend.hcl로 넣는다:
+  #   terraform init -backend-config=backend.hcl
+  # 버킷 만드는 방법: infra/bootstrap/README.md
+  backend "s3" {}
 }
