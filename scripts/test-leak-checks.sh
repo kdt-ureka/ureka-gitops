@@ -7,8 +7,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 check="$repo_root/scripts/check-forbidden-files.sh"
 gitleaks_bin="${1:-}"
-fake="$(printf '9%.0s' {1..12})"      # 999999999999
-fake2="$(printf '8%.0s' {1..12})"     # 888888888888
+fake="$(printf '9%.0s' {1..12})"
+fake2="$(printf '8%.0s' {1..12})"
 test_id="123456789012"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

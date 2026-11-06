@@ -1,0 +1,4 @@
+# 커밋 322a7c2의 자체 테스트 주석에 들어간 합성 값(실제 계정 ID 아님). 다음 커밋에서 삭제했다.
+# 형식: <commit>:<file>:<rule>:<line>. 이 두 줄만 예외로 하며 다른 탐지에는 영향이 없다.
+322a7c263babd79f57f5fc5fef88d0b6845f4eea:scripts/test-leak-checks.sh:aws-account-id:10
+322a7c263babd79f57f5fc5fef88d0b6845f4eea:scripts/test-leak-checks.sh:aws-account-id:11
