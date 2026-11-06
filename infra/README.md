@@ -20,7 +20,7 @@ Ureka AWS 인프라 Terraform.
 - 신뢰 조건은 레포와 `refs/heads/main`만 본다. 이벤트 종류(push·workflow_dispatch 등)와 워크플로 파일은 구분하지 않는다.
 - 서비스 레포는 Free 플랜 private이라 main 브랜치 보호를 켤 수 없다. 레포 쓰기 권한이 있는 사람은 main에 직접 push하거나, 워크플로 파일을 바꿔 main에서 실행해 이 Role을 받을 수 있다.
 - 받을 수 있는 권한은 해당 서비스 ECR 저장소 하나에 이미지를 push하는 것뿐이다(pull·삭제·다른 저장소·state 접근 없음). 태그 변경 불가라 기존 태그를 덮어쓰지는 못한다. 다만 임의 이미지를 새 태그로 올릴 수는 있다.
-- 배포에 쓰이는 이미지는 GitOps 저장소(`ureka-gitops`)의 digest로만 바뀐다. `ureka-gitops` main은 보호되어 있다(PR 필수, 승인 1명, 새 커밋 시 승인 무효, 대화 해결 필수, force push·삭제 금지). 그래서 임의로 올린 이미지도 GitOps PR 리뷰 없이는 배포되지 않는다.
+- 배포에 쓰이는 이미지는 GitOps 저장소(`ureka-gitops`)의 digest로만 바뀐다. `ureka-gitops` main은 보호되어 있다(PR 필수, 승인 1명, 새 커밋 시 승인 무효, 대화 해결 필수, force push·삭제 금지). 다만 관리자 우회는 막혀 있지 않고(`enforce_admins` 꺼짐) 필수 상태 검사도 없다. 배포 도구(Argo CD 등)가 아직 없어서, "GitOps digest로만 배포된다"는 배포 구성이 생긴 뒤 다시 확인해야 하는 목표다. 지금은 임의로 올린 이미지가 GitOps PR 없이 배포될 경로는 없지만, 관리자는 리뷰 없이 GitOps main을 바꿀 수 있다.
 - 팀 규칙으로 보완한다.
   - 서비스 레포 main에 직접 push하지 않는다. 모든 변경은 PR → 승인 1명 → Squash 병합.
   - `.github/workflows/` 변경 PR은 CN 승인을 받는다.
@@ -36,7 +36,7 @@ Ureka AWS 인프라 Terraform.
 - 원격 state 설정은 커밋하지 않는 `backend.hcl`로 넣는다. 버킷 이름은 무작위 접미사를 쓰고 계정 ID를 넣지 않는다.
 - `allowed_account_ids`로 다른 계정 프로필(이전 프로젝트 등)로 실행하는 실수를 막는다.
 - `terraform plan` 출력에는 계정 ID가 나온다. PR·문서에 붙일 때는 가린다.
-- CI `Security` 워크플로가 막는 것: `*.tfvars`(예시 제외), `*.tfstate*`, `*.tfplan`, `.terraform/`, `backend.hcl`, kubeconfig, `.env` 추적, 12자리 숫자(테스트용 `123456789012`·`000000000000` 제외), Gitleaks 비밀 탐지.
+- CI `Security` 워크플로가 막는 것: `*.tfvars`(예시 제외), `*.tfstate*`, `*.tfplan`, `.terraform/`, `backend.hcl`, kubeconfig, `.env` 추적, 12자리 숫자(현재 트리, 일치 항목마다 테스트용 `123456789012`·`000000000000`만 제외), Gitleaks(커밋 이력 전체: 기본 비밀 규칙, 계정 ID가 든 ARN·ECR 호스트, 일반 12자리 계정 ID). 탐지해도 로그에는 파일·줄만 남기고 값은 출력하지 않는다. `scripts/test-leak-checks.sh`가 가짜 ID로 이 검사들이 실제로 잡는지 CI에서 확인한다.
 
 ## 실행 순서
 

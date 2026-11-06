@@ -259,14 +259,20 @@ run "ecr_security_settings" {
     error_message = "ECR repositories must be IMMUTABLE, scan on push, AES256 and not force-deletable."
   }
 
-  # 태그 붙은 이미지를 지우는 규칙이 없어야 한다(배포·롤백 digest 보호).
+  # 규칙은 정확히 하나: 태그 없는 이미지를 push 후 7일 지나면 삭제. 태그 붙은 이미지를 지우는 규칙은 없다(배포·롤백 digest 보호).
   assert {
     condition = alltrue([
       for k, m in module.service_ecr :
       length(m.security_settings.lifecycle_policy.rules) == 1 &&
-      m.security_settings.lifecycle_policy.rules[0].selection.tagStatus == "untagged"
+      m.security_settings.lifecycle_policy.rules[0].rulePriority == 1 &&
+      m.security_settings.lifecycle_policy.rules[0].selection.tagStatus == "untagged" &&
+      m.security_settings.lifecycle_policy.rules[0].selection.countType == "sinceImagePushed" &&
+      m.security_settings.lifecycle_policy.rules[0].selection.countUnit == "days" &&
+      m.security_settings.lifecycle_policy.rules[0].selection.countNumber == 7 &&
+      length(keys(m.security_settings.lifecycle_policy.rules[0].selection)) == 4 &&
+      m.security_settings.lifecycle_policy.rules[0].action == { type = "expire" }
     ])
-    error_message = "Lifecycle policy must only expire untagged images."
+    error_message = "Lifecycle policy must be exactly one rule: expire untagged images 7 days after push."
   }
 }
 

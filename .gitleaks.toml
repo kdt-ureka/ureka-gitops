@@ -25,3 +25,20 @@ keywords = [".dkr.ecr."]
 description = "Test and placeholder account IDs"
 regexTarget = "secret"
 regexes = ['''^(123456789012|000000000000)$''']
+
+# ARN·ECR 형식이 아닌 일반 12자리 계정 ID도 커밋 이력 전체에서 막는다.
+# (scripts/check-forbidden-files.sh는 현재 트리만 보므로, 중간 커밋에 넣었다 지운 ID는 이 규칙이 잡는다.)
+[[rules]]
+id = "aws-account-id"
+description = "12-digit number that looks like an AWS account ID"
+regex = '''(?:^|[^0-9A-Za-z])([0-9]{12})(?:[^0-9A-Za-z]|$)'''
+secretGroup = 1
+
+[[rules.allowlists]]
+description = "Test and placeholder account IDs"
+regexTarget = "secret"
+regexes = ['''^(123456789012|000000000000)$''']
+
+[[rules.allowlists]]
+description = "Provider lock file hashes"
+paths = ['''(^|/)\.terraform\.lock\.hcl$''']

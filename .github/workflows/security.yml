@@ -54,3 +54,5 @@ jobs:
       - name: Scan git history
         run: |
           "$RUNNER_TEMP/gitleaks" git . --config .gitleaks.toml --redact --no-banner --exit-code 1
+      - name: Self-test leak checks (synthetic IDs, values never printed)
+        run: bash scripts/test-leak-checks.sh "$RUNNER_TEMP/gitleaks"
