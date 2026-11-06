@@ -47,6 +47,7 @@ variable "services" {
     ops       = { github_repository = "ureka-ops" }
     recommend = { github_repository = "ureka-recommend" }
     frontend  = { github_repository = "ureka-frontend" }
+    ingest    = { github_repository = "ureka-ingest" }
   }
 }
 

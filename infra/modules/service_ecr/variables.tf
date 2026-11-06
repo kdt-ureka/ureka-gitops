@@ -10,7 +10,7 @@ variable "project_name" {
 
 variable "service_name" {
   type        = string
-  description = "Lowercase service identifier (auth, chat, content, ops, recommend, frontend)."
+  description = "Lowercase service identifier (auth, chat, content, ops, recommend, frontend, ingest)."
 
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]*$", var.service_name))

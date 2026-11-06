@@ -7,7 +7,7 @@ Ureka AWS 인프라 Terraform.
 | `modules/service_ecr` | 서비스 하나의 ECR 저장소 (태그 변경 불가, push 시 기본 스캔, 태그 없는 이미지만 7일 후 정리) |
 | `modules/github_ecr_publisher` | GitHub Actions OIDC로 받는 서비스별 ECR push 전용 IAM Role |
 | `bootstrap` | 원격 state S3 버킷을 만드는 절차(문서만) |
-| `environments/shared` | 계정에 한 벌만 두는 자원: GitHub OIDC provider, 서비스 6개 ECR·게시 Role |
+| `environments/shared` | 계정에 한 벌만 두는 자원: GitHub OIDC provider, 서비스 7개(auth, chat, content, ops, recommend, frontend, ingest) ECR·게시 Role |
 
 ## 보안 기준
 

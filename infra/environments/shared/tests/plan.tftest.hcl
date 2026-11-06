@@ -113,6 +113,23 @@ override_resource {
   }
 }
 
+override_resource {
+  target          = module.service_ecr["ingest"].aws_ecr_repository.this
+  override_during = plan
+  values = {
+    arn            = "arn:aws:ecr:ap-northeast-2:123456789012:repository/ureka/ingest"
+    repository_url = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/ureka/ingest"
+  }
+}
+
+override_resource {
+  target          = module.ecr_publisher["ingest"].aws_iam_role.publisher
+  override_during = plan
+  values = {
+    arn = "arn:aws:iam::123456789012:role/ureka-ingest-ecr-publisher"
+  }
+}
+
 variables {
   allowed_account_ids = ["123456789012"]
 }
@@ -121,12 +138,12 @@ run "one_repository_and_role_per_service" {
   command = plan
 
   assert {
-    condition     = length(module.service_ecr) == 6 && length(module.ecr_publisher) == 6
-    error_message = "Expected one ECR repository and one publisher role for each of the 6 services."
+    condition     = length(module.service_ecr) == 7 && length(module.ecr_publisher) == 7
+    error_message = "Expected one ECR repository and one publisher role for each of the 7 services."
   }
 
   assert {
-    condition     = toset(keys(module.service_ecr)) == toset(["auth", "chat", "content", "ops", "recommend", "frontend"])
+    condition     = toset(keys(module.service_ecr)) == toset(["auth", "chat", "content", "ops", "recommend", "frontend", "ingest"])
     error_message = "Unexpected service set."
   }
 }
@@ -162,6 +179,15 @@ run "trust_policy_for_every_role" {
   assert {
     condition     = module.ecr_publisher["chat"].github_oidc_subject == "repo:kdt-ureka/ureka-chat:ref:refs/heads/main"
     error_message = "chat role must trust only kdt-ureka/ureka-chat on main."
+  }
+
+  # ingest는 EKS Job/CronJob 워커. 다른 서비스와 같은 규칙을 따르는지 값으로 고정해 확인한다.
+  assert {
+    condition = (
+      module.ecr_publisher["ingest"].github_oidc_subject == "repo:kdt-ureka/ureka-ingest:ref:refs/heads/main" &&
+      module.ecr_publisher["ingest"].trust_policy.Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:kdt-ureka/ureka-ingest:ref:refs/heads/main"
+    )
+    error_message = "ingest role must trust only kdt-ureka/ureka-ingest on main."
   }
 }
 
@@ -204,6 +230,17 @@ run "push_policy_is_exact_and_scoped" {
       m.ecr_push_policy.Statement[1].Resource == module.service_ecr[k].repository_arn
     ])
     error_message = "Each role must be scoped to its own service ECR repository ARN."
+  }
+
+  # 서비스마다 저장소 ARN이 달라야 한다(override가 겹치면 위 검사가 의미 없어진다).
+  assert {
+    condition     = length(toset([for k, m in module.service_ecr : m.repository_arn])) == 7
+    error_message = "Each service must have a unique ECR repository ARN."
+  }
+
+  assert {
+    condition     = module.ecr_publisher["ingest"].ecr_push_policy.Statement[1].Resource == "arn:aws:ecr:ap-northeast-2:123456789012:repository/ureka/ingest"
+    error_message = "ingest role must push only to ureka/ingest."
   }
 }
 
