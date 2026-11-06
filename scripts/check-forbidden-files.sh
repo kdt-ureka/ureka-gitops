@@ -3,7 +3,7 @@
 # .gitignore는 실수로 `git add -f` 하거나 규칙이 빠지면 막지 못하므로 CI에서 다시 확인한다.
 set -euo pipefail
 
-forbidden_paths='(^|/)([^/]*\.tfvars(\.json)?|[^/]*\.tfstate(\.[^/]*)?|[^/]*\.tfplan|tfplan|backend\.hcl|[^/]*\.backend\.hcl|kubeconfig[^/]*|[^/]*\.kubeconfig|\.env(\.[^/]*)?)$|(^|/)(\.terraform|\.kube)/'
+forbidden_paths='(^|/)([^/]*\.tfvars(\.json)?|[^/]*\.tfstate(\.[^/]*)?|[^/]*\.tfplan(\.json)?|tfplan[^/]*|plan\.json|[^/]*\.plan\.json|plan\.out|[^/]*\.plan\.out|backend\.hcl|[^/]*\.backend\.hcl|kubeconfig[^/]*|[^/]*\.kubeconfig|\.env(\.[^/]*)?)$|(^|/)(\.terraform|\.kube)/'
 allowed_paths='(\.tfvars\.example|backend\.hcl\.example|\.env\.example)$'
 
 status=0
@@ -16,7 +16,7 @@ if [ -n "$bad_files" ]; then
   status=1
 fi
 
-# 12자리 숫자 = AWS 계정 ID 후보. 테스트·예시용 값과 provider lock 해시는 제외한다.
+# 12자리 숫자 = AWS 계정 ID 후보(ARN 안의 계정 ID 포함: arn:aws:iam::<12자리>:...). 테스트·예시용 값과 provider lock 해시는 제외한다.
 # git grep 종료 코드: 0 일치, 1 없음, 그 밖은 오류(오류는 통과로 처리하지 않는다).
 grep_status=0
 raw_hits="$(git grep -nIE '(^|[^0-9A-Za-z])[0-9]{12}([^0-9A-Za-z]|$)' -- . ':!*.terraform.lock.hcl')" || grep_status=$?

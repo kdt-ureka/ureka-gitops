@@ -18,6 +18,8 @@
 | 암호화 | SSE-S3 (AES256), bucket key |
 | 버킷 정책 | TLS가 아닌 요청 거부 |
 | 수명 주기 | 이전 버전 90일 후 삭제(최신 이전 버전 10개는 유지), 미완료 멀티파트 7일 후 삭제 |
+| 잠금 | `use_lockfile = true` (state 옆 `.tflock` 객체, DynamoDB 없음) |
+| 접근 | 최소 권한: 아래 "접근 권한" 참고. CI(GitHub Actions) Role에는 state 권한을 주지 않는다 |
 
 ## 명령 (bash/zsh)
 
@@ -85,6 +87,44 @@ aws s3api get-bucket-encryption --bucket "$BUCKET"          # AES256
 aws s3api get-bucket-ownership-controls --bucket "$BUCKET"  # BucketOwnerEnforced
 aws s3api get-bucket-policy --bucket "$BUCKET" --query Policy --output text
 ```
+
+## 접근 권한 (최소 권한)
+
+- 지금 state에 접근하는 주체는 사람의 SSO 세션(`ureka-admin`)뿐이다. ECR 게시 Role 등 CI Role에는 S3 권한이 없다.
+- 공개 차단 + TLS 강제 버킷 정책으로 외부·평문 접근을 막는다.
+- 나중에 plan 전용 권한 세트나 CI plan Role을 만들 때는 이 버킷·키에만 아래 권한을 준다(`<BUCKET>`은 실제 이름으로).
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListStateKeys",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::<BUCKET>",
+      "Condition": {"StringLike": {"s3:prefix": ["shared/ecr/*"]}}
+    },
+    {
+      "Sid": "ReadWriteStateAndLock",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": [
+        "arn:aws:s3:::<BUCKET>/shared/ecr/terraform.tfstate",
+        "arn:aws:s3:::<BUCKET>/shared/ecr/terraform.tfstate.tflock"
+      ]
+    },
+    {
+      "Sid": "ReleaseLock",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObject",
+      "Resource": "arn:aws:s3:::<BUCKET>/shared/ecr/terraform.tfstate.tflock"
+    }
+  ]
+}
+```
+
+plan만 하는 주체라도 잠금 파일을 쓰고 지우므로 `.tflock`에 Put·Delete가 필요하다. state 자체의 삭제 권한(`s3:DeleteObject` on `terraform.tfstate`)과 버킷 설정 변경 권한은 주지 않는다.
 
 ## 다음
 

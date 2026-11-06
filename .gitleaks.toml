@@ -1,0 +1,27 @@
+# Gitleaks 기본 규칙 + Ureka 추가 규칙. 이 저장소는 PUBLIC이라 계정 ID가 든 ARN도 막는다.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "aws-arn-with-account-id"
+description = "AWS ARN containing a 12-digit account ID"
+regex = '''arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:([0-9]{12}):'''
+secretGroup = 1
+keywords = ["arn:aws"]
+
+[[rules.allowlists]]
+description = "Test and placeholder account IDs"
+regexTarget = "secret"
+regexes = ['''^(123456789012|000000000000)$''']
+
+[[rules]]
+id = "aws-ecr-registry-host"
+description = "ECR registry host containing an account ID"
+regex = '''([0-9]{12})\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com'''
+secretGroup = 1
+keywords = [".dkr.ecr."]
+
+[[rules.allowlists]]
+description = "Test and placeholder account IDs"
+regexTarget = "secret"
+regexes = ['''^(123456789012|000000000000)$''']

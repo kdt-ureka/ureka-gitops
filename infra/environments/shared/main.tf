@@ -25,9 +25,8 @@ module "service_ecr" {
   source   = "../../modules/service_ecr"
   for_each = var.services
 
-  project_name    = var.project_name
-  service_name    = each.key
-  max_image_count = var.max_image_count
+  project_name = var.project_name
+  service_name = each.key
 }
 
 module "ecr_publisher" {

@@ -17,10 +17,11 @@ resource "aws_ecr_repository" "this" {
   tags = var.tags
 }
 
-resource "aws_ecr_lifecycle_policy" "this" {
-  repository = aws_ecr_repository.this.name
-
-  policy = jsonencode({
+locals {
+  # 태그 없는 이미지만 7일 뒤 정리한다.
+  # 태그 붙은 이미지를 개수로 지우는 규칙은 두지 않는다: 배포 중이거나 롤백용으로 남긴 digest까지
+  # 지울 수 있기 때문이다(IMMUTABLE·force_delete로는 막지 못함). 보존 구조는 infra/README.md 후속 작업 참고.
+  lifecycle_policy = {
     rules = [
       {
         rulePriority = 1
@@ -33,16 +34,11 @@ resource "aws_ecr_lifecycle_policy" "this" {
         }
         action = { type = "expire" }
       },
-      {
-        rulePriority = 2
-        description  = "Keep only the newest images for rollback"
-        selection = {
-          tagStatus   = "any"
-          countType   = "imageCountMoreThan"
-          countNumber = var.max_image_count
-        }
-        action = { type = "expire" }
-      },
     ]
-  })
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "this" {
+  repository = aws_ecr_repository.this.name
+  policy     = jsonencode(local.lifecycle_policy)
 }

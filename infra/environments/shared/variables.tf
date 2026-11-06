@@ -50,12 +50,6 @@ variable "services" {
   }
 }
 
-variable "max_image_count" {
-  type        = number
-  description = "Images kept per ECR repository."
-  default     = 20
-}
-
 variable "create_github_oidc_provider" {
   type        = bool
   description = "Create the account-level GitHub OIDC provider. Set false if it already exists (one per account)."

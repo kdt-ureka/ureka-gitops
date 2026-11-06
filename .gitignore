@@ -50,7 +50,12 @@ terraform.rc
 *.tfstate
 *.tfstate.*
 *.tfplan
-tfplan
+tfplan*
+*.tfplan.json
+plan.json
+*.plan.json
+plan.out
+*.plan.out
 .terraform/
 # 원격 state 실제 설정 (예시는 커밋)
 backend.hcl

@@ -18,17 +18,6 @@ variable "service_name" {
   }
 }
 
-variable "max_image_count" {
-  type        = number
-  description = "Maximum number of images kept in the repository."
-  default     = 20
-
-  validation {
-    condition     = var.max_image_count >= 5 && floor(var.max_image_count) == var.max_image_count
-    error_message = "max_image_count must be an integer of at least five so rollback images remain."
-  }
-}
-
 variable "tags" {
   type        = map(string)
   description = "Tags applied to ECR resources."

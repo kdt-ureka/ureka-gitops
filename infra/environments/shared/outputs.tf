@@ -10,3 +10,8 @@ output "publishers" {
     }
   }
 }
+
+output "github_oidc_provider_arn" {
+  description = "GitHub Actions OIDC provider ARN trusted by the publisher roles."
+  value       = local.github_oidc_provider_arn
+}
