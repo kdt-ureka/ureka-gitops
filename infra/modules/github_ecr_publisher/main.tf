@@ -2,10 +2,13 @@
 # TravelPlanner travel-gitops/infra/modules/github_ecr_publisher 기반. 바꾼 점:
 # - 신뢰 조건: GitHub Environment 대신 main 브랜치 ref.
 #   (조직이 Free 플랜이라 private 레포에서 Environments를 쓸 수 없다.)
+#   sub는 TravelPlanner와 같은 GitHub "변경 불가 subject" 형식이다(조직·레포 숫자 ID 포함).
+#   레포가 use_immutable_subject를 켜 두면 GitHub는 이 형식으로만 토큰을 준다.
+#   숫자 ID는 재사용되지 않아, 같은 이름으로 다시 만든 레포나 조직은 이 Role을 받을 수 없다.
 # - 권한: pull 권한(BatchGetImage, GetDownloadUrlForLayer)을 빼고 push와 digest 조회만 남겼다.
 locals {
   github_oidc_audience = "sts.amazonaws.com"
-  github_oidc_subject  = "repo:${var.github_organization}/${var.github_repository}:ref:refs/heads/${var.github_branch}"
+  github_oidc_subject  = "repo:${var.github_organization}@${var.github_owner_id}/${var.github_repository}@${var.github_repository_id}:ref:refs/heads/${var.github_branch}"
   role_name            = "${var.project_name}-${var.service_name}-ecr-publisher"
 }
 

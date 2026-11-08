@@ -3,10 +3,11 @@ output "publishers" {
   description = "Per service: ECR repository URL, publisher role ARN and trusted OIDC subject."
   value = {
     for key, svc in var.services : key => {
-      github_repository   = svc.github_repository
-      ecr_repository_url  = module.service_ecr[key].repository_url
-      publisher_role_arn  = module.ecr_publisher[key].role_arn
-      github_oidc_subject = module.ecr_publisher[key].github_oidc_subject
+      github_repository    = svc.github_repository
+      github_repository_id = svc.github_repository_id
+      ecr_repository_url   = module.service_ecr[key].repository_url
+      publisher_role_arn   = module.ecr_publisher[key].role_arn
+      github_oidc_subject  = module.ecr_publisher[key].github_oidc_subject
     }
   }
 }

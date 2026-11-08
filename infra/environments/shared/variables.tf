@@ -26,6 +26,17 @@ variable "github_organization" {
   default     = "kdt-ureka"
 }
 
+variable "github_organization_id" {
+  type        = number
+  description = "Immutable numeric ID of the GitHub organization (gh api orgs/<org> --jq .id)."
+  default     = 342343039
+
+  validation {
+    condition     = var.github_organization_id > 0 && floor(var.github_organization_id) == var.github_organization_id
+    error_message = "github_organization_id must be a positive integer."
+  }
+}
+
 variable "github_branch" {
   type        = string
   description = "Branch whose workflows may publish images."
@@ -38,16 +49,32 @@ variable "github_branch" {
 }
 
 variable "services" {
-  type        = map(object({ github_repository = string }))
-  description = "Service key => GitHub repository. Each gets one ECR repository and one publisher role."
+  type = map(object({
+    github_repository    = string
+    github_repository_id = number
+  }))
+  description = "Service key => GitHub repository name and immutable numeric ID (gh api repos/<org>/<repo> --jq .id). Each gets one ECR repository and one publisher role."
   default = {
-    auth      = { github_repository = "ureka-auth" }
-    chat      = { github_repository = "ureka-chat" }
-    content   = { github_repository = "ureka-content" }
-    ops       = { github_repository = "ureka-ops" }
-    recommend = { github_repository = "ureka-recommend" }
-    frontend  = { github_repository = "ureka-frontend" }
-    ingest    = { github_repository = "ureka-ingest" }
+    auth      = { github_repository = "ureka-auth", github_repository_id = 1443841620 }
+    chat      = { github_repository = "ureka-chat", github_repository_id = 1443842466 }
+    content   = { github_repository = "ureka-content", github_repository_id = 1443843348 }
+    ops       = { github_repository = "ureka-ops", github_repository_id = 1443844291 }
+    recommend = { github_repository = "ureka-recommend", github_repository_id = 1443843923 }
+    frontend  = { github_repository = "ureka-frontend", github_repository_id = 1443844833 }
+    ingest    = { github_repository = "ureka-ingest", github_repository_id = 1447881588 }
+  }
+
+  validation {
+    condition = alltrue([
+      for svc in values(var.services) :
+      svc.github_repository_id > 0 && floor(svc.github_repository_id) == svc.github_repository_id
+    ])
+    error_message = "Each github_repository_id must be a positive integer."
+  }
+
+  validation {
+    condition     = length(distinct([for svc in values(var.services) : svc.github_repository_id])) == length(var.services)
+    error_message = "github_repository_id values must be unique."
   }
 }
 
