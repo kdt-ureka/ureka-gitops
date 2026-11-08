@@ -169,25 +169,35 @@ run "trust_policy_for_every_role" {
       m.trust_policy.Statement[0].Condition == {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:kdt-ureka/${var.services[k].github_repository}:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub" = "repo:kdt-ureka@342343039/${var.services[k].github_repository}@${var.services[k].github_repository_id}:ref:refs/heads/main"
         }
       }
     ])
-    error_message = "Trust conditions must be exactly aud=sts.amazonaws.com and sub=repo:kdt-ureka/<repo>:ref:refs/heads/main."
+    error_message = "Trust conditions must be exactly aud=sts.amazonaws.com and sub=repo:kdt-ureka@<org_id>/<repo>@<repo_id>:ref:refs/heads/main."
   }
 
   assert {
-    condition     = module.ecr_publisher["chat"].github_oidc_subject == "repo:kdt-ureka/ureka-chat:ref:refs/heads/main"
+    condition     = module.ecr_publisher["chat"].github_oidc_subject == "repo:kdt-ureka@342343039/ureka-chat@1443842466:ref:refs/heads/main"
     error_message = "chat role must trust only kdt-ureka/ureka-chat on main."
   }
 
   # ingest는 EKS Job/CronJob 워커. 다른 서비스와 같은 규칙을 따르는지 값으로 고정해 확인한다.
   assert {
     condition = (
-      module.ecr_publisher["ingest"].github_oidc_subject == "repo:kdt-ureka/ureka-ingest:ref:refs/heads/main" &&
-      module.ecr_publisher["ingest"].trust_policy.Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:kdt-ureka/ureka-ingest:ref:refs/heads/main"
+      module.ecr_publisher["ingest"].github_oidc_subject == "repo:kdt-ureka@342343039/ureka-ingest@1447881588:ref:refs/heads/main" &&
+      module.ecr_publisher["ingest"].trust_policy.Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:kdt-ureka@342343039/ureka-ingest@1447881588:ref:refs/heads/main"
     )
     error_message = "ingest role must trust only kdt-ureka/ureka-ingest on main."
+  }
+}
+
+run "auth_subject_matches_real_github_token" {
+  command = plan
+
+  # 2026-11-08 auth main CI에서 GitHub가 실제로 보낸 sub 값(kdt-ureka/ureka-auth#8 실패 원인).
+  assert {
+    condition     = module.ecr_publisher["auth"].github_oidc_subject == "repo:kdt-ureka@342343039/ureka-auth@1443841620:ref:refs/heads/main"
+    error_message = "auth role must trust the immutable subject GitHub actually issues."
   }
 }
 
@@ -284,4 +294,39 @@ run "rejects_wildcard_branch" {
   }
 
   expect_failures = [var.github_branch]
+}
+
+run "rejects_non_integer_repository_id" {
+  command = plan
+
+  variables {
+    services = {
+      auth = { github_repository = "ureka-auth", github_repository_id = 1.5 }
+    }
+  }
+
+  expect_failures = [var.services]
+}
+
+run "rejects_duplicate_repository_id" {
+  command = plan
+
+  variables {
+    services = {
+      auth = { github_repository = "ureka-auth", github_repository_id = 1443841620 }
+      chat = { github_repository = "ureka-chat", github_repository_id = 1443841620 }
+    }
+  }
+
+  expect_failures = [var.services]
+}
+
+run "rejects_invalid_organization_id" {
+  command = plan
+
+  variables {
+    github_organization_id = 0
+  }
+
+  expect_failures = [var.github_organization_id]
 }

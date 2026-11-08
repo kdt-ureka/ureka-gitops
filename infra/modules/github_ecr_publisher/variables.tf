@@ -33,6 +33,26 @@ variable "github_organization" {
   }
 }
 
+variable "github_owner_id" {
+  type        = number
+  description = "Immutable numeric ID of the GitHub organization (part of the immutable OIDC subject)."
+
+  validation {
+    condition     = var.github_owner_id > 0 && floor(var.github_owner_id) == var.github_owner_id
+    error_message = "github_owner_id must be a positive integer."
+  }
+}
+
+variable "github_repository_id" {
+  type        = number
+  description = "Immutable numeric ID of the trusted repository (part of the immutable OIDC subject)."
+
+  validation {
+    condition     = var.github_repository_id > 0 && floor(var.github_repository_id) == var.github_repository_id
+    error_message = "github_repository_id must be a positive integer."
+  }
+}
+
 variable "github_repository" {
   type        = string
   description = "GitHub repository (name only) whose workflows may assume the role."

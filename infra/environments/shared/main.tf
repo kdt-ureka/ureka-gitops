@@ -37,7 +37,9 @@ module "ecr_publisher" {
   service_name             = each.key
   github_oidc_provider_arn = local.github_oidc_provider_arn
   github_organization      = var.github_organization
+  github_owner_id          = var.github_organization_id
   github_repository        = each.value.github_repository
+  github_repository_id     = each.value.github_repository_id
   github_branch            = var.github_branch
   ecr_repository_arn       = module.service_ecr[each.key].repository_arn
 }
