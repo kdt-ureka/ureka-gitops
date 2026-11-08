@@ -17,6 +17,7 @@ Ureka AWS 인프라 Terraform.
   - 숫자 ID는 바뀌거나 재사용되지 않는다. 레포를 지우고 같은 이름으로 다시 만들거나, 조직 이름을 바꾼 뒤 누군가 옛 이름을 가져가도 이 Role을 받을 수 없다.
   - ID 확인: `gh api orgs/kdt-ureka --jq .id`, `gh api repos/kdt-ureka/<레포> --jq .id`. 레포의 subject 형식 확인: `gh api repos/kdt-ureka/<레포>/actions/oidc/customization/sub`.
   - 레포를 새로 만들거나 다시 만들면 레포 ID가 바뀌므로 `services`의 `github_repository_id`도 바꿔야 한다.
+  - 그 레포가 `auth`, `chat`, `ingest`이면 `infra/environments/shared/tests/plan.tftest.hcl`에 ID를 고정한 기대값도 함께 바꾼다(바꾸지 않으면 terraform test가 실패해 알려 준다).
 - 권한은 `ecr:GetAuthorizationToken`(리소스 제한 불가)만 `*`, 나머지 push·digest 조회는 해당 서비스 저장소 ARN 하나로 제한한다. pull 권한은 없다.
 
 ## 남은 위험: main에서 실행되는 모든 워크플로가 게시 Role을 받을 수 있다 (MVP에서 수용)
