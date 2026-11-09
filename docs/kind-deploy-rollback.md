@@ -28,7 +28,7 @@ kind dev는 Argo CD가 이 저장소 `main`을 보고 자동으로 맞춘다(aut
    ```
 
 4. `scripts/check-charts.sh` 통과 → PR(본문에 CI 실행 링크와 digest) → 승인 1명 → Squash 병합.
-5. Argo CD가 main 변경을 감지해 동기화한다(기본 폴링 최대 약 3분, 바로 보려면 아래 refresh).
+5. Argo CD가 main 변경을 감지해 동기화한다. kind는 GitHub webhook을 받을 수 없어 폴링(기본 3분 주기)만 쓴다. 2026-11-09 확인에서 push 후 반영까지 1분 53초~6분 14초(한 번은 리비전 캐시 때문에 한 주기를 놓쳤다). 시연처럼 바로 봐야 하면 아래 refresh를 친다.
 
    ```bash
    kubectl -n argocd annotate app ureka-<서비스>-kind argocd.argoproj.io/refresh=normal --overwrite
@@ -63,4 +63,16 @@ kind dev는 Argo CD가 이 저장소 `main`을 보고 자동으로 맞춘다(aut
 
 ## 검증 기록
 
-PR kdt-ureka/ureka-gitops#4 본문에 실제로 실행한 결과를 남긴다.
+### 2026-11-09 (PR kdt-ureka/ureka-gitops#4, 검증 동안 Application이 PR 브랜치를 봄)
+
+kind v0.32.0, Kubernetes v1.36.1, Argo CD v3.6.0, arm64 노드(ECR 이미지는 amd64, Docker Desktop Rosetta로 실행). 대상 recommend `sha-1593061` (digest = CI image-ref.json). 수동 refresh 없이 폴링만으로 측정.
+
+| 단계 | Git 변경 | 결과 | push → 반영 |
+|---|---|---|---|
+| 배포 | replicas 1 → 2 | 2/2 Ready, Synced/Healthy | 1분 53초 |
+| selfHeal | (클러스터에서 `kubectl scale --replicas=5`) | 2개로 복귀 | 2초 |
+| 장애 릴리스 | `MOCK_MODE=false` (readyz 503) | 새 Pod 0/1, 이전 Pod 2개가 계속 응답, Synced/Progressing | 3분 3초 |
+| 롤백 | 장애 커밋 `git revert` | Synced/Healthy, 장애 ReplicaSet 0, 이전 Pod 재시작 없음 | 2분 54초 |
+| 정리 | replicas 2 커밋 `git revert` | 1/1 | 6분 14초 |
+
+이번 롤백은 **설정 롤백**이다. 실제 ECR 이미지는 서비스마다 아직 digest가 하나뿐이라(문서 커밋은 같은 이미지로 빌드됨) **이전 digest로 되돌리는 롤백은 새 digest가 생긴 뒤 같은 절차로 다시 기록한다.**
