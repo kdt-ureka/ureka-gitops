@@ -42,3 +42,31 @@ terraform.rc
 # Optional: ignore plan files saved before destroying Terraform configuration
 # Uncomment the line below if you want to ignore planout files.
 # planout
+# --- Ureka: 커밋 금지 파일 (CI security.yml이 추적 여부를 검사한다) ---
+# Terraform 값·state·plan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan*
+*.tfplan.json
+plan.json
+*.plan.json
+plan.out
+*.plan.out
+.terraform/
+# 원격 state 실제 설정 (예시는 커밋)
+backend.hcl
+*.backend.hcl
+!backend.hcl.example
+# Kubernetes 접속 정보
+kubeconfig
+kubeconfig*
+*.kubeconfig
+.kube/
+# 로컬 환경 변수
+.env
+.env.*
+!.env.example

@@ -1,0 +1,5 @@
+# terraform.tfvars로 복사해서 쓴다. terraform.tfvars는 .gitignore 대상이다(커밋 금지).
+allowed_account_ids = ["000000000000"]
+
+# 계정에 GitHub OIDC provider가 이미 있으면 false
+# create_github_oidc_provider = true
