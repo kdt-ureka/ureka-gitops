@@ -76,3 +76,12 @@ kind v0.32.0, Kubernetes v1.36.1, Argo CD v3.6.0, arm64 노드(ECR 이미지는 
 | 정리 | replicas 2 커밋 `git revert` | 1/1 | 6분 14초 |
 
 이번 롤백은 **설정 롤백**이다. 실제 ECR 이미지는 서비스마다 아직 digest가 하나뿐이라(문서 커밋은 같은 이미지로 빌드됨) **이전 digest로 되돌리는 롤백은 새 digest가 생긴 뒤 같은 절차로 다시 기록한다.**
+
+### 2026-11-09 main 기준 (이슈 kdt-ureka/ureka-gitops#9)
+
+PR #4 병합 후 Application을 `targetRevision: main`으로 다시 적용(`kubectl apply -f argocd/kind/`). 수동 refresh 없이 폴링만으로 측정.
+
+| 단계 | PR | main 병합 | Argo CD 반영 | 결과 |
+|---|---|---|---|---|
+| 배포 | #10 replicas 1 → 2 | 03:07:40Z | 03:09:15Z (1분 35초) | 2/2 Ready 03:09:22Z, Synced/Healthy |
+| 롤백 | 이 PR, #10 `git revert` | | | 병합 후 측정해 #9에 기록 |
