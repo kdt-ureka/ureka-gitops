@@ -56,10 +56,11 @@ scripts/kind/up.sh   # kind 'ureka' + 로컬 레지스트리 + Argo CD v3.6.0. �
 ### 3. 이미지 복사 → Application 적용
 
 ```bash
-scripts/kind/sync-ecr-image.sh auth <ureka-auth main 커밋 SHA 40자>
 scripts/kind/sync-ecr-image.sh recommend <ureka-recommend main 커밋 SHA 40자>
 kubectl apply -f argocd/kind/
 ```
+
+지금 Argo CD로 배포하는 서비스는 recommend(MOCK_MODE)뿐이다. auth·content·chat·ops는 Postgres·Redis·비밀값이 있어야 기동하므로 kind dev DB·Secret을 붙이는 다음 PR에서 Application을 추가한다(`environments/kind/ureka-auth.yaml`은 값만 준비).
 
 출력된 digest는 해당 CI 실행의 artifact `image-ref.json` digest와 같아야 한다. 이후 배포·롤백은 [docs/kind-deploy-rollback.md](docs/kind-deploy-rollback.md).
 

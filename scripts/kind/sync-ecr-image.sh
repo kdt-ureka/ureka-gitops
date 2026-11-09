@@ -29,15 +29,19 @@ src="${registry}/ureka/${service}:${tag}"
 DOCKER_CONFIG="$(mktemp -d)"
 export DOCKER_CONFIG
 trap 'rm -rf "$DOCKER_CONFIG"' EXIT
-# 오류 메시지에 계정 ID가 섞여 나오지 않게 가린다
-redact() { sed -E 's/[0-9]{12}/<ACCOUNT_ID>/g' >&2; }
+# crane 출력은 임시 로그에만 남기고, 실패하면 계정 ID를 가려서 보여 준다
+log="${DOCKER_CONFIG}/crane.log"
+fail() {
+  echo "$1 실패. crane 로그(계정 ID 가림):" >&2
+  sed -E 's/[0-9]{12}/<ACCOUNT_ID>/g' "$log" >&2
+  exit 1
+}
 
 aws ecr get-login-password --profile "$profile" --region "$region" |
-  crane auth login "$registry" -u AWS --password-stdin >/dev/null 2> >(redact)
-
-src_digest="$(crane digest "$src" 2> >(redact))"
-crane copy "$src" "$dest" 2> >(redact) | redact
-dest_digest="$(crane digest --insecure "$dest" 2> >(redact))"
+  crane auth login "$registry" -u AWS --password-stdin >"$log" 2>&1 || fail "ECR 로그인"
+src_digest="$(crane digest "$src" 2>>"$log")" || fail "ECR digest 조회(이미지가 없거나 권한 없음)"
+crane copy "$src" "$dest" >>"$log" 2>&1 || fail "복사"
+dest_digest="$(crane digest --insecure "$dest" 2>>"$log")" || fail "로컬 레지스트리 digest 조회(scripts/kind/up.sh 실행 여부)"
 
 if [ "$src_digest" != "$dest_digest" ]; then
   echo "digest가 다릅니다: ECR ${src_digest} / 로컬 ${dest_digest}" >&2
