@@ -15,7 +15,7 @@ containerPort: 8000
 # Gemini·DB 없이 fixtures로 응답한다. 실제 모드는 DB·비밀값(ESO)이 준비된 뒤(S7).
 env:
   - name: MOCK_MODE
-    value: "true"
+    value: "false"
 
 resources:
   requests:
