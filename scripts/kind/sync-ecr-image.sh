@@ -4,7 +4,7 @@
 #   scripts/kind/sync-ecr-image.sh <서비스> <커밋 SHA 40자>
 #   예: scripts/kind/sync-ecr-image.sh auth 83891abf5633de987a908464bc8cfae249fa3bef
 #
-# - 내 PC의 SSO 프로필(기본 ureka-admin)로만 ECR에 접근한다. 클러스터·저장소에는 AWS 자격 증명을 두지 않는다.
+# - 내 PC의 조회 전용 SSO 프로필(기본 ureka-readonly, 권한 세트 ReadOnlyAccess)로만 ECR에서 받는다. push 권한은 쓰지 않는다. 클러스터·저장소에는 AWS 자격 증명을 두지 않는다.
 # - ECR 토큰은 임시 DOCKER_CONFIG에만 두고 끝나면 지운다.
 # - 계정 ID·ECR 주소는 출력하지 않는다(이 저장소는 PUBLIC, 로그를 PR에 붙일 수 있다).
 # - 출력한 digest를 environments/kind/<서비스>.yaml에 적는다. CI artifact image-ref.json의 digest와 같아야 한다.
@@ -16,7 +16,7 @@ if [ $# -ne 2 ] || ! [[ "$2" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 service="$1"
 tag="sha-$2"
-profile="${AWS_PROFILE:-ureka-admin}"
+profile="${AWS_PROFILE:-ureka-readonly}"
 region="${AWS_REGION:-ap-northeast-2}"
 dest="localhost:5001/ureka/${service}:${tag}"
 
