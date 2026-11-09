@@ -1,0 +1,5 @@
+apiVersion: v2
+name: ureka-backend
+description: Ureka 백엔드 서비스(auth·chat·content·ops) 공통 chart. 서비스별 차이는 values 파일로 준다.
+type: application
+version: 0.1.0

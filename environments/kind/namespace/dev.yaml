@@ -1,0 +1,14 @@
+# kind dev 네임스페이스. Pod Security Admission restricted를 강제한다.
+# 비root·권한 상승 금지·capability 제거·seccomp를 지키지 않는 Pod는 생성 자체가 거부된다.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+  annotations:
+    # Application에서 이 파일이 빠져도 네임스페이스(안의 앱 전부)를 지우지 않는다.
+    argocd.argoproj.io/sync-options: Prune=false
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

@@ -1,0 +1,10 @@
+# kind 로컬 클러스터 설정. scripts/kind/up.sh가 사용한다.
+# containerd가 /etc/containerd/certs.d의 레지스트리 설정을 읽게 해서,
+# localhost:5001 이미지를 노드 옆 로컬 레지스트리(kind-registry)에서 받게 한다.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ureka
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
