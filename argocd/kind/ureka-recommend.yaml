@@ -1,0 +1,33 @@
+# kind dev용 Argo CD Application: ureka-recommend.
+# main의 environments/kind/ureka-recommend.yaml이 바뀌면 자동으로 배포한다. 이미지 변경·롤백은 이 파일이 아니라 values 파일 PR로 한다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-recommend-kind
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+    targetRevision: main
+    path: charts/ureka-backend
+    helm:
+      releaseName: recommend
+      valueFiles:
+        - ../../environments/kind/ureka-recommend.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev
+  syncPolicy:
+    automated:
+      # Git에서 지운 자원은 클러스터에서도 지운다
+      prune: true
+      # 클러스터에서 손으로 바꾼 것은 Git 상태로 되돌린다
+      selfHeal: true
+    # dev 네임스페이스(ureka-dev-namespace-kind)가 먼저 만들어질 때까지 다시 시도한다
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

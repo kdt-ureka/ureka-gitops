@@ -1,0 +1,18 @@
+# kind dev 네임스페이스(Pod Security restricted)를 Git으로 관리하는 Argo CD Application.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-dev-namespace-kind
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+    targetRevision: main
+    path: environments/kind/namespace
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

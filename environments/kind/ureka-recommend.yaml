@@ -1,0 +1,26 @@
+# kind(로컬) dev용 ureka-recommend values. chart: charts/ureka-backend
+# Python(FastAPI) 서비스도 같은 chart를 쓴다. 포트만 8000.
+name: ureka-recommend
+
+replicaCount: 1
+
+image:
+  repository: localhost:5001/ureka/recommend
+  tag: sha-1593061700ec1e92b144186553d320400d445572
+  digest: sha256:5572cac7b69017002dd4c5e5a9eb5ff1eb2d89ee3d87d1f32a0f030c6b22f598
+  pullPolicy: IfNotPresent
+
+containerPort: 8000
+
+# Gemini·DB 없이 fixtures로 응답한다. 실제 모드는 DB·비밀값(ESO)이 준비된 뒤(S7).
+env:
+  - name: MOCK_MODE
+    value: "true"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
