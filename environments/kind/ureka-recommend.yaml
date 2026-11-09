@@ -2,7 +2,7 @@
 # Python(FastAPI) 서비스도 같은 chart를 쓴다. 포트만 8000.
 name: ureka-recommend
 
-replicaCount: 1
+replicaCount: 2
 
 image:
   repository: localhost:5001/ureka/recommend
