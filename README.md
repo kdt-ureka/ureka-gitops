@@ -13,7 +13,10 @@ Ureka AWS·EKS 인프라 및 Argo CD 배포 설정
 | `environments/kind/` | kind(로컬) dev values. 서비스마다 파일 하나 + `namespace/` |
 | `argocd/kind/` | kind dev용 Argo CD Application (main 자동 동기화) |
 | `kind/`, `scripts/kind/` | kind 클러스터·로컬 레지스트리 준비, ECR 이미지 복사 |
+| `environments/kind/data/` | kind dev PostgreSQL(pgvector)·Redis·DB 계정 생성 Job (kustomize) |
+| `tests/db/` | DB 권한 시험(P11 검색 함수 역할) |
 | `docs/kind-deploy-rollback.md` | 배포·롤백 절차 |
+| `docs/kind-db-secrets.md` | kind DB·비밀값 방식, DB 계정 구조, P11 기록 |
 
 ## kind dev 환경
 
@@ -53,20 +56,25 @@ aws sts get-caller-identity --profile ureka-readonly --query Arn --output text
 scripts/kind/up.sh   # kind 'ureka' + 로컬 레지스트리 + Argo CD v3.6.0. 여러 번 실행해도 된다
 ```
 
-### 3. 이미지 복사 → Application 적용
+### 3. 비밀값 → 이미지 복사 → Application 적용
 
 ```bash
+kubectl apply -f argocd/kind/ureka-dev-namespace.yaml
+scripts/kind/create-secrets.sh   # 로컬 전용 Secret(DB·JWT·내부 토큰). 값은 Git에 없고 출력하지 않는다
 scripts/kind/sync-ecr-image.sh recommend <ureka-recommend main 커밋 SHA 40자>
+scripts/kind/sync-ecr-image.sh auth <ureka-auth main 커밋 SHA 40자>
+scripts/kind/sync-ecr-image.sh content <ureka-content main 커밋 SHA 40자>
 kubectl apply -f argocd/kind/
 ```
 
-지금 Argo CD로 배포하는 서비스는 recommend(MOCK_MODE)뿐이다. auth·content·chat·ops는 Postgres·Redis·비밀값이 있어야 기동하므로 kind dev DB·Secret을 붙이는 다음 PR에서 Application을 추가한다(`environments/kind/ureka-auth.yaml`은 값만 준비).
+Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, DB 계정 생성 Job), recommend(MOCK_MODE), auth, content. chat·ops는 다음 PR. DB 계정 구조와 비밀값 방식은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
 
 출력된 digest는 해당 CI 실행의 artifact `image-ref.json` digest와 같아야 한다. 이후 배포·롤백은 [docs/kind-deploy-rollback.md](docs/kind-deploy-rollback.md).
 
 ### 로컬 검사
 
 ```bash
-scripts/check-charts.sh          # helm lint + 렌더링 + 이미지 digest 고정 확인 (CI Helm 워크플로와 같음)
+scripts/check-charts.sh          # helm lint + 렌더링 + data kustomize 렌더링 + 이미지 digest 고정 확인 (CI Helm 워크플로와 같음)
+scripts/kind/p11-check.sh        # (kind 실행 중) P11 검색 함수 역할 부정 시험
 scripts/check-forbidden-files.sh # 커밋 금지 파일·계정 ID (CI Security 워크플로와 같음)
 ```
