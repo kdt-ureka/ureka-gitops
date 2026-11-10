@@ -29,8 +29,11 @@
 \getenv content_recommend_pw CONTENT_DB_RECOMMEND_PASSWORD
 \getenv content_ingest_pw CONTENT_DB_INGEST_PASSWORD
 
-SELECT CASE WHEN :'auth_app_pw' = '' OR :'content_app_pw' = '' OR :'content_recommend_pw' = '' OR :'content_ingest_pw' = ''
-            THEN 1/0 END AS "비밀번호 환경 변수가 비어 있으면 0으로 나누기 오류로 멈춘다";
+SELECT (:'auth_app_pw' = '' OR :'content_app_pw' = '' OR :'content_recommend_pw' = '' OR :'content_ingest_pw' = '') AS pw_missing \gset
+\if :pw_missing
+  \warn '계정 비밀번호 환경 변수가 비어 있습니다(Secret db-accounts 확인)'
+  SELECT 1/0;
+\endif
 
 -- 1) 로그인 계정 ---------------------------------------------------------------
 SELECT format('CREATE ROLE %I LOGIN', r) FROM unnest(ARRAY['auth_db_app', 'content_db_app', 'content_db_recommend', 'content_db_ingest']) AS r
@@ -68,6 +71,8 @@ ALTER DATABASE content_db OWNER TO content_db_app;
 
 -- 새 DB는 PUBLIC에 CONNECT가 열려 있다. 서비스 DB끼리 접속하지 못하게 닫고 필요한 역할에만 준다.
 REVOKE ALL ON DATABASE auth_db, content_db FROM PUBLIC;
+-- 관리용 postgres DB도 서비스 계정이 접속할 이유가 없다.
+REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
 GRANT CONNECT ON DATABASE content_db TO content_db_recommend_search, content_db_ingest_writer;
 
 -- 4) content_db: vector 확장 미리 설치 ------------------------------------------
