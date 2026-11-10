@@ -146,7 +146,13 @@ data 첫 동기화 약 50초, SQL 변경 push → 자동 동기화·Job 재실�
 - 실제 kind: 틀린 비밀번호 → 1부·3부 SCRIPT_ERROR로 실패, 없는 Pod → 실패, V13인 content_db → 검색 함수 없음으로 FAIL 4·필수 미확인 19로 실패.
 - 수정 중 찾은 것: 처음 버전은 Pod 안에서 `127.0.0.1`로 접속했는데, 이미지 기본 pg_hba가 127.0.0.1을 trust로 둬서 **비밀번호가 틀려도 접속됐다**. 지금은 Pod IP로 접속해 scram-sha-256 인증을 거친다(틀린 비밀번호로 실패 확인).
 
-**G1(S7) 근거로 쓰려면 남은 것**: content#30 병합 → V14가 들어간 content 이미지 values PR → 실제 `content_db`에서 `scripts/kind/p11-check.sh` 실행·기록, 그리고 recommend 배포에 전용 자격(`ureka-recommend-db`)이 주입되는 경로 확인. 실제 recommend 연결과 결과 검증은 그 뒤 통합 시험으로 따로 본다.
+### 실제 content_db P11 (2026-11-10 06:56 UTC, content main `e58615b` = content#30 병합)
+
+content 이미지를 `sha-e58615b`(digest `sha256:80d5a390…ef2f69` = CI `image-ref.json`)로 올린 values 변경을 Argo CD가 배포했다(52초, 재시작 0). content 앱이 기동하면서 Flyway가 **V13 → V14를 `content_db_app`(CREATEROLE만, 슈퍼유저 아님)으로 적용**했다(실제 업그레이드 경로). `/readyz` 200.
+
+`scripts/kind/p11-check.sh`(content_db, `content_db_recommend`, Secret `ureka-recommend-db`): **PASS 49 / FAIL 0 / EXCEPTION 1(M06b: definer ADMIN OPTION = `content_db_app`) / 필수 미확인 0, 종료 코드 0.** 항목별 결과는 위 임시 DB 표와 같다. 호출·적재 역할(`content_db_recommend_search`, `content_db_ingest_writer`)은 관리자가 먼저 만들어 `content_db_app`에 ADMIN OPTION이 없다(M06b 대상은 definer 하나).
+
+**G1(S7) 근거로 쓰려면 남은 것**: ~~실제 `content_db`에서 P11 실행·기록~~(위, 완료). recommend 배포에 전용 자격(`ureka-recommend-db`)이 주입되는 경로 확인. M06b 예외는 G1 판정 때 그대로 밝힌다(공유·운영 전 계정 분리). 실제 recommend 연결과 결과 검증은 그 뒤 통합 시험으로 따로 본다.
 
 ## 6. 데이터 보존과 Argo CD
 
