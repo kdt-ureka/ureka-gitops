@@ -56,18 +56,20 @@ aws sts get-caller-identity --profile ureka-readonly --query Arn --output text
 scripts/kind/up.sh   # kind 'ureka' + 로컬 레지스트리 + Argo CD v3.6.0. 여러 번 실행해도 된다
 ```
 
-### 3. 비밀값 → 이미지 복사 → Application 적용
+### 3. 비밀값 → 데이터 계층 → 이미지 복사 → 서비스 Application
 
 ```bash
 kubectl apply -f argocd/kind/ureka-dev-namespace.yaml
-scripts/kind/create-secrets.sh   # 로컬 전용 Secret(DB·JWT·내부 토큰). 값은 Git에 없고 출력하지 않는다
+scripts/kind/create-secrets.sh   # 로컬 전용 Secret(DB·JWT·내부 토큰)을 처음 한 번 만든다. 값은 Git에 없고 출력하지 않는다
+kubectl apply -f argocd/kind/ureka-dev-data.yaml
+kubectl -n dev logs job/db-bootstrap | tail -1   # "db-bootstrap 완료"를 확인한 뒤 다음으로
 scripts/kind/sync-ecr-image.sh recommend <ureka-recommend main 커밋 SHA 40자>
 scripts/kind/sync-ecr-image.sh auth <ureka-auth main 커밋 SHA 40자>
 scripts/kind/sync-ecr-image.sh content <ureka-content main 커밋 SHA 40자>
 kubectl apply -f argocd/kind/
 ```
 
-Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, DB 계정 생성 Job), recommend(MOCK_MODE), auth, content. chat·ops는 다음 PR. DB 계정 구조와 비밀값 방식은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
+Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, DB 계정 생성 Job), recommend(MOCK_MODE), auth, content. chat·ops는 다음 PR. 비밀값 교체는 클러스터를 새로 만든다. DB 계정 구조·비밀값 방식·데이터 보존은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
 
 출력된 digest는 해당 CI 실행의 artifact `image-ref.json` digest와 같아야 한다. 이후 배포·롤백은 [docs/kind-deploy-rollback.md](docs/kind-deploy-rollback.md).
 
@@ -75,6 +77,7 @@ Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, D
 
 ```bash
 scripts/check-charts.sh          # helm lint + 렌더링 + data kustomize 렌더링 + 이미지 digest 고정 확인 (CI Helm 워크플로와 같음)
+scripts/test-p11-check.sh        # P11 러너가 실행 실패를 성공으로 세지 않는지(클러스터 불필요, CI와 같음)
 scripts/kind/p11-check.sh        # (kind 실행 중) P11 검색 함수 역할 부정 시험
 scripts/check-forbidden-files.sh # 커밋 금지 파일·계정 ID (CI Security 워크플로와 같음)
 ```

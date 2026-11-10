@@ -6,10 +6,10 @@ cd "$(dirname "$0")/.."
 
 fake="$(mktemp -d)"
 trap 'rm -rf "$fake"' EXIT
-# 가짜 kubectl: FAKE_MODE에 따라 실패 모양을 만든다. 표준 입력은 읽어 버린다.
+# 가짜 kubectl: FAKE_MODE에 따라 실패 모양을 만든다. 진짜 kubectl처럼 exec -i일 때만 표준 입력을 읽는다.
 cat >"$fake/kubectl" <<'SH'
 #!/usr/bin/env bash
-cat >/dev/null 2>&1 || true
+case " $* " in *" -i "*) cat >/dev/null 2>&1 || true ;; esac
 case " $* " in
   *" get secret "*) printf 'dGVzdA==' ; exit 0 ;;   # "test"
 esac

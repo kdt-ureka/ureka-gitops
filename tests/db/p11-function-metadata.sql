@@ -94,7 +94,7 @@ BEGIN
         RAISE WARNING 'P11 FAIL M07 함수 소유 역할 쓰기 가능 표 %개 또는 스키마 CREATE 보유', n;
     END IF;
     -- M8 함수 소유 역할 SELECT 허용 목록 = V14가 준 표뿐(ureka-content V14 "1) 함수 소유자")
-    SELECT string_agg(s.nspname || '.' || c.relname, ',' ORDER BY 1) INTO names FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace
+    SELECT string_agg(s.nspname || '.' || c.relname, ',' ORDER BY s.nspname, c.relname) INTO names FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace
     WHERE s.nspname NOT IN ('pg_catalog', 'information_schema') AND s.nspname NOT LIKE 'pg_toast%'
       AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND has_table_privilege(definer, c.oid, 'SELECT');
     IF names = 'catalog.content_genres,catalog.content_ott_availability,catalog.contents,catalog.genres,catalog.mapping_versions,'
@@ -151,7 +151,7 @@ BEGIN
     END IF;
 
     -- M13 로그인 계정 스키마 권한: 어느 스키마에도 CREATE 없음, ingest 스키마 USAGE 없음
-    SELECT string_agg(s.nspname, ',' ORDER BY 1) INTO names FROM pg_namespace s
+    SELECT string_agg(s.nspname, ',' ORDER BY s.nspname) INTO names FROM pg_namespace s
     WHERE s.nspname NOT LIKE 'pg_%' AND s.nspname <> 'information_schema' AND has_schema_privilege(login, s.oid, 'CREATE');
     IF names IS NULL AND NOT has_schema_privilege(login, 'ingest', 'USAGE') THEN
         RAISE NOTICE 'P11 PASS M13 로그인 계정: 스키마 CREATE 없음, ingest USAGE 없음';

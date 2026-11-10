@@ -50,11 +50,12 @@ else
 fi
 [ -n "$login_pw" ] || { echo "로그인 비밀번호가 비어 있다" >&2; exit 1; }
 
-# Pod 안에서 TCP(127.0.0.1)로 접속해야 비밀번호 인증을 거친다(소켓 접속은 trust).
+# 비밀번호 인증을 실제로 거치려면 Pod IP로 접속한다. 이미지 기본 pg_hba는 소켓과 127.0.0.1을 trust로 두고
+# 그 밖의 주소만 scram-sha-256으로 확인한다(127.0.0.1로 붙으면 비밀번호가 틀려도 들어간다).
 as_login() { # DB, psql 인자...
   local target="$1"; shift
   printf '%s\n' "$login_pw" |
-    k exec -i "$pod" -- sh -c 'read -r PGPASSWORD; export PGPASSWORD; u="$1"; d="$2"; shift 2; exec psql -X -h 127.0.0.1 -U "$u" -d "$d" "$@"' _ "$login" "$target" "$@"
+    k exec -i "$pod" -- sh -c 'read -r PGPASSWORD; export PGPASSWORD; u="$1"; d="$2"; shift 2; exec psql -X -h "$(hostname -i | cut -d" " -f1)" -U "$u" -d "$d" "$@"' _ "$login" "$target" "$@"
 }
 
 # 관리자가 검색 가능 작품 수를 센다(B3 기대값). V14 전 DB에는 표가 있어도 0일 수 있다.
@@ -63,7 +64,7 @@ searchable="$(k exec "$pod" -- psql -X -At -U postgres -d "$db" -c 'select count
 
 # 1부
 if ! { printf '%s\n' "$login_pw"; cat tests/db/p11-recommend-login.sql; } |
-  k exec -i "$pod" -- sh -c 'read -r PGPASSWORD; export PGPASSWORD; exec psql -X -h 127.0.0.1 -U "$1" -d "$2" -v searchable_count="$3" -f -' _ "$login" "$db" "$searchable" >>"$out" 2>&1; then
+  k exec -i "$pod" -- sh -c 'read -r PGPASSWORD; export PGPASSWORD; exec psql -X -h "$(hostname -i | cut -d" " -f1)" -U "$1" -d "$2" -v searchable_count="$3" -f -' _ "$login" "$db" "$searchable" >>"$out" 2>&1; then
   note "SCRIPT_ERROR 1부(recommend 로그인 SQL)가 끝까지 실행되지 않았다"
   fatal=1
 fi
