@@ -1,5 +1,5 @@
 # db-bootstrap.sql을 관리자 계정으로 실행한다. Argo CD가 이 디렉터리를 동기화할 때마다(PostSync) 다시 돌고,
-# SQL이 멱등이라 결과는 같다. 비밀번호를 바꾼 뒤(create-secrets.sh --rotate) 다시 맞출 때도 이 Job이 쓰인다.
+# SQL이 멱등이라 결과는 같다. 비밀번호는 원문이 아니라 SCRAM 해시(Secret db-accounts)만 받는다.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/part-of: ureka
   annotations:
     argocd.argoproj.io/hook: PostSync
-    # 다음 동기화 때 이전 Job을 지우고 새로 만든다. 성공하면 바로 지운다(로그는 Argo CD 화면에서 확인).
+    # 다음 동기화 때 이전 Job을 지우고 새로 만든다. 그때까지 끝난 Job과 로그가 남아 있다(kubectl -n dev logs job/db-bootstrap).
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   backoffLimit: 6
@@ -57,7 +57,7 @@ spec:
                   name: postgres-admin
                   key: POSTGRES_PASSWORD
           envFrom:
-            # AUTH_DB_APP_PASSWORD, CONTENT_DB_APP_PASSWORD, CONTENT_DB_RECOMMEND_PASSWORD, CONTENT_DB_INGEST_PASSWORD
+            # AUTH_DB_APP_SCRAM, CONTENT_DB_APP_SCRAM, CONTENT_DB_RECOMMEND_SCRAM, CONTENT_DB_INGEST_SCRAM (해시만)
             - secretRef:
                 name: db-accounts
           securityContext:

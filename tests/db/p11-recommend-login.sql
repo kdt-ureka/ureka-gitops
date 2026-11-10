@@ -7,6 +7,8 @@
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
 SET client_min_messages = notice;
+-- 관리자가 센 검색 가능 작품 수(p11-check.sh가 -v searchable_count로 넘긴다).
+SELECT set_config('p11.searchable_count', :'searchable_count', false) \gset
 
 -- A. 기본 연결 상태 ------------------------------------------------------------
 DO $$
@@ -40,7 +42,25 @@ DECLARE
 BEGIN
     EXECUTE 'SELECT rag.search_contents_v1($1::catalog.vector, $2)'
         INTO v_result USING '[1' || repeat(',0', 1023) || ']', v_spec;
-    RAISE NOTICE 'P11 PASS B1 검색 함수 실행 허용(응답 키: %)', (SELECT string_agg(k, ',' ORDER BY k) FROM jsonb_object_keys(v_result) k);
+    IF v_result->>'status' = 'OK' AND jsonb_typeof(v_result->'items') = 'array' THEN
+        RAISE NOTICE 'P11 PASS B1 검색 함수 실행 허용(status=OK, items 배열)';
+    ELSE
+        RAISE WARNING 'P11 FAIL B1 응답 형식이 계약과 다름: status=% items=%', v_result->>'status', jsonb_typeof(v_result->'items');
+    END IF;
+    -- B3: 이 시험은 DB를 바꾸지 않으므로 작품을 넣지 않는다. 검색 가능한 작품이 없는 DB(관리자 쪽에서 센다)에서는
+    -- 오류가 아니라 정상 0건이어야 한다. p11.searchable_count는 scripts/kind/p11-check.sh가 넘긴다.
+    IF current_setting('p11.searchable_count', true) IS NULL THEN
+        RAISE WARNING 'P11 FAIL B3 p11.searchable_count가 없음(p11-check.sh로 실행할 것)';
+    ELSIF current_setting('p11.searchable_count')::int = 0 THEN
+        IF jsonb_array_length(v_result->'items') = 0 THEN
+            RAISE NOTICE 'P11 PASS B3 검색 가능한 작품 0개인 DB에서 정상 0건';
+        ELSE
+            RAISE WARNING 'P11 FAIL B3 검색 가능한 작품이 없는데 %건 반환', jsonb_array_length(v_result->'items');
+        END IF;
+    ELSE
+        RAISE NOTICE 'P11 PASS B3 검색 가능한 작품 %개, 결과 %건(후보 정확성은 P09·P12에서 본다)',
+            current_setting('p11.searchable_count'), jsonb_array_length(v_result->'items');
+    END IF;
 EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'P11 FAIL B1 검색 함수 실행 실패 % %', SQLSTATE, SQLERRM;
 END $$;

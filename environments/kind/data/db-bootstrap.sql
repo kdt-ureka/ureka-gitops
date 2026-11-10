@@ -1,8 +1,11 @@
 -- 서비스 DB·로그인 계정 생성 절차 (kind dev). 여러 번 실행해도 같은 상태가 된다.
 --
--- 누가 실행하나: DB 관리자 계정(kind는 postgres 슈퍼유저, RDS는 마스터 계정=rds_superuser).
---   kind에서는 db-bootstrap Job이 Argo CD 동기화 뒤(PostSync)에 자동으로 돌린다.
--- 비밀번호: 이 파일에 없다. psql \getenv로 환경 변수에서 읽는다(Secret db-accounts, scripts/kind/create-secrets.sh).
+-- 누가 실행하나: DB 관리자 계정. kind는 postgres 슈퍼유저, db-bootstrap Job이 Argo CD 동기화 뒤(PostSync)에 자동으로 돌린다.
+--   RDS 마스터(rds_superuser, 슈퍼유저 아님)에서 이 순서가 그대로 되는지는 아직 검증하지 않았다(이식 검증 필요).
+-- 비밀번호: 원문은 이 SQL에도 DB 서버에도 가지 않는다. Secret db-accounts의 SCRAM-SHA-256 해시를 \getenv로 읽어
+--   저장된 값과 다를 때만 ALTER ROLE ... PASSWORD '<해시>'로 넣는다(PostgreSQL은 해시 형식을 그대로 저장한다).
+--   해시는 scripts/kind/create-secrets.sh가 이 PC에서 계산한다. 다시 동기화될 때 ALTER ROLE PASSWORD는 나가지 않는다.
+--   (형식 확인·비교 SELECT에는 해시가 실린다. 해시는 원문이 아니고 원문은 무작위 256비트라 해시로 되돌릴 수 없다.)
 --
 -- 계정 구조 (ERD v1.1: 서비스별 논리 DB, 서비스 간 계정 공유 없음, 역할은 클러스터 전역이라 DB 이름을 붙인다)
 --
@@ -24,14 +27,16 @@
 -- 운영(RDS) 차이: vector 확장은 rds_superuser가 설치할 수 있다(kind는 슈퍼유저가 미리 설치하는 것으로 흉내 낸다).
 \set ON_ERROR_STOP on
 
-\getenv auth_app_pw AUTH_DB_APP_PASSWORD
-\getenv content_app_pw CONTENT_DB_APP_PASSWORD
-\getenv content_recommend_pw CONTENT_DB_RECOMMEND_PASSWORD
-\getenv content_ingest_pw CONTENT_DB_INGEST_PASSWORD
+\getenv auth_app_scram AUTH_DB_APP_SCRAM
+\getenv content_app_scram CONTENT_DB_APP_SCRAM
+\getenv content_recommend_scram CONTENT_DB_RECOMMEND_SCRAM
+\getenv content_ingest_scram CONTENT_DB_INGEST_SCRAM
 
-SELECT (:'auth_app_pw' = '' OR :'content_app_pw' = '' OR :'content_recommend_pw' = '' OR :'content_ingest_pw' = '') AS pw_missing \gset
-\if :pw_missing
-  \warn '계정 비밀번호 환경 변수가 비어 있습니다(Secret db-accounts 확인)'
+-- 해시 형식이 아니면(원문·빈 값) 멈춘다. 원문 비밀번호가 SQL로 나가는 실수를 막는다.
+SELECT NOT (:'auth_app_scram' ~ '^SCRAM-SHA-256\$' AND :'content_app_scram' ~ '^SCRAM-SHA-256\$'
+        AND :'content_recommend_scram' ~ '^SCRAM-SHA-256\$' AND :'content_ingest_scram' ~ '^SCRAM-SHA-256\$') AS scram_invalid \gset
+\if :scram_invalid
+  \warn 'db-accounts의 값이 SCRAM-SHA-256 해시가 아닙니다(scripts/kind/create-secrets.sh로 만든 Secret인지 확인)'
   SELECT 1/0;
 \endif
 
@@ -39,11 +44,18 @@ SELECT (:'auth_app_pw' = '' OR :'content_app_pw' = '' OR :'content_recommend_pw'
 SELECT format('CREATE ROLE %I LOGIN', r) FROM unnest(ARRAY['auth_db_app', 'content_db_app', 'content_db_recommend', 'content_db_ingest']) AS r
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) \gexec
 
--- 속성을 매번 다시 맞춘다(손으로 바꾼 권한이 남지 않게).
-ALTER ROLE auth_db_app          LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'auth_app_pw';
-ALTER ROLE content_db_app       LOGIN NOSUPERUSER NOCREATEDB CREATEROLE   NOREPLICATION NOBYPASSRLS PASSWORD :'content_app_pw';
-ALTER ROLE content_db_recommend LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'content_recommend_pw';
-ALTER ROLE content_db_ingest    LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'content_ingest_pw';
+-- 속성을 매번 다시 맞춘다(손으로 바꾼 권한이 남지 않게). 비밀번호는 아래에서 따로.
+ALTER ROLE auth_db_app          LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE content_db_app       LOGIN NOSUPERUSER NOCREATEDB CREATEROLE   NOREPLICATION NOBYPASSRLS;
+ALTER ROLE content_db_recommend LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE content_db_ingest    LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+
+-- 저장된 해시와 다를 때만(처음 만들 때, Secret을 새로 만든 뒤) 바꾼다.
+SELECT format('ALTER ROLE %I PASSWORD %L', v.r, v.h)
+FROM (VALUES ('auth_db_app', :'auth_app_scram'), ('content_db_app', :'content_app_scram'),
+             ('content_db_recommend', :'content_recommend_scram'), ('content_db_ingest', :'content_ingest_scram')) AS v(r, h)
+JOIN pg_authid a ON a.rolname = v.r
+WHERE a.rolpassword IS DISTINCT FROM v.h \gexec
 
 -- 2) 호출·적재 역할(NOLOGIN)과 멤버십 ------------------------------------------
 SELECT format('CREATE ROLE %I NOLOGIN', r) FROM unnest(ARRAY['content_db_recommend_search', 'content_db_ingest_writer']) AS r
@@ -71,8 +83,8 @@ ALTER DATABASE content_db OWNER TO content_db_app;
 
 -- 새 DB는 PUBLIC에 CONNECT가 열려 있다. 서비스 DB끼리 접속하지 못하게 닫고 필요한 역할에만 준다.
 REVOKE ALL ON DATABASE auth_db, content_db FROM PUBLIC;
--- 관리용 postgres DB도 서비스 계정이 접속할 이유가 없다.
-REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
+-- 관리용 postgres DB와 template1도 서비스 계정이 접속할 이유가 없다(template0은 원래 접속 불가).
+REVOKE CONNECT, TEMPORARY ON DATABASE postgres, template1 FROM PUBLIC;
 GRANT CONNECT ON DATABASE content_db TO content_db_recommend_search, content_db_ingest_writer;
 
 -- 4) content_db: vector 확장 미리 설치 ------------------------------------------
