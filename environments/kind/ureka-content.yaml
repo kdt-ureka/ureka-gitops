@@ -7,8 +7,8 @@ replicaCount: 1
 
 image:
   repository: localhost:5001/ureka/content
-  tag: sha-9b4b54d0776495edd514d779c192f2dbd675d644
-  digest: sha256:05cf16ba4bd476d6f1fbeff3853ecacf2f5557af55bb3056aaa1a3084a29075c
+  tag: sha-e58615b12b34f30e48e3ffb7c903710cd7439c5c
+  digest: sha256:80d5a39048eb05bf3aa08da1c3bd64088112b2736108f847df70dfa484ef2f69
   pullPolicy: IfNotPresent
 
 # 이름은 ureka-content .env.example 기준.
