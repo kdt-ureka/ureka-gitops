@@ -1,0 +1,26 @@
+# kind dev 데이터 계층(PostgreSQL+pgvector, Redis, DB 계정 생성 Job)을 Git으로 관리하는 Argo CD Application.
+# 비밀값 Secret은 Git에 없다. 이 Application을 적용하기 전에 scripts/kind/create-secrets.sh를 먼저 실행한다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-dev-data-kind
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+    targetRevision: main
+    path: environments/kind/data
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
