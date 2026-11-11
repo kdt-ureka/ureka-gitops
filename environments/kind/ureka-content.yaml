@@ -1,0 +1,38 @@
+# kind(로컬) dev용 ureka-content values. chart: charts/ureka-backend
+# DB·Redis는 environments/kind/data(ureka-dev-data-kind), 비밀값은 scripts/kind/create-secrets.sh가 만든 Secret.
+# 앱이 기동할 때 Flyway가 content_db에 V1~를 적용한다. 접속 계정 content_db_app은 슈퍼유저가 아니다(CREATEROLE만, 운영 RDS와 같은 조건).
+name: ureka-content
+
+replicaCount: 1
+
+image:
+  repository: localhost:5001/ureka/content
+  tag: sha-9b4b54d0776495edd514d779c192f2dbd675d644
+  digest: sha256:05cf16ba4bd476d6f1fbeff3853ecacf2f5557af55bb3056aaa1a3084a29075c
+  pullPolicy: IfNotPresent
+
+# 이름은 ureka-content .env.example 기준.
+env:
+  - name: DB_URL
+    value: jdbc:postgresql://postgres:5432/content_db
+  - name: DB_USERNAME
+    value: content_db_app
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: ureka-content-secrets
+        key: DB_PASSWORD
+  - name: REDIS_HOST
+    value: redis
+  - name: REDIS_PORT
+    value: "6379"
+  - name: JWT_PUBLIC_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-content-secrets
+        key: JWT_PUBLIC_KEY
+  - name: INTERNAL_SERVICE_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: ureka-content-secrets
+        key: INTERNAL_SERVICE_TOKEN

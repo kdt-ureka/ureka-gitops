@@ -1,0 +1,73 @@
+# db-bootstrap.sql을 관리자 계정으로 실행한다. Argo CD가 이 디렉터리를 동기화할 때마다(PostSync) 다시 돌고,
+# SQL이 멱등이라 결과는 같다. 비밀번호는 원문이 아니라 SCRAM 해시(Secret db-accounts)만 받는다.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-bootstrap
+  labels:
+    app.kubernetes.io/name: db-bootstrap
+    app.kubernetes.io/part-of: ureka
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    # 다음 동기화 때 이전 Job을 지우고 새로 만든다. 그때까지 끝난 Job과 로그가 남아 있다(kubectl -n dev logs job/db-bootstrap).
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-bootstrap
+        app.kubernetes.io/part-of: ureka
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: psql
+          # postgres StatefulSet과 같은 이미지(psql 18, \getenv 지원)
+          image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:5895949dfcdf308eb0cd31c950c93c14895c77f33fbedfecf1fa511ab1d4bcd2
+          imagePullPolicy: IfNotPresent
+          # 본문은 run-bootstrap.sh(같은 ConfigMap). verifier 형식 검사가 끝나기 전에는 DB에 접속하지 않는다.
+          command: ["/bin/sh", "/bootstrap/run-bootstrap.sh"]
+          env:
+            - name: PGHOST
+              value: postgres
+            - name: PGUSER
+              value: postgres
+            - name: PGDATABASE
+              value: postgres
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-admin
+                  key: POSTGRES_PASSWORD
+          envFrom:
+            # AUTH_DB_APP_SCRAM, CONTENT_DB_APP_SCRAM, CONTENT_DB_RECOMMEND_SCRAM, CONTENT_DB_INGEST_SCRAM (해시만)
+            - secretRef:
+                name: db-accounts
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+              readOnly: true
+      volumes:
+        - name: bootstrap
+          configMap:
+            name: db-bootstrap

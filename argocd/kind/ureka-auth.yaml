@@ -1,0 +1,31 @@
+# kind dev용 Argo CD Application: ureka-auth.
+# main의 environments/kind/ureka-auth.yaml이 바뀌면 자동으로 배포한다. 이미지 변경·롤백은 values 파일 PR로 한다.
+# DB·Redis(ureka-dev-data-kind)와 Secret(scripts/kind/create-secrets.sh)이 있어야 Ready가 된다. 없으면 준비될 때까지 재시작한다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-auth-kind
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+    targetRevision: main
+    path: charts/ureka-backend
+    helm:
+      releaseName: auth
+      valueFiles:
+        - ../../environments/kind/ureka-auth.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

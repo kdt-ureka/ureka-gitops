@@ -1,9 +1,6 @@
 # kind(로컬) dev용 ureka-auth values. chart: charts/ureka-backend
 # 이미지를 바꾸는 방법(배포·롤백)은 docs/kind-deploy-rollback.md
-#
-# 아직 Argo CD Application(argocd/kind/)이 없다. auth main(MVP 이후)은 Postgres·Redis·메일과
-# JWT 키·EMAIL_CODE_SECRET·INTERNAL_SERVICE_TOKEN이 있어야 기동한다(2026-11-09 kind에서 확인:
-# JWT_PUBLIC_KEY 없음으로 기동 실패). kind dev DB·Secret을 붙이는 다음 PR에서 env와 함께 추가한다.
+# DB·Redis는 environments/kind/data(ureka-dev-data-kind), 비밀값은 scripts/kind/create-secrets.sh가 만든 Secret.
 name: ureka-auth
 
 replicaCount: 1
@@ -13,6 +10,59 @@ image:
   # ECR 주소에는 계정 ID가 들어가므로 이 PUBLIC 저장소에는 로컬 주소만 적는다.
   repository: localhost:5001/ureka/auth
   # tag = ureka-auth main 커밋, digest = 그 커밋 CI artifact image-ref.json의 digest
-  tag: sha-83891abf5633de987a908464bc8cfae249fa3bef
-  digest: sha256:77276a5d2ef0cc036c6f22934c895439b2fbacbeade24d7a79a89ed11f966d6c
+  tag: sha-29ddad583265db44ca3a36d62cfa5e9c4302a2e0
+  digest: sha256:7b516a16ddcd00bf8d52719b84e495fe4cb5d51b45d083ae8e38000f50d46568
   pullPolicy: IfNotPresent
+
+# 이름은 ureka-auth .env.example 기준. 비밀값은 값 대신 Secret 참조만 둔다.
+env:
+  - name: DB_URL
+    value: jdbc:postgresql://postgres:5432/auth_db
+  - name: DB_USERNAME
+    value: auth_db_app
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: DB_PASSWORD
+  - name: REDIS_HOST
+    value: redis
+  - name: REDIS_PORT
+    value: "6379"
+  - name: JWT_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: JWT_PRIVATE_KEY
+  - name: JWT_PUBLIC_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: JWT_PUBLIC_KEY
+  - name: EMAIL_CODE_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: EMAIL_CODE_SECRET
+  - name: INTERNAL_SERVICE_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: INTERNAL_SERVICE_TOKEN
+  # 탈퇴 전파 대상(같은 네임스페이스 Service). chat은 아직 kind에 없어 탈퇴는 503으로 끝난다.
+  - name: CHAT_SERVICE_URL
+    value: http://ureka-chat
+  - name: CONTENT_SERVICE_URL
+    value: http://ureka-content
+  # 메일 서버는 아직 kind에 없다(가입 인증 메일 발송만 실패, 기동·/readyz와 무관).
+  - name: MAIL_HOST
+    value: mailpit
+  - name: MAIL_PORT
+    value: "1025"
+  - name: MAIL_SMTP_AUTH
+    value: "false"
+  - name: MAIL_STARTTLS
+    value: "false"
+  # kind는 HTTP로 접속한다.
+  - name: COOKIE_SECURE
+    value: "false"

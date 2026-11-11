@@ -13,7 +13,10 @@ Ureka AWS·EKS 인프라 및 Argo CD 배포 설정
 | `environments/kind/` | kind(로컬) dev values. 서비스마다 파일 하나 + `namespace/` |
 | `argocd/kind/` | kind dev용 Argo CD Application (main 자동 동기화) |
 | `kind/`, `scripts/kind/` | kind 클러스터·로컬 레지스트리 준비, ECR 이미지 복사 |
+| `environments/kind/data/` | kind dev PostgreSQL(pgvector)·Redis·DB 계정 생성 Job (kustomize) |
+| `tests/db/` | DB 권한 시험(P11 검색 함수 역할) |
 | `docs/kind-deploy-rollback.md` | 배포·롤백 절차 |
+| `docs/kind-db-secrets.md` | kind DB·비밀값 방식, DB 계정 구조, P11 기록 |
 
 ## kind dev 환경
 
@@ -53,20 +56,30 @@ aws sts get-caller-identity --profile ureka-readonly --query Arn --output text
 scripts/kind/up.sh   # kind 'ureka' + 로컬 레지스트리 + Argo CD v3.6.0. 여러 번 실행해도 된다
 ```
 
-### 3. 이미지 복사 → Application 적용
+### 3. 비밀값 → 데이터 계층 → 이미지 복사 → 서비스 Application
 
 ```bash
+kubectl apply -f argocd/kind/ureka-dev-namespace.yaml
+scripts/kind/create-secrets.sh   # 로컬 전용 Secret(DB·JWT·내부 토큰)을 처음 한 번 만든다. 값은 Git에 없고 출력하지 않는다
+kubectl apply -f argocd/kind/ureka-dev-data.yaml
+kubectl -n dev logs job/db-bootstrap | tail -1   # "db-bootstrap 완료"를 확인한 뒤 다음으로
 scripts/kind/sync-ecr-image.sh recommend <ureka-recommend main 커밋 SHA 40자>
+scripts/kind/sync-ecr-image.sh auth <ureka-auth main 커밋 SHA 40자>
+scripts/kind/sync-ecr-image.sh content <ureka-content main 커밋 SHA 40자>
 kubectl apply -f argocd/kind/
 ```
 
-지금 Argo CD로 배포하는 서비스는 recommend(MOCK_MODE)뿐이다. auth·content·chat·ops는 Postgres·Redis·비밀값이 있어야 기동하므로 kind dev DB·Secret을 붙이는 다음 PR에서 Application을 추가한다(`environments/kind/ureka-auth.yaml`은 값만 준비).
+Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, DB 계정 생성 Job), recommend(MOCK_MODE), auth, content. chat·ops는 다음 PR. 비밀값 교체는 클러스터를 새로 만든다. DB 계정 구조·비밀값 방식·데이터 보존은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
 
 출력된 digest는 해당 CI 실행의 artifact `image-ref.json` digest와 같아야 한다. 이후 배포·롤백은 [docs/kind-deploy-rollback.md](docs/kind-deploy-rollback.md).
 
 ### 로컬 검사
 
 ```bash
-scripts/check-charts.sh          # helm lint + 렌더링 + 이미지 digest 고정 확인 (CI Helm 워크플로와 같음)
+scripts/check-charts.sh          # helm lint + 렌더링 + data kustomize 렌더링 + 이미지 digest 고정 확인 (CI Helm 워크플로와 같음)
+scripts/test-p11-check.sh        # P11 러너가 실행 실패를 성공으로 세지 않는지(클러스터 불필요, CI와 같음)
+scripts/test-create-secrets.sh   # Secret 스크립트가 덮어쓰지 않고 조회 오류에서 멈추는지(클러스터 불필요, CI와 같음)
+scripts/test-run-bootstrap.sh    # 계정 생성 Job이 잘못된 verifier에서 DB를 부르지 않는지(클러스터 불필요, CI와 같음)
+scripts/kind/p11-check.sh        # (kind 실행 중) P11 검색 함수 역할 부정 시험
 scripts/check-forbidden-files.sh # 커밋 금지 파일·계정 ID (CI Security 워크플로와 같음)
 ```

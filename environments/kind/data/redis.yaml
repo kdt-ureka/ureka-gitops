@@ -1,0 +1,80 @@
+# kind dev Redis. auth(토큰·코드)와 content(최근 검색어·집계)가 쓴다. 저장하지 않는다(Pod가 다시 뜨면 비워진다).
+# 앱 설정에 Redis 비밀번호 항목이 없어 인증 없이 클러스터 안에서만 연다. 운영(ElastiCache)은 별도 결정.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: ureka
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: ureka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/part-of: ureka
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          # 8.8.3-alpine
+          image: redis:8.8.3-alpine@sha256:cc9d0aecc235bda23e80287b5ef7c131cae443045b9a332d45932feb71a1e70e
+          imagePullPolicy: IfNotPresent
+          args: ["--save", "", "--appendonly", "no"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 64Mi
