@@ -38,7 +38,7 @@ required=(
 allowed_exceptions=(M06b)
 
 out="$(mktemp)"
-trap 'rm -f "$out"' EXIT
+trap 'rm -f "$out" "$out.self-err"' EXIT
 fatal=0
 note() { printf '%s\n' "$1" >>"$out"; }
 
@@ -61,6 +61,9 @@ as_login() { # DB, psql 인자...
 # 관리자가 검색 가능 작품 수를 센다(B3 기대값). V14 전 DB에는 표가 있어도 0일 수 있다.
 searchable="$(k exec "$pod" -- psql -X -At -U postgres -d "$db" -c 'select count(*) from catalog.contents where is_searchable' 2>>"$out")" ||
   { note "SCRIPT_ERROR 검색 가능 작품 수를 세지 못했다(Pod ${pod}, DB ${db})"; fatal=1; searchable=""; }
+if [ -n "$searchable" ] && ! [[ "$searchable" =~ ^[0-9]+$ ]]; then
+  note "SCRIPT_ERROR 검색 가능 작품 수가 숫자가 아니다: ${searchable}"; fatal=1; searchable=""
+fi
 
 # 1부
 if ! { printf '%s\n' "$login_pw"; cat tests/db/p11-recommend-login.sql; } |
@@ -76,23 +79,30 @@ if ! k exec -i "$pod" -- psql -X -U postgres -d "$db" -f - <tests/db/p11-functio
 fi
 
 # 3부: 같은 자격으로 자기 DB 접속이 되는지 먼저 본다. 이게 안 되면 아래 거절은 의미가 없다.
-self="$(as_login "$db" -Atc 'select current_user' 2>&1)" || true
-if [ "$self" = "$login" ]; then
+# 성공 = psql 종료 코드 0 그리고 출력이 정확히 로그인 계정 이름(표준 오류는 따로 받는다).
+self_rc=0
+self="$(as_login "$db" -Atc 'select current_user' 2>"$out.self-err")" || self_rc=$?
+if [ "$self_rc" -eq 0 ] && [ "$self" = "$login" ]; then
   note "P11 PASS X00 ${login}으로 ${db} 접속 성공(같은 자격으로 아래 거절 시험)"
   for other in auth_db postgres; do
     id=X01; [ "$other" = postgres ] && id=X02
+    # 통과 = 접속 실패 + 서버가 "요청한 바로 그 DB"의 CONNECT 권한 부족으로 거절.
+    #   FATAL:  permission denied for database "<other>"
+    #   DETAIL:  User does not have CONNECT privilege.
     if err="$(as_login "$other" -Atc 'select 1' 2>&1)"; then
       note "P11 FAIL ${id} ${login}이 ${other}에 접속됨"
-    elif printf '%s' "$err" | grep -q "permission denied for database"; then
+    elif printf '%s' "$err" | grep -qF "permission denied for database \"${other}\"" &&
+         printf '%s' "$err" | grep -qF "User does not have CONNECT privilege"; then
       note "P11 PASS ${id} ${login}의 ${other} 접속이 CONNECT 권한으로 거절"
     else
-      note "P11 FAIL ${id} ${other} 접속 실패 이유가 권한 거절이 아님: $(printf '%s' "$err" | tail -1)"
+      note "P11 FAIL ${id} ${other} 접속 실패 이유가 ${other}의 CONNECT 권한 거절이 아님: $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-200)"
     fi
   done
 else
-  note "SCRIPT_ERROR 3부: ${login}으로 ${db}에 접속하지 못했다: $(printf '%s' "$self" | tail -1)"
+  note "SCRIPT_ERROR 3부: ${login}으로 ${db} 접속 확인 실패(종료 코드 ${self_rc}, 출력 '${self}'): $(tail -1 "$out.self-err" 2>/dev/null)"
   fatal=1
 fi
+rm -f "$out.self-err"
 
 grep -E 'P11 (PASS|FAIL|INFO|EXCEPTION)|SCRIPT_ERROR|ERROR|FATAL' "$out" | sed -E 's/^(psql:[^ ]+ )?(NOTICE|WARNING|ERROR|FATAL): +//'
 

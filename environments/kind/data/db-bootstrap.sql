@@ -5,7 +5,7 @@
 -- 비밀번호: 원문은 이 SQL에도 DB 서버에도 가지 않는다. Secret db-accounts의 SCRAM-SHA-256 해시를 \getenv로 읽어
 --   저장된 값과 다를 때만 ALTER ROLE ... PASSWORD '<해시>'로 넣는다(PostgreSQL은 해시 형식을 그대로 저장한다).
 --   해시는 scripts/kind/create-secrets.sh가 이 PC에서 계산한다. 다시 동기화될 때 ALTER ROLE PASSWORD는 나가지 않는다.
---   (형식 확인·비교 SELECT에는 해시가 실린다. 해시는 원문이 아니고 원문은 무작위 256비트라 해시로 되돌릴 수 없다.)
+--   (비교 SELECT에는 해시가 실린다. 해시는 원문이 아니고 원문은 무작위 256비트라 해시로 되돌릴 수 없다.)
 --
 -- 계정 구조 (ERD v1.1: 서비스별 논리 DB, 서비스 간 계정 공유 없음, 역할은 클러스터 전역이라 DB 이름을 붙인다)
 --
@@ -32,13 +32,8 @@
 \getenv content_recommend_scram CONTENT_DB_RECOMMEND_SCRAM
 \getenv content_ingest_scram CONTENT_DB_INGEST_SCRAM
 
--- 해시 형식이 아니면(원문·빈 값) 멈춘다. 원문 비밀번호가 SQL로 나가는 실수를 막는다.
-SELECT NOT (:'auth_app_scram' ~ '^SCRAM-SHA-256\$' AND :'content_app_scram' ~ '^SCRAM-SHA-256\$'
-        AND :'content_recommend_scram' ~ '^SCRAM-SHA-256\$' AND :'content_ingest_scram' ~ '^SCRAM-SHA-256\$') AS scram_invalid \gset
-\if :scram_invalid
-  \warn 'db-accounts의 값이 SCRAM-SHA-256 해시가 아닙니다(scripts/kind/create-secrets.sh로 만든 Secret인지 확인)'
-  SELECT 1/0;
-\endif
+-- 형식 확인은 SQL을 보내기 전에 한다(db-bootstrap Job의 셸이 verifier 전체 형식을 검사하고, 아니면 DB에 접속하지 않고 멈춘다).
+-- 이 파일을 직접 실행할 때도 먼저 같은 검사를 해야 한다. 여기서 검사하면 잘못 들어간 원문이 검사 쿼리에 실려 서버로 간다.
 
 -- 1) 로그인 계정 ---------------------------------------------------------------
 SELECT format('CREATE ROLE %I LOGIN', r) FROM unnest(ARRAY['auth_db_app', 'content_db_app', 'content_db_recommend', 'content_db_ingest']) AS r

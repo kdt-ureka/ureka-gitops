@@ -29,5 +29,8 @@ jobs:
         # Helm·kubectl(kustomize 내장)은 GitHub 호스트 러너 이미지에 기본 포함돼 있다.
         run: bash scripts/check-charts.sh
       - name: P11 runner refuses runs where SQL did not execute
-        # 가짜 kubectl로 실행 실패·인증 실패·권한 아닌 접속 실패가 성공으로 세지지 않는지 본다(클러스터 불필요).
+        # 가짜 kubectl: 정상 흉내는 성공, 한 가지씩 바꾼 실패 12가지는 모두 실패여야 한다(클러스터 불필요).
         run: bash scripts/test-p11-check.sh
+      - name: create-secrets.sh never overwrites and stops on non-NotFound errors
+        # 가짜 kubectl로 Forbidden·연결 실패·일부 존재·볼륨만 남음에서 Secret을 하나도 만들지 않는지 본다.
+        run: bash scripts/test-create-secrets.sh

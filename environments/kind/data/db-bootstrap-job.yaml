@@ -37,6 +37,15 @@ spec:
           args:
             - |
               set -e
+              # SQL을 보내기 전에 verifier 전체 형식을 여기서 확인한다. 원문이 잘못 들어 있으면 DB로 가지 않고 멈춘다.
+              # SCRAM-SHA-256$<반복>:<salt base64>$<StoredKey base64>:<ServerKey base64> (StoredKey·ServerKey는 32바이트 = base64 44자)
+              for v in AUTH_DB_APP_SCRAM CONTENT_DB_APP_SCRAM CONTENT_DB_RECOMMEND_SCRAM CONTENT_DB_INGEST_SCRAM; do
+                eval "val=\${$v:-}"
+                if ! printf '%s' "$val" | grep -Eqx 'SCRAM-SHA-256\$[0-9]{4,7}:[A-Za-z0-9+/]+={0,2}\$[A-Za-z0-9+/]{43}=:[A-Za-z0-9+/]{43}='; then
+                  echo "$v 가 SCRAM-SHA-256 verifier 형식이 아닙니다(값은 출력하지 않음). scripts/kind/create-secrets.sh로 만든 Secret인지 확인"
+                  exit 1
+                fi
+              done
               i=0
               until pg_isready -q; do
                 i=$((i + 1)); [ "$i" -gt 60 ] && { echo "postgres 준비 안 됨"; exit 1; }

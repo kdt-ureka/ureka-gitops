@@ -14,7 +14,7 @@
 #
 # 서비스마다 필요한 값만 따로 담는다(content는 JWT 개인키를 받지 않는다).
 #
-# 값이 지나가는 곳: 이 스크립트의 임시 디렉터리(권한 700, 끝나면 삭제)와 kubectl apply 표준 입력뿐이다.
+# 값이 지나가는 곳: 이 스크립트의 임시 디렉터리(권한 700, 끝나면 삭제)와 kubectl create 표준 입력뿐이다.
 # 명령 인자(argv)와 화면에는 싣지 않는다. 비밀번호 원문은 DB 서버로 보내지 않는다(SCRAM 해시만 보낸다).
 #
 # 교체(rotate)는 제공하지 않는다. kind는 로컬 임시 환경이라 값을 바꾸려면 클러스터를 새로 만든다
@@ -39,12 +39,23 @@ if ! [[ "$ctx" =~ ^kind- ]]; then
 fi
 command -v openssl >/dev/null || { echo "openssl이 필요합니다" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3이 필요합니다(SCRAM 해시 계산)" >&2; exit 1; }
-kubectl --context "$ctx" get namespace "$ns" >/dev/null 2>&1 ||
+# 있는지 확인: 있으면 0, NotFound면 1. 권한(Forbidden)·연결 오류 등 그 밖의 실패는 "없음"으로 보지 않고 멈춘다.
+# (권한이 없어 안 보이는 Secret을 없다고 보고 새로 만들면 값이 서로 어긋난다.)
+exists() { # kubectl get 인자...
+  local err
+  if err="$(kubectl --context "$ctx" get "$@" -o name 2>&1 >/dev/null)"; then return 0; fi
+  if printf '%s' "$err" | grep -q '(NotFound)'; then return 1; fi
+  echo "확인 실패(없음이 아닌 오류라 멈춥니다): kubectl get $*" >&2
+  printf '%s\n' "$err" >&2
+  exit 1
+}
+
+exists namespace "$ns" ||
   { echo "네임스페이스 $ns가 없습니다. kubectl apply -f argocd/kind/ureka-dev-namespace.yaml 후 다시 실행하세요" >&2; exit 1; }
 
 existing=0
 for s in "${secrets[@]}"; do
-  if k get secret "$s" >/dev/null 2>&1; then existing=$((existing + 1)); fi
+  if exists -n "$ns" secret "$s"; then existing=$((existing + 1)); fi
 done
 if [ "$existing" -eq "${#secrets[@]}" ]; then
   echo "Secret ${#secrets[@]}개가 이미 있습니다. 아무것도 바꾸지 않았습니다."
@@ -55,7 +66,7 @@ elif [ "$existing" -ne 0 ]; then
   exit 1
 fi
 # Secret이 하나도 없는데 DB 볼륨이 남아 있으면, 새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않는다.
-if k get pvc data-postgres-0 >/dev/null 2>&1; then
+if exists -n "$ns" pvc data-postgres-0; then
   echo "Secret은 없는데 DB 볼륨(pvc/data-postgres-0)이 남아 있습니다. 새 비밀번호가 기존 DB에 맞지 않습니다." >&2
   echo "kind dev 데이터를 버려도 되면: kubectl -n $ns delete statefulset postgres && kubectl -n $ns delete pvc data-postgres-0 후 다시 실행" >&2
   exit 1
@@ -87,13 +98,14 @@ for v in auth_db content_db recommend_db ingest_db; do scram "$work/$v" "$work/$
 printf 'content_db_recommend' >"$work/recommend_user"
 printf 'content_db_ingest' >"$work/ingest_user"
 
+# create로 만든다(apply가 아니다). 위 확인과 이 사이에 누가 같은 이름을 만들었으면 덮어쓰지 않고 실패한다.
 apply_secret() { # 이름, KEY=파일 ...
   local name="$1"; shift
   local args=()
   for kv in "$@"; do args+=("--from-file=$kv"); done
   k create secret generic "$name" "${args[@]}" --dry-run=client -o yaml |
     k label --local -f - app.kubernetes.io/part-of=ureka ureka.io/created-by=create-secrets.sh -o yaml |
-    k apply -f - >/dev/null
+    k create -f - >/dev/null
   echo "Secret ${name} 생성"
 }
 
