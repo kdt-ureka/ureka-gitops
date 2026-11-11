@@ -21,6 +21,10 @@ mode="${FAKE_MODE:-baseline}"
 args=" $* "
 emit() { # 접두사(A|B|C|D 또는 M|X)에 맞는 ID를 PASS로 낸다. M06b는 EXCEPTION.
   for id in $FAKE_IDS; do
+    [ "$mode" = drop_one_id ] && [ "$id" = C07 ] && continue                 # 필수 ID 하나만 빠짐
+    if [ "$mode" = other_exception ] && [ "$id" = M01 ]; then                 # M06b가 아닌 EXCEPTION
+      [[ "$1" == *M* ]] && echo "psql:<stdin>:1: NOTICE:  P11 EXCEPTION M01 예외"; continue
+    fi
     case "$id" in
       M06b) [[ "$1" == *M* ]] && echo "psql:<stdin>:1: NOTICE:  P11 EXCEPTION M06b 예외" ;;
       [$1]*) echo "psql:<stdin>:1: NOTICE:  P11 PASS $id 정상" ;;
@@ -81,7 +85,7 @@ else
 fi
 
 for mode in exec_fail silent_ok count_text part1_fail part2_fail self_rc_fail self_rc_fail_quiet self_wrong_user \
-            cross_allowed cross_wrong_db cross_other_error cross_no_connect_detail; do
+            cross_allowed cross_wrong_db cross_other_error cross_no_connect_detail drop_one_id other_exception; do
   if run "$mode"; then
     echo "FAIL ${mode}: 성공(0)으로 끝났다"; status=1
   else

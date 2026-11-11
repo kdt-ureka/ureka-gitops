@@ -8,7 +8,8 @@ resources:
   - redis.yaml
   - db-bootstrap-job.yaml
 configMapGenerator:
-  # SQL을 바꾸면 이름(해시)이 바뀌어 Job도 새 내용으로 돈다.
+  # SQL·스크립트를 바꾸면 이름(해시)이 바뀌어 Job도 새 내용으로 돈다.
   - name: db-bootstrap
     files:
       - db-bootstrap.sql
+      - run-bootstrap.sh

@@ -40,7 +40,12 @@ case "$args" in
   *" label "*"--local"*)
     cat; exit 0 ;;
   *" create -f - "*)
-    cat >/dev/null; echo CREATE >>"$log"; exit 0 ;;
+    cat >/dev/null
+    # 확인과 생성 사이에 누가 같은 이름을 만든 경우: 세 번째 create에서 AlreadyExists
+    if [ "$mode" = already_exists_on_create ] && [ "$(grep -c CREATE "$log")" -eq 2 ]; then
+      echo 'Error from server (AlreadyExists): secrets "ureka-auth-secrets" already exists' >&2; exit 1
+    fi
+    echo CREATE >>"$log"; exit 0 ;;
   *" apply "*)
     echo APPLY >>"$log"; exit 0 ;;
 esac
@@ -71,6 +76,8 @@ check secret_forbidden  nonzero 0
 check pvc_forbidden     nonzero 0
 check ns_forbidden      nonzero 0
 check conn_refused      nonzero 0
+# 중간 실패: 앞의 2개는 남고 스크립트는 실패로 끝난다(덮어쓰지 않음). 다음 실행은 '일부만 있음'으로 멈춘다.
+check already_exists_on_create nonzero 2
 
 : >"$fake/log"
 if KUBE_CONTEXT=arn:aws:eks:example FAKE_LOG="$fake/log" PATH="$fake:$PATH" bash scripts/kind/create-secrets.sh </dev/null >/dev/null 2>&1; then

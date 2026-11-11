@@ -32,8 +32,8 @@
 \getenv content_recommend_scram CONTENT_DB_RECOMMEND_SCRAM
 \getenv content_ingest_scram CONTENT_DB_INGEST_SCRAM
 
--- 형식 확인은 SQL을 보내기 전에 한다(db-bootstrap Job의 셸이 verifier 전체 형식을 검사하고, 아니면 DB에 접속하지 않고 멈춘다).
--- 이 파일을 직접 실행할 때도 먼저 같은 검사를 해야 한다. 여기서 검사하면 잘못 들어간 원문이 검사 쿼리에 실려 서버로 간다.
+-- 형식 확인은 SQL을 보내기 전에 한다(run-bootstrap.sh가 verifier 전체를 검사하고, 아니면 DB에 접속하지 않고 멈춘다).
+-- 이 파일을 직접 실행할 때도 run-bootstrap.sh로 실행하거나 먼저 같은 검사를 해야 한다. 여기서 검사하면 잘못 들어간 원문이 검사 쿼리에 실려 서버로 간다.
 
 -- 1) 로그인 계정 ---------------------------------------------------------------
 SELECT format('CREATE ROLE %I LOGIN', r) FROM unnest(ARRAY['auth_db_app', 'content_db_app', 'content_db_recommend', 'content_db_ingest']) AS r

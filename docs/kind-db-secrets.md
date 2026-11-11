@@ -43,7 +43,7 @@ scripts/kind/p11-check.sh                                # V14가 content main �
 
 | 안 | 내용 | 장점 | 단점 |
 |---|---|---|---|
-| **A. 생성 스크립트 (이 PR)** | `create-secrets.sh`가 kind 안에서 Secret을 처음 한 번 만든다. 값은 Git·파일에 없다 | 추가 컨트롤러 없음. 클러스터마다 값이 달라 유출 범위가 그 PC로 한정. 팀원이 각자 kind를 띄워도 그대로 동작 | Secret이 Git 밖이라 Argo CD가 상태를 모른다. 클러스터를 지우면 값도 사라진다(로컬 dev라 문제없음) |
+| **A. 생성 스크립트 (이 PR)** | `create-secrets.sh`가 kind 안에서 Secret을 처음 한 번 만든다. 값은 Git·영구 파일에 남기지 않는다(만들 때 권한 700 임시 파일을 쓰고 끝나면 지운다) | 추가 컨트롤러 없음. 클러스터마다 값이 달라 유출 범위가 그 PC로 한정. 팀원이 각자 kind를 띄워도 그대로 동작 | Secret이 Git 밖이라 Argo CD가 상태를 모른다. 클러스터를 지우면 값도 사라진다(로컬 dev라 문제없음) |
 | B. Sealed Secrets | 암호화한 Secret을 Git에 커밋 | Git으로 전부 관리 | 컨트롤러 키가 클러스터마다 달라 **팀원 kind마다 다시 봉인**해야 한다. PUBLIC 저장소에 암호문이 쌓인다 |
 | C. ESO + 로컬 백엔드 | 운영과 같은 ESO, 저장소만 로컬(예: Kubernetes provider) | 운영(EKS: Secrets Manager → ESO)과 같은 모양 | kind에 컨트롤러·CRD 추가, 결국 원본 Secret은 A처럼 만들어야 한다 |
 
@@ -55,15 +55,15 @@ scripts/kind/p11-check.sh                                # V14가 content main �
 |---|---|---|
 | 모든 원문(DB 비밀번호, JWT 키, 토큰, 슈퍼유저 비밀번호) | 스크립트 임시 디렉터리(umask 077) → `kubectl create` 표준 입력 → Secret | 임시 디렉터리는 스크립트가 끝나면 삭제. 명령 인자(argv)·화면에 싣지 않음 |
 | DB 계정 비밀번호 | 원문은 앱 Secret(`ureka-*-secrets`, `ureka-*-db`)에만. Job용 `db-accounts`에는 **SCRAM-SHA-256 해시만** | DB 서버로는 원문이 가지 않는다. `ALTER ROLE ... PASSWORD '<해시>'`는 저장된 해시와 다를 때만(처음 만들 때) 나간다 |
-| 슈퍼유저 비밀번호 | `postgres-admin` → postgres Pod env(initdb), Job env | 데이터 디렉터리를 처음 만들 때만 적용 |
+| 슈퍼유저 비밀번호 | `postgres-admin` → postgres Pod env, db-bootstrap Job env(`PGPASSWORD`, 관리자 접속용 원문) | postgres 이미지의 initdb가 **데이터 디렉터리를 처음 만들 때만** 슈퍼유저 비밀번호로 설정한다. 그 뒤 Secret을 바꿔도 기존 DB에는 반영되지 않는다 |
 
-verifier 형식(`SCRAM-SHA-256$<반복>:<salt>$<StoredKey 44자>:<ServerKey 44자>`)은 **SQL을 보내기 전에 db-bootstrap Job의 셸이 검사**하고, 형식이 아니면 DB에 접속하지 않고 멈춘다(원문이 잘못 들어가도 검사 쿼리로 서버에 가지 않게). SQL 파일을 직접 실행할 때도 먼저 같은 검사를 한다. Codex 재검토에서 스크립트의 SCRAM 계산이 같은 비밀번호·salt의 PostgreSQL 18 libpq 결과와 일치함을 확인했다.
+verifier는 **SQL을 보내기 전에 `environments/kind/data/run-bootstrap.sh`(db-bootstrap Job 본문)가 검사**하고, 하나라도 맞지 않으면 `pg_isready`·`psql`을 부르지 않고 멈춘다(값은 출력하지 않음). 이 생성기 형식만 받는다: 줄바꿈(CR·LF) 없음, `SCRAM-SHA-256$4096:`, salt는 base64로 디코딩해 16바이트, StoredKey·ServerKey는 각각 32바이트, 셋 다 다시 인코딩하면 같은 정규형. PostgreSQL의 모든 verifier를 받으려는 검사는 아니다. 회귀 시험 `scripts/test-run-bootstrap.sh`(CI, 러너 기본 sh = dash): 정상은 psql까지 가고, 빈 값·원문·접두사만·정상+개행+원문·앞뒤 개행·CR·CRLF·반복 수 0000/4095/40960·salt 1글자/15바이트/비정규형/잘못된 문자·키 31바이트·구분자 누락/추가·명령 문자열 20경우는 DB 호출 0회로 실패한다. Codex 재검토에서 스크립트의 SCRAM 계산이 같은 비밀번호·salt의 PostgreSQL 18 libpq 결과와 일치함을 확인했다.
 
-2026-11-10 확인: `log_statement=all`로 바꾸고 bootstrap을 다시 돌렸을 때 실행된 `ALTER ROLE <이름> PASSWORD` 문장 0건, 서버 로그에 비밀번호 원문 0건(4개 계정 모두 대조). 해시는 형식 확인·비교 SELECT에 나온다(원문이 무작위 256비트라 되돌릴 수 없음). 확인 후 `log_statement`를 되돌림.
+2026-11-10 확인(당시 구현, SQL 안에 형식 확인 SELECT가 있던 때): `log_statement=all`로 바꾸고 bootstrap을 다시 돌렸을 때 실행된 `ALTER ROLE <이름> PASSWORD` 문장 0건, 서버 로그에 비밀번호 원문 0건(4개 계정 모두 대조). 해시는 형식 확인·비교 SELECT에 나온다(원문이 무작위 256비트라 되돌릴 수 없음). 확인 후 `log_statement`를 되돌림.
 
 **자격에 닿을 수 있는 권한**: dev 네임스페이스 Secret 조회, Secret을 붙인 Pod를 만들 수 있는 권한, postgres·Job Pod `exec`(Pod 안 소켓·127.0.0.1 접속은 이미지 기본 pg_hba상 trust)는 DB 관리자 권한과 같다고 본다. kind는 이 PC 사용자만 갖는다.
 
-**교체(rotate)는 제공하지 않는다.** DB 계정·슈퍼유저 비밀번호·앱 재시작을 한 번에 맞추고 중간 실패를 되돌리는 절차를 검증하지 않았기 때문이다(Codex 검토 2026-11-10). kind에서 값을 바꾸려면 클러스터를 새로 만든다(`kind delete cluster --name ureka` → 2장 순서). 스크립트는 Secret이 일부만 있거나, Secret 없이 DB 볼륨만 남아 있으면 멈춘다(새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않으므로). 있는지 확인할 때 **`NotFound`만 '없음'으로 보고, 권한 부족(`Forbidden`)·연결 실패 등 다른 오류는 바로 멈춘다**(보이지 않는 Secret을 없다고 보고 새로 만들지 않게). Secret은 `kubectl create`로만 만들어 이미 있는 것을 덮어쓰지 않는다. kind가 아닌 컨텍스트(`kind-*`가 아님)에서는 실행하지 않는다. 회귀 시험: `scripts/test-create-secrets.sh`(CI).
+**교체(rotate)는 제공하지 않는다.** DB 계정·슈퍼유저 비밀번호·앱 재시작을 한 번에 맞추고 중간 실패를 되돌리는 절차를 검증하지 않았기 때문이다(Codex 검토 2026-11-10). kind에서 값을 바꾸려면 클러스터를 새로 만든다(`kind delete cluster --name ureka` → 2장 순서). 스크립트는 Secret이 일부만 있거나, Secret 없이 DB 볼륨만 남아 있으면 멈춘다(새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않으므로). 있는지 확인할 때 **`NotFound`만 '없음'으로 보고, 권한 부족(`Forbidden`)·연결 실패 등 다른 오류는 바로 멈춘다**(보이지 않는 Secret을 없다고 보고 새로 만들지 않게). Secret은 `kubectl create`로만 만들어 이미 있는 것을 덮어쓰지 않는다. kind가 아닌 컨텍스트(`kind-*`가 아님)에서는 실행하지 않는다. 회귀 시험: `scripts/test-create-secrets.sh`(CI). 생성 도중 실패(예: 확인과 생성 사이에 누가 같은 이름을 만들어 AlreadyExists)하면 앞서 만든 Secret은 남고 스크립트는 실패한다. 6개를 한 번에 만드는 원자적 생성이 아니므로, 다음 실행은 '일부만 있음'으로 멈추고 안내대로 지운 뒤 다시 만든다.
 
 ## 4. DB 계정 구조
 
@@ -121,9 +121,9 @@ data·auth·content Application, Deployment·StatefulSet·Service·Job·ConfigMa
 
 data 첫 동기화 약 50초, SQL 변경 push → 자동 동기화·Job 재실행 2분 5초(폴링, 수동 refresh 없음), auth·content Synced/Healthy 51초, Flyway auth V1~V5(`auth_db_app`)·content V1~V13(`content_db_app`) 비슈퍼유저 성공, auth 게스트 토큰 → content 검색 200·위조 토큰 401(JWT 공개키 공유), content replicas 손으로 2 → 1초 안에 1(selfHeal). digest는 ECR 복사 = CI `image-ref.json`.
 
-### V14 비슈퍼유저 적용 (content#30 미병합 → 임시 DB로 미리 확인)
+### V14 비슈퍼유저 적용 (시험 당시 content#30 미병합 → 임시 DB로 미리 확인)
 
-content main 이미지는 아직 V13까지다. content#30 브랜치(`eb6966a`)의 V1~V14 파일을 Flyway CLI 11.7.2(Spring Boot 3.5.16과 같은 계열)로 kind PostgreSQL의 임시 DB `content_v14`에 적용했다. 계정 구조는 4장과 같게 만들었다(`content_v14_app` = CREATEROLE, 슈퍼유저 아님). 두 번(처음 버전·수정본 검증) 모두 **V1~V14 14개 성공**. V6은 `vector already exists, skipping`(관리자가 미리 설치). Flyway·앱 모두 "PostgreSQL 18.6은 이 Flyway 버전에서 시험되지 않음(최신 지원 17)" 경고가 난다. 확인 후 임시 DB·역할은 지웠다.
+시험 당시(2026-11-10) content main 이미지는 V13까지였다(content#30은 그 뒤 `e58615b`로 병합, 실제 content_db 결과는 gitops#13). content#30 브랜치(`eb6966a`)의 V1~V14 파일을 Flyway CLI 11.7.2(Spring Boot 3.5.16과 같은 계열)로 kind PostgreSQL의 임시 DB `content_v14`에 적용했다. 계정 구조는 4장과 같게 만들었다(`content_v14_app` = CREATEROLE, 슈퍼유저 아님). 두 번(처음 버전·수정본 검증) 모두 **V1~V14 14개 성공**. V6은 `vector already exists, skipping`(관리자가 미리 설치). Flyway·앱 모두 "PostgreSQL 18.6은 이 Flyway 버전에서 시험되지 않음(최신 지원 17)" 경고가 난다. 확인 후 임시 DB·역할은 지웠다.
 
 ### P11 부정 시험 — `scripts/kind/p11-check.sh` (예비 결과, G1 근거 아님)
 
@@ -142,7 +142,7 @@ content main 이미지는 아직 V13까지다. content#30 브랜치(`eb6966a`)�
 
 러너 자체의 회귀 확인:
 
-- `scripts/test-p11-check.sh`(CI Helm 워크플로): 가짜 kubectl로 **모두 정상인 경우는 성공(0)**인지 먼저 보고, 거기서 한 가지씩만 바꾼 12가지(exec 실패, 아무것도 실행 안 하고 성공만 반환, 작품 수가 숫자 아님, 1부·2부 SQL 중단, 자기 DB 접속이 이름을 찍고 비정상 종료(표준 오류 있음·없음), 자기 DB 사용자 이름 다름, 다른 DB 접속 허용, 다른 DB 이름으로 거절, 권한 아닌 이유로 실패, CONNECT 설명 없는 거절)와 kind가 아닌 컨텍스트가 모두 실패로 끝나는지 본다. `86e211b` 러너는 exec 실패·접속 실패를, `3058b69` 러너는 작품 수 비숫자·이름 찍고 조용히 비정상 종료·다른 DB 이름 거절·CONNECT 설명 없는 거절을 성공으로 셌다(Codex 두 차례 재현과 같음).
+- `scripts/test-p11-check.sh`(CI Helm 워크플로): 가짜 kubectl로 **모두 정상인 경우는 성공(0)**인지 먼저 보고, 거기서 한 가지씩만 바꾼 14가지(exec 실패, 아무것도 실행 안 하고 성공만 반환, 작품 수가 숫자 아님, 1부·2부 SQL 중단, 자기 DB 접속이 이름을 찍고 비정상 종료(표준 오류 있음·없음), 자기 DB 사용자 이름 다름, 다른 DB 접속 허용, 다른 DB 이름으로 거절, 권한 아닌 이유로 실패, CONNECT 설명 없는 거절, 필수 ID 하나 누락, M06b가 아닌 EXCEPTION)와 kind가 아닌 컨텍스트가 모두 실패로 끝나는지 본다. `86e211b` 러너는 exec 실패·접속 실패를, `3058b69` 러너는 작품 수 비숫자·이름 찍고 조용히 비정상 종료·다른 DB 이름 거절·CONNECT 설명 없는 거절을 성공으로 셌다(Codex 두 차례 재현과 같음).
 - 실제 kind: 틀린 비밀번호 → 1부·3부 SCRIPT_ERROR로 실패, 없는 Pod → 실패, V13인 content_db → 검색 함수 없음으로 FAIL 4·필수 미확인 19로 실패.
 - 수정 중 찾은 것: 처음 버전은 Pod 안에서 `127.0.0.1`로 접속했는데, 이미지 기본 pg_hba가 127.0.0.1을 trust로 둬서 **비밀번호가 틀려도 접속됐다**. 지금은 Pod IP로 접속해 scram-sha-256 인증을 거친다(틀린 비밀번호로 실패 확인).
 

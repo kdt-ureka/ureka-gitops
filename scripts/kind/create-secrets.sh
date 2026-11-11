@@ -62,13 +62,13 @@ if [ "$existing" -eq "${#secrets[@]}" ]; then
   exit 0
 elif [ "$existing" -ne 0 ]; then
   echo "Secret이 일부(${existing}/${#secrets[@]})만 있습니다. 값이 서로 맞지 않을 수 있어 멈춥니다." >&2
-  echo "클러스터를 새로 만들거나, 남은 Secret을 지우고(kubectl -n $ns delete secret -l ureka.io/created-by=create-secrets.sh) DB 볼륨도 지운 뒤 다시 실행하세요." >&2
+  echo "클러스터를 새로 만들거나, 남은 Secret을 지우고(kubectl --context $ctx -n $ns delete secret -l ureka.io/created-by=create-secrets.sh) DB 볼륨도 지운 뒤 다시 실행하세요." >&2
   exit 1
 fi
 # Secret이 하나도 없는데 DB 볼륨이 남아 있으면, 새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않는다.
 if exists -n "$ns" pvc data-postgres-0; then
   echo "Secret은 없는데 DB 볼륨(pvc/data-postgres-0)이 남아 있습니다. 새 비밀번호가 기존 DB에 맞지 않습니다." >&2
-  echo "kind dev 데이터를 버려도 되면: kubectl -n $ns delete statefulset postgres && kubectl -n $ns delete pvc data-postgres-0 후 다시 실행" >&2
+  echo "kind dev 데이터를 버려도 되면: kubectl --context $ctx -n $ns delete statefulset postgres && kubectl --context $ctx -n $ns delete pvc data-postgres-0 후 다시 실행" >&2
   exit 1
 fi
 
