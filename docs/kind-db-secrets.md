@@ -53,15 +53,17 @@ scripts/kind/p11-check.sh                                # V14가 content main �
 
 | 값 | 어디에 있나 | 수명 |
 |---|---|---|
-| 모든 원문(DB 비밀번호, JWT 키, 토큰, 슈퍼유저 비밀번호) | 스크립트 임시 디렉터리(umask 077) → `kubectl apply` 표준 입력 → Secret | 임시 디렉터리는 스크립트가 끝나면 삭제. 명령 인자(argv)·화면에 싣지 않음 |
+| 모든 원문(DB 비밀번호, JWT 키, 토큰, 슈퍼유저 비밀번호) | 스크립트 임시 디렉터리(umask 077) → `kubectl create` 표준 입력 → Secret | 임시 디렉터리는 스크립트가 끝나면 삭제. 명령 인자(argv)·화면에 싣지 않음 |
 | DB 계정 비밀번호 | 원문은 앱 Secret(`ureka-*-secrets`, `ureka-*-db`)에만. Job용 `db-accounts`에는 **SCRAM-SHA-256 해시만** | DB 서버로는 원문이 가지 않는다. `ALTER ROLE ... PASSWORD '<해시>'`는 저장된 해시와 다를 때만(처음 만들 때) 나간다 |
 | 슈퍼유저 비밀번호 | `postgres-admin` → postgres Pod env(initdb), Job env | 데이터 디렉터리를 처음 만들 때만 적용 |
+
+verifier 형식(`SCRAM-SHA-256$<반복>:<salt>$<StoredKey 44자>:<ServerKey 44자>`)은 **SQL을 보내기 전에 db-bootstrap Job의 셸이 검사**하고, 형식이 아니면 DB에 접속하지 않고 멈춘다(원문이 잘못 들어가도 검사 쿼리로 서버에 가지 않게). SQL 파일을 직접 실행할 때도 먼저 같은 검사를 한다. Codex 재검토에서 스크립트의 SCRAM 계산이 같은 비밀번호·salt의 PostgreSQL 18 libpq 결과와 일치함을 확인했다.
 
 2026-11-10 확인: `log_statement=all`로 바꾸고 bootstrap을 다시 돌렸을 때 실행된 `ALTER ROLE <이름> PASSWORD` 문장 0건, 서버 로그에 비밀번호 원문 0건(4개 계정 모두 대조). 해시는 형식 확인·비교 SELECT에 나온다(원문이 무작위 256비트라 되돌릴 수 없음). 확인 후 `log_statement`를 되돌림.
 
 **자격에 닿을 수 있는 권한**: dev 네임스페이스 Secret 조회, Secret을 붙인 Pod를 만들 수 있는 권한, postgres·Job Pod `exec`(Pod 안 소켓·127.0.0.1 접속은 이미지 기본 pg_hba상 trust)는 DB 관리자 권한과 같다고 본다. kind는 이 PC 사용자만 갖는다.
 
-**교체(rotate)는 제공하지 않는다.** DB 계정·슈퍼유저 비밀번호·앱 재시작을 한 번에 맞추고 중간 실패를 되돌리는 절차를 검증하지 않았기 때문이다(Codex 검토 2026-11-10). kind에서 값을 바꾸려면 클러스터를 새로 만든다(`kind delete cluster --name ureka` → 2장 순서). 스크립트는 Secret이 일부만 있거나, Secret 없이 DB 볼륨만 남아 있으면 멈춘다(새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않으므로). kind가 아닌 컨텍스트(`kind-*`가 아님)에서는 실행하지 않는다.
+**교체(rotate)는 제공하지 않는다.** DB 계정·슈퍼유저 비밀번호·앱 재시작을 한 번에 맞추고 중간 실패를 되돌리는 절차를 검증하지 않았기 때문이다(Codex 검토 2026-11-10). kind에서 값을 바꾸려면 클러스터를 새로 만든다(`kind delete cluster --name ureka` → 2장 순서). 스크립트는 Secret이 일부만 있거나, Secret 없이 DB 볼륨만 남아 있으면 멈춘다(새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않으므로). 있는지 확인할 때 **`NotFound`만 '없음'으로 보고, 권한 부족(`Forbidden`)·연결 실패 등 다른 오류는 바로 멈춘다**(보이지 않는 Secret을 없다고 보고 새로 만들지 않게). Secret은 `kubectl create`로만 만들어 이미 있는 것을 덮어쓰지 않는다. kind가 아닌 컨텍스트(`kind-*`가 아님)에서는 실행하지 않는다. 회귀 시험: `scripts/test-create-secrets.sh`(CI).
 
 ## 4. DB 계정 구조
 
@@ -125,7 +127,7 @@ content main 이미지는 아직 V13까지다. content#30 브랜치(`eb6966a`)�
 
 ### P11 부정 시험 — `scripts/kind/p11-check.sh` (예비 결과, G1 근거 아님)
 
-**성공 조건**: 1·2부 SQL의 psql 종료 코드 0, 필수 체크 ID 50개가 빠짐없이 PASS(알고 받아들인 예외는 M06b만 EXCEPTION 허용), FAIL 0. 하나라도 어긋나면 종료 코드 1.
+**성공 조건**: 1·2부 SQL의 psql 종료 코드 0, 관리자가 센 검색 가능 작품 수가 숫자, 필수 체크 ID 50개가 빠짐없이 PASS(알고 받아들인 예외는 M06b만 EXCEPTION 허용), FAIL 0. 접속 시험은 자기 DB 접속이 **종료 코드 0이고 출력이 정확히 로그인 계정 이름**일 때만 X00 통과, 다른 DB는 **요청한 바로 그 DB 이름의 `permission denied for database "<DB>"`와 `User does not have CONNECT privilege`가 둘 다** 나올 때만 X01·X02 통과. 하나라도 어긋나면 종료 코드 1.
 
 수정본, 임시 DB `content_v14`(recommend 로그인 계정 `content_v14_recommend`): **PASS 49 / FAIL 0 / EXCEPTION 1(M06b) / 필수 미확인 0, 종료 코드 0.**
 
@@ -140,7 +142,7 @@ content main 이미지는 아직 V13까지다. content#30 브랜치(`eb6966a`)�
 
 러너 자체의 회귀 확인:
 
-- `scripts/test-p11-check.sh`(CI Helm 워크플로): 가짜 kubectl로 exec 실패, 아무것도 실행 안 하고 성공만 반환, 인증 실패, 다른 DB 접속이 권한 아닌 이유로 실패, kind가 아닌 컨텍스트 — 다섯 경우 모두 실패로 끝나는지 본다. 처음 버전 러너는 이 중 두 경우(exec 실패, 접속 실패)를 성공으로 셌다(Codex 재현과 같음).
+- `scripts/test-p11-check.sh`(CI Helm 워크플로): 가짜 kubectl로 **모두 정상인 경우는 성공(0)**인지 먼저 보고, 거기서 한 가지씩만 바꾼 12가지(exec 실패, 아무것도 실행 안 하고 성공만 반환, 작품 수가 숫자 아님, 1부·2부 SQL 중단, 자기 DB 접속이 이름을 찍고 비정상 종료(표준 오류 있음·없음), 자기 DB 사용자 이름 다름, 다른 DB 접속 허용, 다른 DB 이름으로 거절, 권한 아닌 이유로 실패, CONNECT 설명 없는 거절)와 kind가 아닌 컨텍스트가 모두 실패로 끝나는지 본다. `86e211b` 러너는 exec 실패·접속 실패를, `3058b69` 러너는 작품 수 비숫자·이름 찍고 조용히 비정상 종료·다른 DB 이름 거절·CONNECT 설명 없는 거절을 성공으로 셌다(Codex 두 차례 재현과 같음).
 - 실제 kind: 틀린 비밀번호 → 1부·3부 SCRIPT_ERROR로 실패, 없는 Pod → 실패, V13인 content_db → 검색 함수 없음으로 FAIL 4·필수 미확인 19로 실패.
 - 수정 중 찾은 것: 처음 버전은 Pod 안에서 `127.0.0.1`로 접속했는데, 이미지 기본 pg_hba가 127.0.0.1을 trust로 둬서 **비밀번호가 틀려도 접속됐다**. 지금은 Pod IP로 접속해 scram-sha-256 인증을 거친다(틀린 비밀번호로 실패 확인).
 
@@ -159,5 +161,6 @@ content main 이미지는 아직 V13까지다. content#30 브랜치(`eb6966a`)�
 - recommend 실제 모드로 kind에 붙일 때 values에서 `ureka-recommend-db` Secret 사용(G1 전에 주입 경로 확인).
 - ingest Job/CronJob이 `ureka-ingest-db`를 쓰도록 연결.
 - **Redis 접근 제한**: 앱 설정에 Redis 비밀번호 항목이 없고, ClusterIP는 Pod 간 접근을 막지 않는다. 개인 kind는 후속으로 두지만, **공유 데모 환경에서는 auth 상태가 담긴 Redis에 허가된 워크로드만 닿게** NetworkPolicy·인증을 먼저 둔다.
+- **auth 메모리**: 2026-11-10 kind에서 auth Pod가 한 번 OOMKilled(종료 코드 137, chart 기본 limit 512Mi)로 재시작했다. 다시 뜬 뒤 Ready. JVM 힙·비힙 사용량을 재고 auth values의 `resources`(또는 `JAVA_TOOL_OPTIONS`)를 정한다. 근거 없이 limit만 올리지 않는다.
 - auth 메일: kind에 메일 서버가 없다(Mailpit 추가 여부). 가입 인증 메일만 실패하고 기동·`/readyz`와는 무관.
 - Flyway가 PostgreSQL 18을 정식 지원하는 버전으로 올리기(앱 의존성).

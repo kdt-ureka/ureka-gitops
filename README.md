@@ -78,6 +78,7 @@ Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, D
 ```bash
 scripts/check-charts.sh          # helm lint + 렌더링 + data kustomize 렌더링 + 이미지 digest 고정 확인 (CI Helm 워크플로와 같음)
 scripts/test-p11-check.sh        # P11 러너가 실행 실패를 성공으로 세지 않는지(클러스터 불필요, CI와 같음)
+scripts/test-create-secrets.sh   # Secret 스크립트가 덮어쓰지 않고 조회 오류에서 멈추는지(클러스터 불필요, CI와 같음)
 scripts/kind/p11-check.sh        # (kind 실행 중) P11 검색 함수 역할 부정 시험
 scripts/check-forbidden-files.sh # 커밋 금지 파일·계정 ID (CI Security 워크플로와 같음)
 ```
