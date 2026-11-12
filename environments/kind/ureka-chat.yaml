@@ -1,0 +1,75 @@
+# kind(로컬) dev용 ureka-chat api values. chart: charts/ureka-backend
+# 같은 이미지로 worker(ureka-chat-worker.yaml)도 띄운다. 둘 다 Argo CD Application ureka-chat-kind 하나에 묶여 있어
+# PreSync 마이그레이션 Job(Alembic)이 api·worker보다 먼저 돈다. 마이그레이션이 실패하면 api·worker는 갱신되지 않는다.
+# DB는 environments/kind/data(chat_db, 소유자 chat_db_app), 비밀값은 scripts/kind/create-secrets.sh가 만든 Secret.
+# env를 바꾸면 ureka-chat-worker.yaml에도 같이 바꾼다(api·worker·마이그레이션이 같은 설정을 쓴다).
+name: ureka-chat
+
+replicaCount: 1
+
+image:
+  repository: localhost:5001/ureka/chat
+  tag: sha-8cffeee34f0f50e18baeeed5523c3822f85c45ed
+  digest: sha256:7ca4f9815798950e2c384dc43b331d97de2c4317d4b0f76dce8e4716689fbfca
+  pullPolicy: IfNotPresent
+
+# api는 이미지 기본 명령(uvicorn app.main:app, 8080)을 쓴다. command를 비운다.
+
+# 이름은 ureka-chat .env.example·docs/deployment-handoff.md, ureka-local compose 기준.
+env:
+  # DB_PASSWORD를 DATABASE_URL보다 먼저 둬야 $(DB_PASSWORD)가 치환된다. 비밀번호는 16진수라 URL 인코딩이 필요 없다.
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: ureka-chat-secrets
+        key: DB_PASSWORD
+  - name: DATABASE_URL
+    value: postgresql+psycopg://chat_db_app:$(DB_PASSWORD)@postgres:5432/chat_db
+  - name: AUTH_CONTRACT_MODE
+    value: jwt
+  - name: JWT_ISSUER
+    value: ureka-auth
+  - name: JWT_PUBLIC_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-chat-secrets
+        key: JWT_PUBLIC_KEY
+  - name: INTERNAL_SERVICE_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: ureka-chat-secrets
+        key: INTERNAL_SERVICE_TOKEN
+  # kind Service 주소(Service 포트 80 → 컨테이너 8080·recommend 8000)
+  - name: CONTENT_BASE_URL
+    value: http://ureka-content
+  - name: RECOMMEND_BASE_URL
+    value: http://ureka-recommend
+  - name: API_DOCS_ENABLED
+    value: "false"
+  # AI는 선택. Secret ureka-chat-ai(AI_MODE=gemini, AI_API_KEY)가 있을 때만 켜진다(create-secrets.sh --chat-ai).
+  # 없으면 두 값이 비어 앱 기본값 AI_MODE=disabled로 동작한다. AI_MODE를 여기에 값으로 쓰지 않는다.
+  - name: AI_MODE
+    valueFrom:
+      secretKeyRef:
+        name: ureka-chat-ai
+        key: AI_MODE
+        optional: true
+  - name: AI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-chat-ai
+        key: AI_API_KEY
+        optional: true
+  - name: AI_INTERPRET_MODEL
+    value: gemini-3.1-flash-lite
+  - name: AI_ANSWER_MODEL
+    value: gemini-3.1-flash-lite
+  - name: AI_PERSONA_MODEL
+    value: gemini-3.1-flash-lite
+  - name: AI_MAX_ATTEMPTS
+    value: "3"
+
+# 마이그레이션 Job(Argo CD PreSync 훅 ureka-chat-migrate). api values에만 둔다(worker에는 두지 않는다).
+migration:
+  enabled: true
+  command: ["python", "-m", "alembic", "upgrade", "head"]

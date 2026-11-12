@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # kind dev 네임스페이스에 로컬 전용 비밀값 Secret을 처음 한 번 만든다. 값은 이 PC에서 새로 만들고 Git에 남기지 않는다.
 #
-#   scripts/kind/create-secrets.sh
+#   scripts/kind/create-secrets.sh             기본·chat·ops Secret(아래 9개)
+#   scripts/kind/create-secrets.sh --chat-ai   (선택) chat AI 키 Secret ureka-chat-ai만. 키는 표준 입력으로 받는다
 #
 # Secret은 두 묶음이다. 묶음마다 "전부 있음 / 전부 없음"만 받고, 일부만 있으면 멈춘다.
 #   기본 묶음(6개)      처음 만들 때만 만든다(PostgreSQL 슈퍼유저 비밀번호와 묶여 있어 DB 볼륨과 같이 새로 만든다)
@@ -24,7 +25,13 @@
 #   ureka-ops-secrets      DB_PASSWORD, JWT_PUBLIC_KEY
 #
 # 서비스마다 필요한 값만 따로 담는다(content·chat·ops는 JWT 개인키를 받지 않는다, ops는 내부 토큰도 받지 않는다).
-# AI 키(AI_API_KEY)는 넣지 않는다(kind는 AI를 끈다).
+# AI 키(AI_API_KEY)는 위 9개에 넣지 않는다. kind chat AI는 기본 꺼짐이고, 켜려는 사람만 --chat-ai로 따로 만든다.
+#
+# [선택] --chat-ai: ureka-chat-ai   AI_MODE(=gemini), AI_API_KEY
+#   chat values(environments/kind/ureka-chat*.yaml)가 이 Secret을 optional로 읽는다. 없으면 AI_MODE가 비어 꺼짐(disabled).
+#   키는 개인 Gemini 키를 쓴다(요금·무료 등급 한도는 키 주인 부담, 무료 등급 입력은 Google 개선에 쓰일 수 있어 시험 문장만 넣는다).
+#   키는 표준 입력으로만 받는다: 터미널이면 화면에 보이지 않게 입력, 아니면 파이프(예: pbpaste | ... --chat-ai).
+#   명령 인자·화면·Git에 싣지 않는다. 이미 있으면 덮어쓰지 않는다(바꾸거나 끄려면 지운 뒤 다시, 스크립트 끝의 안내 참고).
 #
 # 값이 지나가는 곳: 이 스크립트의 임시 디렉터리(권한 700, 끝나면 삭제)와 kubectl create 표준 입력뿐이다.
 # 명령 인자(argv)와 화면에는 싣지 않는다. 비밀번호 원문은 DB 서버로 보내지 않는다(SCRAM 해시만 보낸다).
@@ -41,8 +48,11 @@ base_secrets=(postgres-admin db-accounts ureka-auth-secrets ureka-content-secret
 chat_ops_secrets=(db-accounts-chat-ops ureka-chat-secrets ureka-ops-secrets)
 k() { kubectl --context "$ctx" -n "$ns" "$@"; }
 
-if [ $# -ne 0 ]; then
-  echo "사용법: $0   (인자 없음. 값 교체는 클러스터 재생성, 스크립트 주석 참고)" >&2
+chat_ai=0
+if [ $# -eq 1 ] && [ "$1" = --chat-ai ]; then
+  chat_ai=1
+elif [ $# -ne 0 ]; then
+  echo "사용법: $0 [--chat-ai]   (값 교체는 클러스터 재생성, 스크립트 주석 참고)" >&2
   exit 2
 fi
 # 로컬 kind 클러스터에만 쓴다. 다른 클러스터(EKS 등)에 실수로 만들지 않게 막는다.
@@ -65,6 +75,55 @@ exists() { # kubectl get 인자...
 
 exists namespace "$ns" ||
   { echo "네임스페이스 $ns가 없습니다. kubectl apply -f argocd/kind/ureka-dev-namespace.yaml 후 다시 실행하세요" >&2; exit 1; }
+
+umask 077
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# create로 만든다(apply가 아니다). 확인과 생성 사이에 누가 같은 이름을 만들었으면 덮어쓰지 않고 실패한다.
+# 값은 파일 경로로만 넘긴다(--from-file). 값 자체는 argv에 실리지 않는다.
+apply_secret() { # 이름, KEY=파일 ...
+  local name="$1"; shift
+  local args=()
+  for kv in "$@"; do args+=("--from-file=$kv"); done
+  k create secret generic "$name" "${args[@]}" --dry-run=client -o yaml |
+    k label --local -f - app.kubernetes.io/part-of=ureka ureka.io/created-by=create-secrets.sh -o yaml |
+    k create -f - >/dev/null
+  echo "Secret ${name} 생성"
+}
+
+if [ "$chat_ai" = 1 ]; then
+  if exists -n "$ns" secret ureka-chat-ai; then
+    echo "ureka-chat-ai가 이미 있습니다. 아무것도 바꾸지 않았습니다." >&2
+    echo "키를 바꾸려면 kubectl --context $ctx -n $ns delete secret ureka-chat-ai 후 다시 실행하세요." >&2
+    exit 1
+  fi
+  key=""
+  if [ -t 0 ]; then
+    # 터미널: 입력한 글자를 화면에 보이지 않게(-s) 받는다.
+    printf 'Gemini API 키(입력은 화면에 보이지 않음): ' >&2
+    IFS= read -rs key || true
+    echo >&2
+  else
+    IFS= read -r key || true
+  fi
+  # 공백·줄바꿈·따옴표가 섞이면 멈춘다(복사 실수). 키 내용은 오류 메시지에도 싣지 않는다.
+  # (길이는 따로 본다. macOS 정규식은 반복 횟수 255를 넘으면 오류다.)
+  if ! [[ "$key" =~ ^[A-Za-z0-9._-]+$ ]] || [ "${#key}" -lt 20 ] || [ "${#key}" -gt 256 ]; then
+    key=""
+    echo "키 형식이 아닙니다(빈 값이거나 영문·숫자·._- 외 문자, 20~256자 밖). 아무것도 만들지 않았습니다." >&2
+    exit 1
+  fi
+  printf '%s' "$key" >"$work/ai_key"
+  key=""
+  printf 'gemini' >"$work/ai_mode"
+  apply_secret ureka-chat-ai AI_MODE="$work/ai_mode" AI_API_KEY="$work/ai_key"
+  echo "chat Pod는 시작할 때만 env를 읽는다. api·worker를 재시작해야 AI가 켜진다:"
+  echo "  kubectl --context $ctx -n $ns rollout restart deployment/ureka-chat deployment/ureka-chat-worker"
+  echo "끄기: kubectl --context $ctx -n $ns delete secret ureka-chat-ai 후 같은 재시작 명령."
+  echo "완료. 키는 출력하지 않는다."
+  exit 0
+fi
 
 count_existing() { # Secret 이름... → 있는 개수
   local n=0 s
@@ -111,10 +170,6 @@ if [ "$base_n" -eq 0 ]; then
   fi
 fi
 
-umask 077
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-
 rand() { openssl rand -hex 32 | tr -d '\n' >"$work/$1"; }
 # SCRAM-SHA-256 verifier(PostgreSQL rolpassword 형식). 원문은 표준 입력으로만 넘긴다.
 scram() { # 원문 파일, 결과 파일
@@ -149,17 +204,6 @@ else
   read_key ureka-auth-secrets INTERNAL_SERVICE_TOKEN "$work/internal"
 fi
 for v in chat_db ops_db; do rand "$v"; scram "$work/$v" "$work/$v.scram"; done
-
-# create로 만든다(apply가 아니다). 위 확인과 이 사이에 누가 같은 이름을 만들었으면 덮어쓰지 않고 실패한다.
-apply_secret() { # 이름, KEY=파일 ...
-  local name="$1"; shift
-  local args=()
-  for kv in "$@"; do args+=("--from-file=$kv"); done
-  k create secret generic "$name" "${args[@]}" --dry-run=client -o yaml |
-    k label --local -f - app.kubernetes.io/part-of=ureka ureka.io/created-by=create-secrets.sh -o yaml |
-    k create -f - >/dev/null
-  echo "Secret ${name} 생성"
-}
 
 if [ "$mode" = fresh ]; then
   apply_secret postgres-admin POSTGRES_PASSWORD="$work/postgres"

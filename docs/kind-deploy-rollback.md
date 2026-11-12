@@ -5,7 +5,7 @@ kind dev는 Argo CD가 이 저장소 `main`을 보고 자동으로 맞춘다(aut
 | 무엇 | 어디 |
 |---|---|
 | 서비스별 이미지(tag + digest)·설정 | `environments/kind/ureka-<서비스>.yaml` |
-| Application(무엇을 어디에 배포할지) | `argocd/kind/` (recommend·auth·content + 데이터 계층, dev 네임스페이스) |
+| Application(무엇을 어디에 배포할지) | `argocd/kind/` (recommend·auth·content·chat + 데이터 계층, dev 네임스페이스) |
 | DB·Redis·계정 생성 Job, 비밀값 | `environments/kind/data/`, `scripts/kind/create-secrets.sh` ([kind-db-secrets.md](kind-db-secrets.md)) |
 | dev 네임스페이스(Pod Security restricted) | `environments/kind/namespace/dev.yaml` |
 
@@ -27,6 +27,8 @@ kind dev는 Argo CD가 이 저장소 `main`을 보고 자동으로 맞춘다(aut
      tag: sha-<새 커밋>
      digest: sha256:<image-ref.json의 digest>
    ```
+
+   **chat은 두 파일을 같이 바꾼다**: `ureka-chat.yaml`(api·마이그레이션)과 `ureka-chat-worker.yaml`(worker). 둘의 `image`·`env`가 다르면 `check-charts.sh`가 실패한다. Application `ureka-chat-kind` 하나가 둘을 배포하고, 동기화마다 PreSync Job `ureka-chat-migrate`(`alembic upgrade head`)가 먼저 돈다. 마이그레이션이 실패하면 api·worker는 이전 이미지로 남는다(`kubectl -n dev logs job/ureka-chat-migrate`로 원인 확인). 롤백해도 이미 적용된 DB 변경은 되돌리지 않으므로, 되돌릴 이미지가 새 스키마에서 동작하는지 먼저 본다.
 
 4. `scripts/check-charts.sh` 통과 → PR(본문에 CI 실행 링크와 digest) → 승인 1명 → Squash 병합.
 5. Argo CD가 main 변경을 감지해 동기화한다. kind는 GitHub webhook을 받을 수 없어 폴링(기본 3분 주기)만 쓴다. 2026-11-09 확인에서 push 후 반영까지 1분 53초~6분 14초(한 번은 리비전 캐시 때문에 한 주기를 놓쳤다). 시연처럼 바로 봐야 하면 아래 refresh를 친다.

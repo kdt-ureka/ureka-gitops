@@ -66,10 +66,11 @@ kubectl -n dev logs job/db-bootstrap | tail -1   # "db-bootstrap 완료"를 확�
 scripts/kind/sync-ecr-image.sh recommend <ureka-recommend main 커밋 SHA 40자>
 scripts/kind/sync-ecr-image.sh auth <ureka-auth main 커밋 SHA 40자>
 scripts/kind/sync-ecr-image.sh content <ureka-content main 커밋 SHA 40자>
+scripts/kind/sync-ecr-image.sh chat <ureka-chat main 커밋 SHA 40자>
 kubectl apply -f argocd/kind/
 ```
 
-Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, DB 계정 생성 Job), recommend(MOCK_MODE), auth, content. chat·ops는 DB·계정·Secret까지 준비돼 있고 앱 배포는 다음 PR. 이미 있는 kind 클러스터는 `create-secrets.sh`를 한 번 더 실행하면 chat·ops Secret만 추가된다. 비밀값 교체는 클러스터를 새로 만든다. DB 계정 구조·비밀값 방식·데이터 보존은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
+Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, DB 계정 생성 Job), recommend(MOCK_MODE), auth, content, chat(api·worker·Alembic 마이그레이션 Job, AI 기본 꺼짐 — 켜기는 [docs/kind-db-secrets.md](docs/kind-db-secrets.md) "chat AI 켜기"). 이미 있는 kind 클러스터는 `create-secrets.sh`를 한 번 더 실행하면 chat·ops Secret만 추가된다. 비밀값 교체는 클러스터를 새로 만든다. DB 계정 구조·비밀값 방식·데이터 보존은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
 
 출력된 digest는 해당 CI 실행의 artifact `image-ref.json` digest와 같아야 한다. 이후 배포·롤백은 [docs/kind-deploy-rollback.md](docs/kind-deploy-rollback.md).
 

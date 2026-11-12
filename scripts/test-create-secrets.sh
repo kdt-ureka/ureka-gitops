@@ -5,6 +5,8 @@
 # - 모두 없을 때만 9개(기본 6 + chat·ops 3)를 create로 만든다(apply 아님).
 # - 기본 6개가 있고 chat·ops 3개가 없으면 3개만 추가한다. 이때 JWT 공개키·내부 토큰은 ureka-auth-secrets 값을 그대로 쓴다.
 # - 각 Secret의 키 목록이 정해진 그대로다(chat·ops에 JWT 개인키·AI 키가 들어가지 않는다).
+# - --chat-ai: 표준 입력의 키로 ureka-chat-ai(AI_MODE=gemini, AI_API_KEY) 하나만 만든다. 키는 argv·출력에 나오지 않는다.
+#   이미 있음·빈 값·형식 아님·조회 오류면 만들지 않는다.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -22,6 +24,7 @@ cat >"$fake/kubectl" <<'SH'
 mode="${FAKE_MODE:-}"
 log="${FAKE_LOG:?}"
 args=" $* "
+echo "ARGV $*" >>"$log"
 nf() { echo "Error from server (NotFound): $1 \"$2\" not found" >&2; exit 1; }
 forbid() { echo "Error from server (Forbidden): $1 \"$2\" is forbidden: User cannot get resource" >&2; exit 1; }
 arg_after() { # 단어 → 그 다음 인자
@@ -74,7 +77,7 @@ case "$args" in
   *" create -f - "*)
     cat >/dev/null
     # 확인과 생성 사이에 누가 같은 이름을 만든 경우: 세 번째 create에서 AlreadyExists
-    if [ "$mode" = already_exists_on_create ] && [ "$(grep -c '^CREATE' "$log")" -eq 2 ]; then
+    if { [ "$mode" = already_exists_on_create ] && [ "$(grep -c '^CREATE' "$log")" -eq 2 ]; } || [ "$mode" = already_exists_on_create_first ]; then
       echo 'Error from server (AlreadyExists): secrets "x" already exists' >&2; exit 1
     fi
     echo CREATE >>"$log"; exit 0 ;;
@@ -154,6 +157,54 @@ check "conn_refused"                 conn_refused "" nonzero 0 || true
 # 중간 실패: 앞의 2개는 남고 스크립트는 실패로 끝난다(덮어쓰지 않음). 다음 실행은 '일부만 있음'으로 멈춘다.
 check "already_exists_on_create"     already_exists_on_create "" nonzero 2 || true
 check "already_exists_on_create(추가)" already_exists_on_create "$BASE" nonzero 2 || true
+
+# --chat-ai (선택 AI 키). 키는 표준 입력으로만 들어간다.
+export FAKE_AI_KEY="AIzaFake$(openssl rand -hex 16)"
+check_ai() { # 이름, 모드, 이미 있는 Secret, 표준 입력 내용, 기대 종료, 기대 create 수
+  local name="$1" input="$4" want_rc="$5" want_creates="$6"
+  : >"$fake/log"
+  rc=0
+  printf '%s' "$input" | FAKE_MODE="$2" FAKE_EXISTING="$3" FAKE_LOG="$fake/log" PATH="$fake:$PATH" \
+    bash scripts/kind/create-secrets.sh --chat-ai >"$fake/out" 2>&1 || rc=$?
+  creates="$(grep -c '^CREATE' "$fake/log" || true)"
+  if grep -q APPLY "$fake/log"; then echo "FAIL ${name}: apply를 썼다"; status=1; return 1; fi
+  if grep -qF -e "$FAKE_AI_KEY" "$fake/out"; then echo "FAIL ${name}: 키가 출력에 나왔다"; status=1; return 1; fi
+  if grep '^ARGV' "$fake/log" | grep -qF -e "$FAKE_AI_KEY"; then echo "FAIL ${name}: 키가 kubectl 인자에 실렸다"; status=1; return 1; fi
+  if { [ "$want_rc" = 0 ] && [ "$rc" -ne 0 ]; } || { [ "$want_rc" = nonzero ] && [ "$rc" -eq 0 ]; } || [ "$creates" -ne "$want_creates" ]; then
+    echo "FAIL ${name}: 종료 ${rc}(기대 ${want_rc}), create ${creates}개(기대 ${want_creates})"; tail -3 "$fake/out"; status=1; return 1
+  fi
+  echo "ok   ${name}: 종료 ${rc}, create ${creates}개"
+}
+if check_ai "chat-ai: 새로 만들기" "" "$BASE $CHAT_OPS" "$FAKE_AI_KEY" 0 1; then
+  expect_eq "  만든 것" "$(sed -n 's/^GEN \([^ ]*\).*/\1/p' "$fake/log")" ureka-chat-ai
+  expect_keys ureka-chat-ai "AI_MODE AI_API_KEY"
+  expect_eq "  AI_MODE = gemini" "$(key_sha ureka-chat-ai AI_MODE)" "$(str_sha gemini)"
+  expect_eq "  AI_API_KEY = 입력값(줄바꿈 없음)" "$(key_sha ureka-chat-ai AI_API_KEY)" "$(str_sha "$FAKE_AI_KEY")"
+  expect_eq "  기존 값 읽지 않음" "$(grep -c '^READ' "$fake/log" || true)" 0
+fi
+if check_ai "chat-ai: 끝에 줄바꿈" "" "" "$FAKE_AI_KEY"$'\n' 0 1; then
+  expect_eq "  AI_API_KEY = 줄바꿈 뺀 값" "$(key_sha ureka-chat-ai AI_API_KEY)" "$(str_sha "$FAKE_AI_KEY")"
+fi
+check_ai "chat-ai: 이미 있음"        ""  "ureka-chat-ai" "$FAKE_AI_KEY" nonzero 0 || true
+check_ai "chat-ai: 빈 입력"          ""  "" "" nonzero 0 || true
+check_ai "chat-ai: 공백 섞임"        ""  "" "AIza fake key with spaces 123" nonzero 0 || true
+check_ai "chat-ai: 따옴표 섞임"      ""  "" "\"${FAKE_AI_KEY}\"" nonzero 0 || true
+check_ai "chat-ai: 너무 짧음"        ""  "" "AIzaShort" nonzero 0 || true
+check_ai "chat-ai: 너무 긺(257자)"   ""  "" "$(printf 'a%.0s' $(seq 257))" nonzero 0 || true
+check_ai "chat-ai: 두 줄"            ""  "" "${FAKE_AI_KEY}"$'\n'"second" 0 1 || true
+check_ai "chat-ai: secret_forbidden" secret_forbidden "" "$FAKE_AI_KEY" nonzero 0 || true
+check_ai "chat-ai: ns_forbidden"     ns_forbidden "" "$FAKE_AI_KEY" nonzero 0 || true
+check_ai "chat-ai: 생성 중 AlreadyExists" already_exists_on_create_first "" "$FAKE_AI_KEY" nonzero 0 || true
+
+: >"$fake/log"
+rc=0; FAKE_LOG="$fake/log" PATH="$fake:$PATH" bash scripts/kind/create-secrets.sh --unknown </dev/null >/dev/null 2>&1 || rc=$?
+expect_eq "알 수 없는 인자 → 종료 2, 호출 없음" "${rc}:$(grep -c '^ARGV' "$fake/log" || true)" "2:0"
+: >"$fake/log"
+if printf '%s' "$FAKE_AI_KEY" | KUBE_CONTEXT=arn:aws:eks:example FAKE_LOG="$fake/log" PATH="$fake:$PATH" bash scripts/kind/create-secrets.sh --chat-ai >/dev/null 2>&1; then
+  echo "FAIL non-kind context(--chat-ai): 실행됐다"; status=1
+else
+  echo "ok   non-kind context(--chat-ai): 거부"
+fi
 
 : >"$fake/log"
 if KUBE_CONTEXT=arn:aws:eks:example FAKE_LOG="$fake/log" PATH="$fake:$PATH" bash scripts/kind/create-secrets.sh </dev/null >/dev/null 2>&1; then

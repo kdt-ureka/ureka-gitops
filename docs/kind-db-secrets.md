@@ -66,7 +66,25 @@ scripts/kind/p11-check.sh                                # V14가 content main �
 
 - 변수 이름은 각 저장소 `.env.example`과 ureka-local compose 기준이다. chat은 `DATABASE_URL` 한 줄로 받으므로 values에서 `$(DB_PASSWORD)` 참조로 조립한다(비밀번호는 16진수라 URL 인코딩이 필요 없다. `DB_PASSWORD`를 env 목록에서 `DATABASE_URL`보다 **앞에** 둬야 치환된다).
 - `JWT_PUBLIC_KEY`·`INTERNAL_SERVICE_TOKEN`은 모든 서비스가 같은 값이다(auth가 서명한 토큰을 각 서비스가 검증, 내부 호출 토큰 공유). JWT 개인키는 auth만 받는다. ops는 내부 토큰을 받지 않는다(`.env.example`에 없음).
-- AI 키(`AI_API_KEY`)는 넣지 않는다. kind는 AI를 끈다(chat `AI_MODE` 기본값 `disabled`).
+- AI 키(`AI_API_KEY`)는 위 9개에 넣지 않는다. kind chat AI는 기본 꺼짐(chat `AI_MODE` 기본값 `disabled`)이고, 켜려는 사람만 아래 선택 Secret을 만든다.
+
+**(선택) chat AI 켜기 — `ureka-chat-ai`**
+
+| Secret | 키 | 쓰는 곳 |
+|---|---|---|
+| `ureka-chat-ai` | `AI_MODE`(`gemini`), `AI_API_KEY` | chat api·worker·마이그레이션 Job(`optional: true`로 읽음) |
+
+```bash
+scripts/kind/create-secrets.sh --chat-ai        # 터미널: 키를 화면에 보이지 않게 입력
+pbpaste | scripts/kind/create-secrets.sh --chat-ai   # 또는 클립보드에서 파이프
+kubectl -n dev rollout restart deployment/ureka-chat deployment/ureka-chat-worker   # env는 Pod 시작 때만 읽힌다
+```
+
+- **켜고 끄는 스위치가 Secret 자체다.** chat values는 `AI_MODE`·`AI_API_KEY`를 이 Secret에서 `optional: true`로 읽고, `AI_MODE`를 값으로 쓰지 않는다. Secret이 없으면 두 env가 아예 생기지 않아 앱 기본값(꺼짐)으로 돈다. 그래서 키가 없는 팀원 kind는 그대로 동작한다. 모델 이름(`AI_*_MODEL`)·`AI_MAX_ATTEMPTS`는 비밀값이 아니라 values에 둔다.
+- 키는 표준 입력으로만 받는다(터미널이면 `read -s`). 셸 내장 `printf`로 임시 디렉터리(umask 077) 파일에 쓰고 `kubectl create --from-file`로 넘긴다. 명령 인자·화면·Git에 싣지 않는다(gitops는 PUBLIC). 영문·숫자·`._-` 20~256자가 아니면(빈 값·공백·따옴표 섞임) 아무것도 만들지 않는다. 오류 메시지에도 키를 싣지 않는다.
+- 이미 있으면 덮어쓰지 않는다. 키를 바꾸거나 AI를 끄려면 `kubectl -n dev delete secret ureka-chat-ai` 후 다시 만들거나(끄기는 지우기만) 위 재시작 명령. 이 Secret은 DB와 묶여 있지 않아 지우고 다시 만들어도 된다.
+- 키는 **개인 Gemini 키**를 쓴다. 요금·무료 등급 한도는 키 주인 부담(팀 예산과 별개)이고, 무료 등급 입력은 Google 제품 개선에 쓰일 수 있어 **시험 문장만** 넣는다. 범위는 chat 해석·답변·페르소나(api·worker 둘 다 Gemini 호출)이고 recommend는 mock 그대로다. 공유 환경·EKS는 팀 키를 Secrets Manager → ESO로 넣는다.
+- 회귀 시험(`scripts/test-create-secrets.sh`): 새로 만들기(키 목록·`AI_MODE=gemini`·입력값 일치·끝 줄바꿈 제거), 이미 있음·빈 입력·공백·따옴표·너무 짧음/긺·Forbidden·생성 중 AlreadyExists는 만들지 않음, 모든 경우 키가 출력·kubectl 인자에 없음, kind가 아닌 컨텍스트 거부.
 
 **기존 클러스터에 chat·ops Secret 추가하기**
 
