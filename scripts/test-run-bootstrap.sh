@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # environments/kind/data/run-bootstrap.sh 회귀 시험. 클러스터 없이 가짜 pg_isready·psql로 돈다(CI Helm 워크플로와 로컬).
-# - 정상 verifier 4개: 종료 0, psql 1회.
+# - 정상 verifier 6개(auth·content 4 + chat·ops 2): 종료 0, psql 1회.
 # - 한 변수만 잘못 바꾼 경우: 종료 0이 아니고 pg_isready·psql 호출 0회, 출력에 값이 나오지 않음.
+# - 6개 변수 각각이 없거나 비었거나 원문일 때도 같다(새 변수가 검사 목록에서 빠지지 않게).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -38,6 +39,7 @@ run() { # 이름, CONTENT_DB_RECOMMEND_SCRAM 값 → 종료 코드를 rc에, 호
   rc=0
   env -i PATH="$work/bin:/usr/bin:/bin" FAKE_LOG="$work/log" BOOTSTRAP_DIR="$work/bootstrap" \
     AUTH_DB_APP_SCRAM="$good2" CONTENT_DB_APP_SCRAM="$good2" CONTENT_DB_INGEST_SCRAM="$good2" \
+    CHAT_DB_APP_SCRAM="$good2" OPS_DB_APP_SCRAM="$good2" \
     CONTENT_DB_RECOMMEND_SCRAM="$2" \
     sh environments/kind/data/run-bootstrap.sh >"$work/out" 2>&1 || rc=$?
   calls="$(wc -l <"$work/log" | tr -d ' ')"
@@ -85,6 +87,39 @@ for c in "${bad_cases[@]}"; do
     echo "ok   ${name}: 종료 ${rc}, DB 호출 0회"
   else
     echo "FAIL ${name}: 종료 ${rc}, DB 호출 ${calls}회"; status=1
+  fi
+done
+
+# 변수마다: 없음(unset)·빈 값·원문. 다른 5개는 정상.
+vars=(AUTH_DB_APP_SCRAM CONTENT_DB_APP_SCRAM CONTENT_DB_RECOMMEND_SCRAM CONTENT_DB_INGEST_SCRAM CHAT_DB_APP_SCRAM OPS_DB_APP_SCRAM)
+for v in "${vars[@]}"; do
+  for kind in unset empty plaintext; do
+    case "$kind" in
+      unset) extra=(-u "$v") ;;
+      empty) extra=("$v=") ;;
+      plaintext) extra=("$v=$plain") ;;
+    esac
+    # run의 3번째 인자부터는 env에 그대로 붙는다(-u는 env 옵션이라 앞에 둔다).
+    : >"$work/log"; rc=0
+    env -i PATH="$work/bin:/usr/bin:/bin" FAKE_LOG="$work/log" BOOTSTRAP_DIR="$work/bootstrap" \
+      AUTH_DB_APP_SCRAM="$good2" CONTENT_DB_APP_SCRAM="$good2" CONTENT_DB_INGEST_SCRAM="$good2" \
+      CHAT_DB_APP_SCRAM="$good2" OPS_DB_APP_SCRAM="$good2" CONTENT_DB_RECOMMEND_SCRAM="$good" \
+      env "${extra[@]}" sh environments/kind/data/run-bootstrap.sh >"$work/out" 2>&1 || rc=$?
+    calls="$(wc -l <"$work/log" | tr -d ' ')"
+    if [ "$rc" -ne 0 ] && [ "$calls" -eq 0 ] && ! grep -qF "$plain" "$work/out" && grep -q "^$v:" "$work/out"; then
+      echo "ok   ${v} ${kind}: 종료 ${rc}, DB 호출 0회"
+    else
+      echo "FAIL ${v} ${kind}: 종료 ${rc}, DB 호출 ${calls}회"; status=1
+    fi
+  done
+done
+
+# SQL이 6개 해시를 모두 읽는지(변수 이름 오타로 빈 값이 들어가지 않게)
+for v in "${vars[@]}"; do
+  if grep -Eq "^[\\]getenv [a-z_]+ ${v}\$" environments/kind/data/db-bootstrap.sql; then
+    echo "ok   db-bootstrap.sql이 ${v}를 읽음"
+  else
+    echo "FAIL db-bootstrap.sql에 \\getenv ... ${v}가 없음"; status=1
   fi
 done
 exit "$status"

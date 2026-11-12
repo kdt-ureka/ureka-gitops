@@ -1,0 +1,23 @@
+# 차트 선택 칸 시험용(배포에 쓰지 않음): Service 없이 헬스 체크를 직접 지정
+name: ureka-example-worker
+image:
+  repository: localhost:5001/ureka/example
+  tag: sha-0000000000000000000000000000000000000000
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+command: ["python", "-m", "app.worker"]
+service:
+  enabled: false
+probes:
+  startup:
+    exec:
+      command: ["python", "-c", "import sys; sys.exit(0)"]
+    periodSeconds: 5
+    failureThreshold: 12
+  liveness:
+    exec:
+      command: ["python", "-c", "import sys; sys.exit(0)"]
+    periodSeconds: 30
+  readiness:
+    exec:
+      command: ["python", "-c", "import sys; sys.exit(0)"]
+    periodSeconds: 30

@@ -9,7 +9,7 @@ Ureka AWS·EKS 인프라 및 Argo CD 배포 설정
 | 경로 | 내용 |
 |---|---|
 | `infra/` | AWS 인프라 Terraform (ECR, GitHub OIDC 게시 Role) |
-| `charts/ureka-backend/` | 백엔드 공통 Helm chart (Deployment, Service). Java·Python 서비스 공용 |
+| `charts/ureka-backend/` | 백엔드 공통 Helm chart (Deployment, Service, 선택: 실행 명령·Service 끄기·헬스 체크 변경·마이그레이션 Job). Java·Python 서비스 공용. 선택 칸은 `values.yaml` 주석 |
 | `environments/kind/` | kind(로컬) dev values. 서비스마다 파일 하나 + `namespace/` |
 | `argocd/kind/` | kind dev용 Argo CD Application (main 자동 동기화) |
 | `kind/`, `scripts/kind/` | kind 클러스터·로컬 레지스트리 준비, ECR 이미지 복사 |
@@ -69,7 +69,7 @@ scripts/kind/sync-ecr-image.sh content <ureka-content main 커밋 SHA 40자>
 kubectl apply -f argocd/kind/
 ```
 
-Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, DB 계정 생성 Job), recommend(MOCK_MODE), auth, content. chat·ops는 다음 PR. 비밀값 교체는 클러스터를 새로 만든다. DB 계정 구조·비밀값 방식·데이터 보존은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
+Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, DB 계정 생성 Job), recommend(MOCK_MODE), auth, content. chat·ops는 DB·계정·Secret까지 준비돼 있고 앱 배포는 다음 PR. 이미 있는 kind 클러스터는 `create-secrets.sh`를 한 번 더 실행하면 chat·ops Secret만 추가된다. 비밀값 교체는 클러스터를 새로 만든다. DB 계정 구조·비밀값 방식·데이터 보존은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
 
 출력된 digest는 해당 CI 실행의 artifact `image-ref.json` digest와 같아야 한다. 이후 배포·롤백은 [docs/kind-deploy-rollback.md](docs/kind-deploy-rollback.md).
 
@@ -77,6 +77,7 @@ Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, D
 
 ```bash
 scripts/check-charts.sh          # helm lint + 렌더링 + data kustomize 렌더링 + 이미지 digest 고정 확인 (CI Helm 워크플로와 같음)
+scripts/test-chart-options.sh    # chart 선택 칸(command·Service 끄기·헬스 체크·마이그레이션 Job) 렌더링과 잘못된 조합 거부(클러스터 불필요, CI와 같음)
 scripts/test-p11-check.sh        # P11 러너가 실행 실패를 성공으로 세지 않는지(클러스터 불필요, CI와 같음)
 scripts/test-create-secrets.sh   # Secret 스크립트가 덮어쓰지 않고 조회 오류에서 멈추는지(클러스터 불필요, CI와 같음)
 scripts/test-run-bootstrap.sh    # 계정 생성 Job이 잘못된 verifier에서 DB를 부르지 않는지(클러스터 불필요, CI와 같음)

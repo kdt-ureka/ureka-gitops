@@ -12,15 +12,29 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 
+# 실행 명령. 비워 두면 이미지의 ENTRYPOINT·CMD를 그대로 쓴다.
+# 같은 이미지로 다른 프로그램을 띄울 때만 준다 (예: chat worker → command: [python, -m, app.worker]).
+command: []
+args: []
+
 containerPort: 8080
 
 service:
+  # false면 Service와 컨테이너 포트(http)를 만들지 않는다. 요청을 받지 않는 프로그램(worker)용.
+  # 이때 기본 HTTP 헬스 체크는 쓸 수 없다. probes.enabled=false로 끄거나 probes.startup·liveness·readiness를 직접 준다.
+  enabled: true
   port: 80
 
 # 모든 백엔드가 같은 경로를 쓴다 (/healthz: 앱이 살아 있는지, /readyz: 요청을 받을 준비가 됐는지)
 probes:
+  # false면 startup·liveness·readiness 헬스 체크를 모두 넣지 않는다.
+  enabled: true
   livenessPath: /healthz
   readinessPath: /readyz
+  # 값을 주면 해당 헬스 체크를 기본 HTTP 대신 이 내용 그대로 쓴다 (Kubernetes probe 형식, 예: exec·tcpSocket).
+  startup: {}
+  liveness: {}
+  readiness: {}
 
 resources:
   requests:
@@ -32,3 +46,19 @@ resources:
 
 # 비밀값이 아닌 환경 변수만 둔다. 비밀값은 S6 이후 ESO(Secrets Manager)로 넣는다.
 env: []
+
+# DB 마이그레이션 Job (Argo CD PreSync 훅). Deployment와 같은 이미지·env·보안 설정에 실행 명령만 다르다.
+# 앱이 기동할 때 스스로 마이그레이션하는 서비스(Flyway: auth·content·ops)는 쓰지 않는다.
+migration:
+  enabled: false
+  # enabled=true이면 필수 (예: chat → [python, -m, alembic, upgrade, head])
+  command: []
+  args: []
+  # Job 안에서의 재시도 횟수(Pod를 다시 만드는 횟수). 기본 0: 한 번 실패하면 이번 동기화를 실패로 끝낸다.
+  # Argo CD Application의 sync 재시도(syncPolicy.retry)와는 별개다. Application에 retry가 있으면 Argo가 동기화를 다시 시도하면서
+  # 이 Job을 새로 만들어 마이그레이션이 다시 돈다(이전 Job과 로그는 그때 지워진다). 마이그레이션은 다시 실행해도 안전해야 한다.
+  # 실패하면 같은 Application의 Deployment 갱신은 진행되지 않지만, 이미 바뀐 DB는 자동으로 되돌리지 않는다.
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  # 비워 두면 위 resources를 쓴다.
+  resources: {}

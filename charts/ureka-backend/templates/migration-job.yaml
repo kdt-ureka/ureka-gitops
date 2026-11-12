@@ -1,0 +1,54 @@
+{{- if .Values.migration.enabled }}
+{{- /*
+DB 마이그레이션 Job. Argo CD가 동기화할 때 Deployment보다 먼저(PreSync) 한 번 돌리고, 성공해야 Deployment를 바꾼다.
+실패하면 동기화가 멈추고 기존 Deployment는 그대로 남는다. 이미지·env·보안 설정은 Deployment와 같고 실행 명령만 다르다.
+Pod 라벨의 app.kubernetes.io/name은 <name>-migrate로 다르게 둔다(Service selector에 잡혀 요청을 받지 않게).
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ureka-backend.name" . }}-migrate
+  labels:
+    {{- include "ureka-backend.migrationLabels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    # 다음 동기화 때 이전 Job을 지우고 새로 만든다. 그때까지 끝난 Job과 로그가 남는다(kubectl -n <ns> logs job/<name>-migrate).
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "ureka-backend.migrationLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "ureka-backend.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "ureka-backend.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.migration.command | nindent 12 }}
+          {{- with .Values.migration.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- include "ureka-backend.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml (.Values.migration.resources | default .Values.resources) | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+{{- end }}

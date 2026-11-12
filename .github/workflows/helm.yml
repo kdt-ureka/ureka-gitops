@@ -28,11 +28,14 @@ jobs:
       - name: Lint and render each environment values file and data kustomization
         # Helm·kubectl(kustomize 내장)은 GitHub 호스트 러너 이미지에 기본 포함돼 있다.
         run: bash scripts/check-charts.sh
+      - name: Chart optional fields render as intended
+        # command/args, Service·포트 끄기, 헬스 체크 끄기·직접 지정, 마이그레이션 Job(PreSync)과 잘못된 조합 거부. yq는 러너 기본 포함.
+        run: bash scripts/test-chart-options.sh
       - name: P11 runner refuses runs where SQL did not execute
         # 가짜 kubectl: 정상 흉내는 성공, 한 가지씩 바꾼 실패 14가지는 모두 실패여야 한다(클러스터 불필요).
         run: bash scripts/test-p11-check.sh
       - name: create-secrets.sh never overwrites and stops on non-NotFound errors
-        # 가짜 kubectl로 Forbidden·연결 실패·일부 존재·볼륨만 남음에서 Secret을 하나도 만들지 않는지 본다.
+        # 가짜 kubectl로 Forbidden·연결 실패·일부 존재·볼륨만 남음에서 Secret을 하나도 만들지 않는지, chat·ops 추가 경로가 auth 값을 복사하는지 본다.
         run: bash scripts/test-create-secrets.sh
       - name: db-bootstrap Job checks the verifier before any DB call
         # 정상 verifier는 psql까지 가고, 줄바꿈·원문·잘못된 salt·키·반복 수는 DB 호출 0회로 실패해야 한다. sh = dash(러너 기본).

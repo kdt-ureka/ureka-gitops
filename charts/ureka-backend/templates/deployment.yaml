@@ -1,3 +1,4 @@
+{{- include "ureka-backend.validate" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,46 +18,63 @@ spec:
       # 앱이 Kubernetes API를 부르지 않으므로 서비스 계정 토큰을 넣지 않는다.
       automountServiceAccountToken: false
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
-        runAsGroup: 10001
-        seccompProfile:
-          type: RuntimeDefault
+        {{- include "ureka-backend.podSecurityContext" . | nindent 8 }}
       containers:
         - name: app
           image: {{ include "ureka-backend.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.service.enabled }}
           ports:
             - name: http
               containerPort: {{ .Values.containerPort }}
+          {{- end }}
           {{- with .Values.env }}
           env:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
+            {{- include "ureka-backend.containerSecurityContext" . | nindent 12 }}
+          {{- if .Values.probes.enabled }}
           # 기동이 끝날 때까지 liveness를 미룬다 (JVM 기동이 느려도 재시작되지 않게).
           startupProbe:
+            {{- if .Values.probes.startup }}
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+            {{- else }}
             httpGet:
               path: {{ .Values.probes.livenessPath }}
               port: http
             periodSeconds: 2
             failureThreshold: 60
+            {{- end }}
           livenessProbe:
+            {{- if .Values.probes.liveness }}
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+            {{- else }}
             httpGet:
               path: {{ .Values.probes.livenessPath }}
               port: http
             periodSeconds: 10
             failureThreshold: 3
+            {{- end }}
           readinessProbe:
+            {{- if .Values.probes.readiness }}
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+            {{- else }}
             httpGet:
               path: {{ .Values.probes.readinessPath }}
               port: http
             periodSeconds: 5
             failureThreshold: 3
+            {{- end }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
