@@ -197,6 +197,10 @@ check_ai "chat-ai: 너무 짧음"        ""  "" "AIzaShort" nonzero 0 || true
 check_ai "chat-ai: 너무 긺(257자)"   ""  "" "$(printf 'a%.0s' $(seq 257))" nonzero 0 || true
 check_ai "chat-ai: 두 줄"            ""  "" "${FAKE_AI_KEY}"$'\n'"second" nonzero 0 || true
 check_ai "chat-ai: CRLF"             ""  "" "${FAKE_AI_KEY}"$'\r\n' nonzero 0 || true
+# 끝에 붙은 빈 줄은 명령 치환이 모두 지우므로 받는다(내용 있는 두 번째 줄만 거부).
+if check_ai "chat-ai: 끝 빈 줄 여러 개" "" "" "${FAKE_AI_KEY}"$'\n\n\n' 0 1; then
+  expect_eq "  AI_API_KEY = 끝 줄바꿈 뺀 값" "$(key_sha ureka-chat-ai AI_API_KEY)" "$(str_sha "$FAKE_AI_KEY")"
+fi
 check_ai "chat-ai: secret_forbidden" secret_forbidden "" "$FAKE_AI_KEY" nonzero 0 || true
 check_ai "chat-ai: ns_forbidden"     ns_forbidden "" "$FAKE_AI_KEY" nonzero 0 || true
 check_ai "chat-ai: 생성 중 AlreadyExists" already_exists_on_create_first "" "$FAKE_AI_KEY" nonzero 0 || true
