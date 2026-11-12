@@ -4,15 +4,12 @@
 # DB는 environments/kind/data(chat_db, 소유자 chat_db_app), 비밀값은 scripts/kind/create-secrets.sh가 만든 Secret.
 # env를 바꾸면 ureka-chat-worker.yaml에도 같이 바꾼다(api·worker·마이그레이션이 같은 설정을 쓴다).
 name: ureka-chat
-
 replicaCount: 1
-
 image:
   repository: localhost:5001/ureka/chat
   tag: sha-8cffeee34f0f50e18baeeed5523c3822f85c45ed
   digest: sha256:7ca4f9815798950e2c384dc43b331d97de2c4317d4b0f76dce8e4716689fbfca
   pullPolicy: IfNotPresent
-
 # api는 이미지 기본 명령(uvicorn app.main:app, 8080)을 쓴다. command를 비운다.
 
 # 이름은 ureka-chat .env.example·docs/deployment-handoff.md, ureka-local compose 기준.
@@ -67,9 +64,8 @@ env:
   - name: AI_PERSONA_MODEL
     value: gemini-3.1-flash-lite
   - name: AI_MAX_ATTEMPTS
-    value: "3"
-
+    value: "2"
 # 마이그레이션 Job(Argo CD PreSync 훅 ureka-chat-migrate). api values에만 둔다(worker에는 두지 않는다).
 migration:
   enabled: true
-  command: ["python", "-m", "alembic", "upgrade", "head"]
+  command: ["python", "-m", "alembic", "upgrade", "no_such_revision"]
