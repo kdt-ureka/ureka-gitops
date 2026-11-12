@@ -1,0 +1,37 @@
+# kind dev용 Argo CD Application: metrics-server (kubectl top node/pod, 나중에 HPA가 쓰는 Metrics API).
+# 공식 Helm 차트(kubernetes-sigs) 버전과 이미지 digest를 고정한다. 바꿀 때는 이 파일 PR로 한다.
+# kind 전용: kind 노드의 kubelet 인증서는 노드 IP가 SAN에 없어 검증하지 못하므로 --kubelet-insecure-tls를 켠다.
+#   이 PC 안의 kind에서만 쓴다. EKS에서는 쓰지 않는다(EKS는 애드온 등으로 따로 정한다).
+# 메트릭은 메모리에 최근 값만 두고 저장하지 않는다(기록·그래프는 관측 스택 몫).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metrics-server-kind
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://kubernetes-sigs.github.io/metrics-server/
+    chart: metrics-server
+    targetRevision: 3.14.0
+    helm:
+      releaseName: metrics-server
+      valuesObject:
+        image:
+          # 차트 3.14.0 기본(appVersion 0.9.0)과 같은 버전을 digest로 고정
+          tag: v0.9.0@sha256:d9862115e7c7881280d3d75ca26bda8ffc0fc213315979575bf23ce9826205c0
+        args:
+          - --kubelet-insecure-tls
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
