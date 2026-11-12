@@ -8,10 +8,12 @@ kind dev에 PostgreSQL 18 + pgvector, Redis, 비밀값 Secret을 붙이고 auth�
 |---|---|---|
 | PostgreSQL 18 + pgvector 0.8.7 (StatefulSet, PVC 2Gi) | `environments/kind/data/postgres.yaml` | `ureka-dev-data-kind` |
 | Redis 8.8 (저장 안 함) | `environments/kind/data/redis.yaml` | 〃 |
+| 메일 서버 Mailpit (가입 인증 메일 받기만, 저장 안 함) | `environments/kind/data/mailpit.yaml` | 〃 |
 | DB·계정 생성 Job (PostSync, 멱등) | `environments/kind/data/db-bootstrap-job.yaml` + `db-bootstrap.sql` | 〃 |
 | auth (auth_db) | `environments/kind/ureka-auth.yaml` | `ureka-auth-kind` |
 | content (content_db) | `environments/kind/ureka-content.yaml` | `ureka-content-kind` |
-| chat_db·ops_db와 계정 (앱은 아직 없음) | 같은 `db-bootstrap.sql` | 〃 |
+| ops (ops_db, Flyway가 기동 때 `ops` 스키마 생성) | `environments/kind/ureka-ops.yaml` | `ureka-ops-kind` |
+| chat_db·ops_db와 계정 (앱은 `ureka-chat-kind`·`ureka-ops-kind`) | 같은 `db-bootstrap.sql` | 〃 |
 | 비밀값 Secret 9개 (기본 6 + chat·ops 3, 3장 목록) | Git에 없음. `scripts/kind/create-secrets.sh` | (Argo CD가 관리하지 않음) |
 
 이미지는 모두 digest로 고정한다(`scripts/check-charts.sh`가 chart와 kustomize 양쪽을 검사). PSA restricted 그대로(비root uid 999, 읽기 전용 루트 FS, capability 제거, seccomp).
@@ -245,5 +247,5 @@ content 이미지를 `sha-e58615b`(digest `sha256:80d5a390…ef2f69` = CI `image
 - ingest Job/CronJob이 `ureka-ingest-db`를 쓰도록 연결.
 - **Redis 접근 제한**: 앱 설정에 Redis 비밀번호 항목이 없고, ClusterIP는 Pod 간 접근을 막지 않는다. 개인 kind는 후속으로 두지만, **공유 데모 환경에서는 auth 상태가 담긴 Redis에 허가된 워크로드만 닿게** NetworkPolicy·인증을 먼저 둔다.
 - **auth 메모리**: 2026-11-10 kind에서 auth Pod가 한 번 OOMKilled(종료 코드 137, chart 기본 limit 512Mi)로 재시작했다. 다시 뜬 뒤 Ready. JVM 힙·비힙 사용량을 재고 auth values의 `resources`(또는 `JAVA_TOOL_OPTIONS`)를 정한다. 근거 없이 limit만 올리지 않는다.
-- auth 메일: kind에 메일 서버가 없다(Mailpit 추가 여부). 가입 인증 메일만 실패하고 기동·`/readyz`와는 무관.
+- auth 메일: kind는 Mailpit(`mailpit:1025`)이 받기만 한다. 메일 화면(8025)은 Pod 안 127.0.0.1에만 열려 port-forward로만 본다(Service·Ingress 없음). 운영 메일 발송 서비스는 따로 정한다.
 - Flyway가 PostgreSQL 18을 정식 지원하는 버전으로 올리기(앱 의존성).

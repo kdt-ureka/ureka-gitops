@@ -5,7 +5,7 @@ kind dev는 Argo CD가 이 저장소 `main`을 보고 자동으로 맞춘다(aut
 | 무엇 | 어디 |
 |---|---|
 | 서비스별 이미지(tag + digest)·설정 | `environments/kind/ureka-<서비스>.yaml` |
-| Application(무엇을 어디에 배포할지) | `argocd/kind/` (recommend·auth·content·chat + 데이터 계층, dev 네임스페이스) |
+| Application(무엇을 어디에 배포할지) | `argocd/kind/` (recommend·auth·content·ops·chat + 데이터 계층, dev 네임스페이스) |
 | DB·Redis·계정 생성 Job, 비밀값 | `environments/kind/data/`, `scripts/kind/create-secrets.sh` ([kind-db-secrets.md](kind-db-secrets.md)) |
 | dev 네임스페이스(Pod Security restricted) | `environments/kind/namespace/dev.yaml` |
 
