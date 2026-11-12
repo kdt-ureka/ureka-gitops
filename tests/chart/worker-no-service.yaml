@@ -1,0 +1,11 @@
+# 차트 선택 칸 시험용(배포에 쓰지 않음): 요청을 받지 않는 worker (Service·포트·헬스 체크 없음)
+name: ureka-example-worker
+image:
+  repository: localhost:5001/ureka/example
+  tag: sha-0000000000000000000000000000000000000000
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+command: ["python", "-m", "app.worker"]
+service:
+  enabled: false
+probes:
+  enabled: false

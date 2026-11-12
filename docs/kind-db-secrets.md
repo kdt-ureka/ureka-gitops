@@ -1,6 +1,6 @@
 # kind dev DB·비밀값과 DB 계정 구조
 
-kind dev에 PostgreSQL 18 + pgvector, Redis, 비밀값 Secret을 붙이고 auth·content를 Argo CD로 배포한다. 매니페스트와 비밀값 방식은 kind 전용이다. DB 계정·권한 절차는 운영(RDS)에서도 같은 구조를 목표로 하지만, **RDS에서 같은 SQL 순서가 되는지는 아직 검증하지 않았다**(4장 끝).
+kind dev에 PostgreSQL 18 + pgvector, Redis, 비밀값 Secret을 붙이고 auth·content를 Argo CD로 배포한다. chat·ops용 DB(`chat_db`·`ops_db`)·계정·Secret도 여기서 미리 만든다(앱 배포는 각 서비스 values·Application PR). 매니페스트와 비밀값 방식은 kind 전용이다. DB 계정·권한 절차는 운영(RDS)에서도 같은 구조를 목표로 하지만, **RDS에서 같은 SQL 순서가 되는지는 아직 검증하지 않았다**(4장 끝).
 
 ## 1. 구성
 
@@ -11,7 +11,8 @@ kind dev에 PostgreSQL 18 + pgvector, Redis, 비밀값 Secret을 붙이고 auth�
 | DB·계정 생성 Job (PostSync, 멱등) | `environments/kind/data/db-bootstrap-job.yaml` + `db-bootstrap.sql` | 〃 |
 | auth (auth_db) | `environments/kind/ureka-auth.yaml` | `ureka-auth-kind` |
 | content (content_db) | `environments/kind/ureka-content.yaml` | `ureka-content-kind` |
-| 비밀값 Secret 6개 | Git에 없음. `scripts/kind/create-secrets.sh` | (Argo CD가 관리하지 않음) |
+| chat_db·ops_db와 계정 (앱은 아직 없음) | 같은 `db-bootstrap.sql` | 〃 |
+| 비밀값 Secret 9개 (기본 6 + chat·ops 3, 3장 목록) | Git에 없음. `scripts/kind/create-secrets.sh` | (Argo CD가 관리하지 않음) |
 
 이미지는 모두 digest로 고정한다(`scripts/check-charts.sh`가 chart와 kustomize 양쪽을 검사). PSA restricted 그대로(비root uid 999, 읽기 전용 루트 FS, capability 제거, seccomp).
 
@@ -22,7 +23,7 @@ Application마다 자동 동기화가 따로 돈다. **data가 끝나고 계정�
 ```bash
 scripts/kind/up.sh
 kubectl apply -f argocd/kind/ureka-dev-namespace.yaml   # dev 네임스페이스
-scripts/kind/create-secrets.sh                           # Secret 6개(값은 이 PC에서 생성, 출력 안 함)
+scripts/kind/create-secrets.sh                           # Secret 9개(값은 이 PC에서 생성, 출력 안 함)
 kubectl apply -f argocd/kind/ureka-dev-data.yaml         # PostgreSQL·Redis + db-bootstrap Job
 
 # data 확인: Synced/Healthy, 마지막 동기화 Succeeded, Job 로그 "db-bootstrap 완료"
@@ -49,6 +50,41 @@ scripts/kind/p11-check.sh                                # V14가 content main �
 
 추천은 **A**. kind는 S6~S7 임시 환경이고, 운영은 이미 Secrets Manager → ESO로 정해져 있다. ESO 경로 검증은 EKS(S8)에서 한다.
 
+**Secret 목록 (네임스페이스 `dev`)**
+
+| 묶음 | Secret | 키 | 쓰는 곳 |
+|---|---|---|---|
+| 기본 | `postgres-admin` | `POSTGRES_PASSWORD` | postgres, db-bootstrap Job |
+| 〃 | `db-accounts` | `AUTH_DB_APP_SCRAM`, `CONTENT_DB_APP_SCRAM`, `CONTENT_DB_RECOMMEND_SCRAM`, `CONTENT_DB_INGEST_SCRAM` (해시만) | db-bootstrap Job |
+| 〃 | `ureka-auth-secrets` | `DB_PASSWORD`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `EMAIL_CODE_SECRET`, `INTERNAL_SERVICE_TOKEN` | auth |
+| 〃 | `ureka-content-secrets` | `DB_PASSWORD`, `JWT_PUBLIC_KEY`, `INTERNAL_SERVICE_TOKEN` | content |
+| 〃 | `ureka-recommend-db` | `DB_USERNAME`, `DB_PASSWORD` | recommend 실제 모드(아직 안 씀) |
+| 〃 | `ureka-ingest-db` | `DB_USERNAME`, `DB_PASSWORD` | ingest(아직 안 씀) |
+| chat·ops | `db-accounts-chat-ops` | `CHAT_DB_APP_SCRAM`, `OPS_DB_APP_SCRAM` (해시만) | db-bootstrap Job |
+| 〃 | `ureka-chat-secrets` | `DB_PASSWORD`(`chat_db_app`), `JWT_PUBLIC_KEY`, `INTERNAL_SERVICE_TOKEN` | chat api·worker·마이그레이션 Job |
+| 〃 | `ureka-ops-secrets` | `DB_PASSWORD`(`ops_db_app`), `JWT_PUBLIC_KEY` | ops |
+
+- 변수 이름은 각 저장소 `.env.example`과 ureka-local compose 기준이다. chat은 `DATABASE_URL` 한 줄로 받으므로 values에서 `$(DB_PASSWORD)` 참조로 조립한다(비밀번호는 16진수라 URL 인코딩이 필요 없다. `DB_PASSWORD`를 env 목록에서 `DATABASE_URL`보다 **앞에** 둬야 치환된다).
+- `JWT_PUBLIC_KEY`·`INTERNAL_SERVICE_TOKEN`은 모든 서비스가 같은 값이다(auth가 서명한 토큰을 각 서비스가 검증, 내부 호출 토큰 공유). JWT 개인키는 auth만 받는다. ops는 내부 토큰을 받지 않는다(`.env.example`에 없음).
+- AI 키(`AI_API_KEY`)는 넣지 않는다. kind는 AI를 끈다(chat `AI_MODE` 기본값 `disabled`).
+
+**기존 클러스터에 chat·ops Secret 추가하기**
+
+Secret을 두 묶음으로 나눈 이유: 기본 묶음은 PostgreSQL 슈퍼유저 비밀번호와 묶여 있어 "일부만 있음"이면 클러스터(DB 볼륨)를 새로 만들어야 한다. chat·ops 계정은 나중에 생겼고, 슈퍼유저 비밀번호와 무관해 기존 DB에 그대로 더할 수 있다. 그래서 스크립트는 묶음마다 "전부 있음/전부 없음"만 받는다.
+
+| 기본 6개 | chat·ops 3개 | 스크립트 동작 |
+|---|---|---|
+| 없음 | 없음 | 처음 만들기: 9개 생성(DB 볼륨이 남아 있으면 멈춤) |
+| 전부 | 없음 | **추가**: 3개만 생성. `JWT_PUBLIC_KEY`·`INTERNAL_SERVICE_TOKEN`은 `ureka-auth-secrets` 값을 그대로 복사(값은 화면·argv에 싣지 않음), DB 비밀번호 2개는 새로 생성 |
+| 전부 | 전부 | 아무것도 바꾸지 않음 |
+| 일부 | (무관) | 멈춤. 기존 규칙 그대로(클러스터 새로 만들기) |
+| 전부 | 일부 | 멈춤. chat·ops 3개만 지우고 다시 실행하라고 안내 |
+| 없음 | 일부·전부 | 멈춤. 새 기본 Secret과 JWT 공개키가 어긋나므로 chat·ops 3개를 지우고 다시 실행 |
+
+기존 클러스터 순서: ① 이 PR이 main에 병합되기 **전에** `scripts/kind/create-secrets.sh`(추가) → ② 병합 후 data 자동 동기화(또는 수동 sync)로 db-bootstrap이 `chat_db`·`ops_db`와 계정을 만든다. 순서가 바뀌어 Secret보다 동기화가 먼저 오면, db-bootstrap Pod는 `db-accounts-chat-ops`가 없어 `CreateContainerConfigError`로 기다리다 Secret이 생기면 이어서 돈다(Job 제한 10분을 넘기면 동기화 Failed → Secret을 만든 뒤 다시 sync). 기존 auth·content Pod와 DB는 영향이 없다.
+
+chat·ops Secret을 다시 만들면(지우고 재실행) `chat_db_app`·`ops_db_app` 비밀번호만 바뀐다. 다음 data 동기화의 db-bootstrap이 저장된 해시와 다른 것을 보고 새 해시로 바꾸고, 그 뒤 chat·ops Pod를 재시작하면 된다. 슈퍼유저·기본 묶음에는 영향이 없다.
+
 **값이 지나가는 곳과 수명**
 
 | 값 | 어디에 있나 | 수명 |
@@ -63,7 +99,7 @@ verifier는 **SQL을 보내기 전에 `environments/kind/data/run-bootstrap.sh`(
 
 **자격에 닿을 수 있는 권한**: dev 네임스페이스 Secret 조회, Secret을 붙인 Pod를 만들 수 있는 권한, postgres·Job Pod `exec`(Pod 안 소켓·127.0.0.1 접속은 이미지 기본 pg_hba상 trust)는 DB 관리자 권한과 같다고 본다. kind는 이 PC 사용자만 갖는다.
 
-**교체(rotate)는 제공하지 않는다.** DB 계정·슈퍼유저 비밀번호·앱 재시작을 한 번에 맞추고 중간 실패를 되돌리는 절차를 검증하지 않았기 때문이다(보안 검토 2026-11-10). kind에서 값을 바꾸려면 클러스터를 새로 만든다(`kind delete cluster --name ureka` → 2장 순서). 스크립트는 Secret이 일부만 있거나, Secret 없이 DB 볼륨만 남아 있으면 멈춘다(새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않으므로). 있는지 확인할 때 **`NotFound`만 '없음'으로 보고, 권한 부족(`Forbidden`)·연결 실패 등 다른 오류는 바로 멈춘다**(보이지 않는 Secret을 없다고 보고 새로 만들지 않게). Secret은 `kubectl create`로만 만들어 이미 있는 것을 덮어쓰지 않는다. kind가 아닌 컨텍스트(`kind-*`가 아님)에서는 실행하지 않는다. 회귀 시험: `scripts/test-create-secrets.sh`(CI). 생성 도중 실패(예: 확인과 생성 사이에 누가 같은 이름을 만들어 AlreadyExists)하면 앞서 만든 Secret은 남고 스크립트는 실패한다. 6개를 한 번에 만드는 원자적 생성이 아니므로, 다음 실행은 '일부만 있음'으로 멈추고 안내대로 지운 뒤 다시 만든다.
+**교체(rotate)는 제공하지 않는다.** DB 계정·슈퍼유저 비밀번호·앱 재시작을 한 번에 맞추고 중간 실패를 되돌리는 절차를 검증하지 않았기 때문이다(보안 검토 2026-11-10). kind에서 값을 바꾸려면 클러스터를 새로 만든다(`kind delete cluster --name ureka` → 2장 순서). 스크립트는 Secret이 일부만 있거나, Secret 없이 DB 볼륨만 남아 있으면 멈춘다(새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않으므로). 있는지 확인할 때 **`NotFound`만 '없음'으로 보고, 권한 부족(`Forbidden`)·연결 실패 등 다른 오류는 바로 멈춘다**(보이지 않는 Secret을 없다고 보고 새로 만들지 않게). Secret은 `kubectl create`로만 만들어 이미 있는 것을 덮어쓰지 않는다. kind가 아닌 컨텍스트(`kind-*`가 아님)에서는 실행하지 않는다. 회귀 시험: `scripts/test-create-secrets.sh`(CI). 생성 도중 실패(예: 확인과 생성 사이에 누가 같은 이름을 만들어 AlreadyExists)하면 앞서 만든 Secret은 남고 스크립트는 실패한다. 여러 Secret을 한 번에 만드는 원자적 생성이 아니므로, 다음 실행은 '일부만 있음'으로 멈추고 안내대로 지운 뒤 다시 만든다. chat·ops 묶음은 계정 해시(`db-accounts-chat-ops`)를 서비스 Secret보다 먼저 만든다.
 
 ## 4. DB 계정 구조
 
@@ -78,6 +114,11 @@ ERD v1.1의 "서비스별 논리 DB, 계정 공유 없음"을 따른다. 역할�
 | `content_db_recommend_search` | X | | 검색 함수 EXECUTE만 (V14가 권한 부여) | 관리자가 먼저 생성, 권한은 Flyway |
 | `content_db_ingest_writer` | X | | 적재 권한 (V12가 권한 부여) | 관리자가 먼저 생성, 권한은 Flyway |
 | `content_db_rag_search_definer` | X | | 검색 함수 소유자 (SECURITY DEFINER) | Flyway V14 |
+| `chat_db_app` | O | 없음 (CREATEROLE 없음) | chat_db 소유자. chat api·worker + 마이그레이션 Job(Alembic, `chat` 스키마) (Secret `ureka-chat-secrets`) | 관리자 |
+| `ops_db_app` | O | 없음 | ops_db 소유자. ops 앱 + Flyway(`ops` 스키마, `create-schemas`) (Secret `ureka-ops-secrets`) | 관리자 |
+
+- chat에 CREATEROLE을 주지 않는 근거: chat 마이그레이션 `0001_chat_schema`·`0002_llm_metrics`는 스키마·표·함수·트리거만 만들고 역할·확장을 만들지 않는다. DB 소유자면 `chat` 스키마와 `public.alembic_version`을 만들 수 있다(PostgreSQL 15+의 `public`은 `pg_database_owner` 소유). ops도 Flyway가 `ops` 스키마만 만든다.
+- chat·ops도 앱 계정 = 마이그레이션 계정이다(auth와 같다). CREATEROLE이 없어 content의 남은 위험(아래)은 해당하지 않는다. 마이그레이션·앱 계정 분리는 운영 전 과제(7장)에 같이 묶는다.
 
 - 로그인 계정은 역할을 **INHERIT로만** 받는다(`SET FALSE`). `SET ROLE`로 역할을 바꿀 수 없다.
 - 호출·적재 역할을 관리자가 먼저 만드는 이유: PostgreSQL 16+는 역할을 만든 CREATEROLE 계정에 그 역할의 ADMIN OPTION을 남긴다. 관리자가 만들면 앱 계정이 이 두 역할을 자기나 다른 계정에 부여하는 경로가 없다. V12·V14는 "이미 있으면 재사용"이라 그대로 동작한다.
@@ -100,7 +141,25 @@ content 앱이 기동할 때 Flyway를 이 계정으로 돌리기 때문이다(V
 
 RDS 마스터 계정은 슈퍼유저가 아니라 `rds_superuser` 멤버다. 다음이 그 권한으로 되는지 RDS에서 따로 시험하기 전에는 "같은 절차"라고 단정하지 않는다: NOLOGIN 역할 선생성과 `GRANT ... WITH INHERIT TRUE, SET FALSE`, `ALTER ROLE ... PASSWORD '<SCRAM 해시>'`, `catalog` 스키마에 vector 설치 후 소유권 이전, CREATEROLE 계정의 V14 소유권 이전, `template1`·`postgres` CONNECT 회수.
 
-## 5. 검증 기록 (2026-11-10, 이 PR 브랜치. 검증 동안 Application이 PR 브랜치를 봄)
+## 5. 검증 기록
+
+### chat·ops DB·계정·Secret 추가 (2026-11-12, 공통 차트 확장 브랜치, 기존 kind 클러스터)
+
+Application은 main을 그대로 보게 두고, 브랜치의 data kustomize 결과에서 db-bootstrap Job·ConfigMap만 이름을 바꿔(`db-bootstrap-branch16`, 훅 주석 제거) 한 번 실행했다. 확인 뒤 임시 리소스는 지웠다. Argo CD 동기화로 같은 Job이 도는 것은 병합 뒤 확인한다.
+
+| 항목 | 결과 |
+|---|---|
+| `create-secrets.sh` (기본 6개 있는 클러스터) | "추가" 경로: 3개 생성. 두 번째 실행 "9개 이미 있음" |
+| 복사 값 일치 (SHA-256 비교, 값 미출력) | chat·ops `JWT_PUBLIC_KEY` = auth·content, chat `INTERNAL_SERVICE_TOKEN` = auth. DB 비밀번호는 서비스마다 다름 |
+| db-bootstrap (브랜치 SQL, 기존 DB) | "db-bootstrap 완료". 기존 계정은 NOTICE만(변경 없음) |
+| `chat_db`·`ops_db` | 소유자 `chat_db_app`·`ops_db_app`, ACL은 소유자만(PUBLIC CONNECT 없음) |
+| `chat_db_app`·`ops_db_app` 속성 | LOGIN, 슈퍼유저·CREATEDB·CREATEROLE·REPLICATION·BYPASSRLS 모두 없음, 비밀번호는 SCRAM 해시 |
+| Secret 비밀번호로 접속 | chat_db에 스키마·표·함수 생성, `public` 표 생성(롤백) 성공. ops_db 스키마 생성(롤백) 성공 |
+| 거부 확인 | chat→auth_db·ops_db·postgres, ops→chat_db·content_db 접속 거부(`permission denied`). chat `CREATE ROLE` 거부. 틀린 비밀번호 거부 |
+| 차트 선택 칸 (PSA restricted인 dev) | 시험 values 3개 server dry-run 경고 없음. recommend 이미지로 마이그레이션 Job(uid 10001, /tmp 쓰기) Completed, Service 없는 worker Deployment Running, Job Pod는 `<name>-migrate` 라벨 |
+| 기존 Application | auth·content·recommend·data·namespace 모두 Synced/Healthy 유지 |
+
+### auth·content 처음 구성 (2026-11-10, 이 PR 브랜치. 검증 동안 Application이 PR 브랜치를 봄)
 
 kind v1.36.1 노드, Argo CD v3.6.0, PostgreSQL 18.6, pgvector 0.8.7.
 
@@ -110,7 +169,7 @@ data·auth·content Application, Deployment·StatefulSet·Service·Job·ConfigMa
 
 | 항목 | 결과 |
 |---|---|
-| `create-secrets.sh` 첫 실행 / 두 번째 실행 | Secret 6개 생성 / "이미 있음, 아무것도 바꾸지 않음" |
+| `create-secrets.sh` 첫 실행 / 두 번째 실행 | Secret 6개 생성 / "이미 있음, 아무것도 바꾸지 않음" (당시는 기본 묶음만) |
 | data Application 적용 → Synced/Healthy, 동기화 Succeeded, Job 완료 | 21초 |
 | auth·content Application 적용 → Synced/Healthy | 46초, 재시작 0 |
 | DB 계정 비밀번호 | 4개 계정 모두 `rolpassword`가 스크립트가 계산한 SCRAM 해시. 앱은 원문 비밀번호로 접속 성공 |
@@ -162,7 +221,7 @@ content 이미지를 `sha-e58615b`(digest `sha256:80d5a390…ef2f69` = CI `image
 
 ## 7. 후속 (이 PR 범위 밖)
 
-- **마이그레이션 계정과 앱 계정 분리**(공유 환경·운영 전 필수, 4장): content 앱 코드 변경이 필요해 content 담당(AI팀)과 협의.
+- **마이그레이션 계정과 앱 계정 분리**(공유 환경·운영 전 필수, 4장): content 앱 코드 변경이 필요해 content 담당(AI팀)과 협의. chat은 마이그레이션이 이미 별도 Job이라 계정만 나누면 된다(auth·ops는 앱 기동 Flyway).
 - **RDS 이식 검증**(4장 끝).
 - recommend 실제 모드로 kind에 붙일 때 values에서 `ureka-recommend-db` Secret 사용(G1 전에 주입 경로 확인).
 - ingest Job/CronJob이 `ureka-ingest-db`를 쓰도록 연결.

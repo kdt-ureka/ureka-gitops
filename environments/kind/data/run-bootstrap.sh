@@ -36,7 +36,7 @@ check_verifier() { # 변수 이름
   b64_ok "$stored" 32 || bad "StoredKey가 32바이트 base64가 아님"
   b64_ok "$server" 32 || bad "ServerKey가 32바이트 base64가 아님"
 }
-for v in AUTH_DB_APP_SCRAM CONTENT_DB_APP_SCRAM CONTENT_DB_RECOMMEND_SCRAM CONTENT_DB_INGEST_SCRAM; do
+for v in AUTH_DB_APP_SCRAM CONTENT_DB_APP_SCRAM CONTENT_DB_RECOMMEND_SCRAM CONTENT_DB_INGEST_SCRAM CHAT_DB_APP_SCRAM OPS_DB_APP_SCRAM; do
   check_verifier "$v"
 done
 

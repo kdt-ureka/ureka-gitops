@@ -1,5 +1,5 @@
 # db-bootstrap.sql을 관리자 계정으로 실행한다. Argo CD가 이 디렉터리를 동기화할 때마다(PostSync) 다시 돌고,
-# SQL이 멱등이라 결과는 같다. 비밀번호는 원문이 아니라 SCRAM 해시(Secret db-accounts)만 받는다.
+# SQL이 멱등이라 결과는 같다. 비밀번호는 원문이 아니라 SCRAM 해시(Secret db-accounts, db-accounts-chat-ops)만 받는다.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -51,6 +51,10 @@ spec:
             # AUTH_DB_APP_SCRAM, CONTENT_DB_APP_SCRAM, CONTENT_DB_RECOMMEND_SCRAM, CONTENT_DB_INGEST_SCRAM (해시만)
             - secretRef:
                 name: db-accounts
+            # CHAT_DB_APP_SCRAM, OPS_DB_APP_SCRAM (해시만). 나중에 추가된 계정이라 Secret을 따로 둔다(docs/kind-db-secrets.md 3장).
+            # 없으면 Pod가 CreateContainerConfigError로 기다리다가 Secret이 생기면 이어서 돈다.
+            - secretRef:
+                name: db-accounts-chat-ops
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

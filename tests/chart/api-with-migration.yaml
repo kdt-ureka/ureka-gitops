@@ -1,0 +1,19 @@
+# 차트 선택 칸 시험용(배포에 쓰지 않음): API + 마이그레이션 Job(PreSync)
+name: ureka-example-api
+image:
+  repository: localhost:5001/ureka/example
+  tag: sha-0000000000000000000000000000000000000000
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+args: ["--port", "8080"]
+command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0"]
+env:
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: example-secrets
+        key: DB_PASSWORD
+  - name: DATABASE_URL
+    value: postgresql+psycopg://example:$(DB_PASSWORD)@postgres:5432/example_db
+migration:
+  enabled: true
+  command: ["python", "-m", "alembic", "upgrade", "head"]

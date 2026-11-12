@@ -16,6 +16,11 @@
 --                              CREATEROLE은 V14가 함수 소유 전용 역할(<db>_rag_search_definer)을 만들고 소유권을 넘길 때 필요하다.
 --     content_db_recommend     LOGIN. 권한은 content_db_recommend_search 역할로만 받는다(검색 함수 EXECUTE뿐).
 --     content_db_ingest        LOGIN. 권한은 content_db_ingest_writer 역할로만 받는다(V12 적재 권한).
+--   chat_db
+--     chat_db_app              LOGIN. chat_db 소유자. chat api·worker가 접속하고 마이그레이션 Job이 Alembic(chat 스키마)을 돌린다.
+--                              CREATEROLE 없음: chat 마이그레이션(0001·0002)은 스키마·테이블·함수·트리거만 만들고 역할을 만들지 않는다.
+--   ops_db
+--     ops_db_app               LOGIN. ops_db 소유자. ops 앱이 접속하고 Flyway(ops 스키마, create-schemas)를 돌린다.
 --   (Flyway가 만드는 NOLOGIN 역할)
 --     content_db_rag_search_definer  검색 함수 소유자. 어떤 LOGIN 계정에도 주지 않는다(V14).
 --
@@ -31,12 +36,15 @@
 \getenv content_app_scram CONTENT_DB_APP_SCRAM
 \getenv content_recommend_scram CONTENT_DB_RECOMMEND_SCRAM
 \getenv content_ingest_scram CONTENT_DB_INGEST_SCRAM
+-- chat·ops는 Secret db-accounts-chat-ops에서 온다(나중에 추가된 계정이라 db-accounts와 따로 만든다, docs/kind-db-secrets.md).
+\getenv chat_app_scram CHAT_DB_APP_SCRAM
+\getenv ops_app_scram OPS_DB_APP_SCRAM
 
 -- 형식 확인은 SQL을 보내기 전에 한다(run-bootstrap.sh가 verifier 전체를 검사하고, 아니면 DB에 접속하지 않고 멈춘다).
 -- 이 파일을 직접 실행할 때도 run-bootstrap.sh로 실행하거나 먼저 같은 검사를 해야 한다. 여기서 검사하면 잘못 들어간 원문이 검사 쿼리에 실려 서버로 간다.
 
 -- 1) 로그인 계정 ---------------------------------------------------------------
-SELECT format('CREATE ROLE %I LOGIN', r) FROM unnest(ARRAY['auth_db_app', 'content_db_app', 'content_db_recommend', 'content_db_ingest']) AS r
+SELECT format('CREATE ROLE %I LOGIN', r) FROM unnest(ARRAY['auth_db_app', 'content_db_app', 'content_db_recommend', 'content_db_ingest', 'chat_db_app', 'ops_db_app']) AS r
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) \gexec
 
 -- 속성을 매번 다시 맞춘다(손으로 바꾼 권한이 남지 않게). 비밀번호는 아래에서 따로.
@@ -44,11 +52,14 @@ ALTER ROLE auth_db_app          LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPL
 ALTER ROLE content_db_app       LOGIN NOSUPERUSER NOCREATEDB CREATEROLE   NOREPLICATION NOBYPASSRLS;
 ALTER ROLE content_db_recommend LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE content_db_ingest    LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE chat_db_app          LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE ops_db_app           LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
 -- 저장된 해시와 다를 때만(처음 만들 때, Secret을 새로 만든 뒤) 바꾼다.
 SELECT format('ALTER ROLE %I PASSWORD %L', v.r, v.h)
 FROM (VALUES ('auth_db_app', :'auth_app_scram'), ('content_db_app', :'content_app_scram'),
-             ('content_db_recommend', :'content_recommend_scram'), ('content_db_ingest', :'content_ingest_scram')) AS v(r, h)
+             ('content_db_recommend', :'content_recommend_scram'), ('content_db_ingest', :'content_ingest_scram'),
+             ('chat_db_app', :'chat_app_scram'), ('ops_db_app', :'ops_app_scram')) AS v(r, h)
 JOIN pg_authid a ON a.rolname = v.r
 WHERE a.rolpassword IS DISTINCT FROM v.h \gexec
 
@@ -73,11 +84,17 @@ SELECT 'CREATE DATABASE auth_db OWNER auth_db_app'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'auth_db') \gexec
 SELECT 'CREATE DATABASE content_db OWNER content_db_app'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'content_db') \gexec
+SELECT 'CREATE DATABASE chat_db OWNER chat_db_app'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'chat_db') \gexec
+SELECT 'CREATE DATABASE ops_db OWNER ops_db_app'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'ops_db') \gexec
 ALTER DATABASE auth_db OWNER TO auth_db_app;
 ALTER DATABASE content_db OWNER TO content_db_app;
+ALTER DATABASE chat_db OWNER TO chat_db_app;
+ALTER DATABASE ops_db OWNER TO ops_db_app;
 
 -- 새 DB는 PUBLIC에 CONNECT가 열려 있다. 서비스 DB끼리 접속하지 못하게 닫고 필요한 역할에만 준다.
-REVOKE ALL ON DATABASE auth_db, content_db FROM PUBLIC;
+REVOKE ALL ON DATABASE auth_db, content_db, chat_db, ops_db FROM PUBLIC;
 -- 관리용 postgres DB와 template1도 서비스 계정이 접속할 이유가 없다(template0은 원래 접속 불가).
 REVOKE CONNECT, TEMPORARY ON DATABASE postgres, template1 FROM PUBLIC;
 GRANT CONNECT ON DATABASE content_db TO content_db_recommend_search, content_db_ingest_writer;
