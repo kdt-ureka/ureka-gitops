@@ -10,8 +10,8 @@ image:
   # ECR 주소에는 계정 ID가 들어가므로 이 PUBLIC 저장소에는 로컬 주소만 적는다.
   repository: localhost:5001/ureka/auth
   # tag = ureka-auth main 커밋, digest = 그 커밋 CI artifact image-ref.json의 digest
-  tag: sha-29ddad583265db44ca3a36d62cfa5e9c4302a2e0
-  digest: sha256:7b516a16ddcd00bf8d52719b84e495fe4cb5d51b45d083ae8e38000f50d46568
+  tag: sha-4d8ca370bc2446749d7f3529ad2f7e2e6bb1f2e9
+  digest: sha256:22e2953d633581f20d5053972a5d1a6a2db6f4e807ba535c29686b18fd9d2435
   pullPolicy: IfNotPresent
 
 # 이름은 ureka-auth .env.example 기준. 비밀값은 값 대신 Secret 참조만 둔다.
