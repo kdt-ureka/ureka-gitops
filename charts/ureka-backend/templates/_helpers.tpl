@@ -62,6 +62,16 @@ capabilities:
 {{- if not (and .Values.probes.startup .Values.probes.liveness .Values.probes.readiness) -}}
 {{- fail "service.enabled=false이면 probes.enabled=false로 끄거나 probes.startup·liveness·readiness를 모두 직접 지정해야 한다(기본 HTTP 헬스 체크는 http 포트를 쓴다)" -}}
 {{- end -}}
+{{- /* Service를 끄면 컨테이너에 이름 붙은 포트가 없다. port: http 같은 이름 포트는 probe가 항상 실패하므로 막는다(exec 또는 숫자 포트를 쓴다). */ -}}
+{{- range $probe := list "startup" "liveness" "readiness" -}}
+{{- $spec := index $.Values.probes $probe | default dict -}}
+{{- range $handler := list "httpGet" "tcpSocket" -}}
+{{- $h := index $spec $handler -}}
+{{- if and $h (kindIs "string" $h.port) -}}
+{{- fail (printf "service.enabled=false이면 컨테이너 포트 이름이 없다: probes.%s.%s.port에 이름(%s) 대신 숫자 포트를 쓰거나 exec를 쓴다" $probe $handler $h.port) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.migration.enabled -}}
 {{- if not .Values.migration.command -}}

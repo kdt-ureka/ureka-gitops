@@ -70,4 +70,12 @@ must_fail() { # 이름, helm 추가 인자...
 must_fail "Service 끄고 기본 헬스 체크" --set probes.enabled=true
 must_fail "Service 끄고 헬스 체크 일부만 지정" --set probes.enabled=true --set probes.liveness.exec.command[0]=true
 must_fail "마이그레이션 명령 없음" --set migration.enabled=true
+# Service가 없으면 이름 포트(http)가 없다: 직접 지정한 probe가 이름 포트를 쓰면 거부(숫자 포트·exec는 허용)
+named=(--set probes.enabled=true)
+for p in startup liveness readiness; do named+=(--set "probes.${p}.httpGet.path=/healthz" --set "probes.${p}.httpGet.port=http"); done
+must_fail "Service 끄고 probe가 이름 포트(httpGet http)" "${named[@]}"
+must_fail "Service 끄고 probe 하나만 이름 포트(tcpSocket http)" -f tests/chart/worker-exec-probe.yaml --set probes.enabled=true --set probes.liveness.tcpSocket.port=http
+numeric=(--set probes.enabled=true)
+for p in startup liveness readiness; do numeric+=(--set "probes.${p}.tcpSocket.port=8080"); done
+if helm template t "$chart" -f tests/chart/worker-no-service.yaml "${numeric[@]}" >/dev/null 2>&1; then ok "Service 끄고 probe 숫자 포트: 허용"; else fail "Service 끄고 probe 숫자 포트가 거부됐다"; fi
 exit "$status"

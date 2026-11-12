@@ -54,7 +54,10 @@ migration:
   # enabled=true이면 필수 (예: chat → [python, -m, alembic, upgrade, head])
   command: []
   args: []
-  # 실패 시 재시도 횟수. 마이그레이션은 사람이 원인을 보고 다시 동기화하도록 기본은 재시도하지 않는다.
+  # Job 안에서의 재시도 횟수(Pod를 다시 만드는 횟수). 기본 0: 한 번 실패하면 이번 동기화를 실패로 끝낸다.
+  # Argo CD Application의 sync 재시도(syncPolicy.retry)와는 별개다. Application에 retry가 있으면 Argo가 동기화를 다시 시도하면서
+  # 이 Job을 새로 만들어 마이그레이션이 다시 돈다(이전 Job과 로그는 그때 지워진다). 마이그레이션은 다시 실행해도 안전해야 한다.
+  # 실패하면 같은 Application의 Deployment 갱신은 진행되지 않지만, 이미 바뀐 DB는 자동으로 되돌리지 않는다.
   backoffLimit: 0
   activeDeadlineSeconds: 600
   # 비워 두면 위 resources를 쓴다.
