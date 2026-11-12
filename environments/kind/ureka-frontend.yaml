@@ -1,0 +1,43 @@
+# kind(로컬) dev용 ureka-frontend values. chart: charts/ureka-backend
+# 이미지를 바꾸는 방법(배포·롤백)은 docs/kind-deploy-rollback.md
+# nginx가 빌드된 화면을 정적으로 서빙하고 /api/{auth,chat,content,admin}/을 각 서비스로 넘긴다(ureka-frontend nginx/default.conf.template).
+# 읽기 전용 루트 FS에서 nginx 설정을 /tmp에 만드는 이미지가 필요하다(ureka-frontend#48 이후 이미지).
+name: ureka-frontend
+
+replicaCount: 1
+
+image:
+  # kind 로컬 레지스트리. ECR 이미지를 scripts/kind/sync-ecr-image.sh로 digest 그대로 복사해 둔다.
+  repository: localhost:5001/ureka/frontend
+  # tag = ureka-frontend main 커밋, digest = 그 커밋 CI artifact image-ref.json의 digest
+  tag: sha-83486e30d7c735d3f17e24ad94829258bced031b
+  digest: sha256:3216527710a3b53e686913dc6d7df12a8aa6f4534644948f6217b73d5a022965
+  pullPolicy: IfNotPresent
+
+# nginx 이미지는 /healthz만 있다(/readyz 없음). 정적 서빙이라 살아 있으면 요청을 받을 수 있다.
+probes:
+  readinessPath: /healthz
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    cpu: 500m
+    memory: 128Mi
+
+# 이름은 ureka-frontend Dockerfile ENV·ureka-local compose 기준.
+# nginx resolver는 검색 도메인을 쓰지 않으므로 Service 이름을 전체 주소(<서비스>.<네임스페이스>.svc.cluster.local)로 적는다.
+# Service 포트는 80(차트 기본)이다. 대상 서비스가 아직 없어도 nginx는 뜨고, 그 경로만 502가 난다(요청 때 이름을 푼다).
+env:
+  - name: NGINX_RESOLVER
+    # 클러스터 DNS. nginx가 시작할 때 이 이름을 한 번 풀어 IP로 쓴다(kind·k3s·EKS 모두 kube-system/kube-dns).
+    value: kube-dns.kube-system.svc.cluster.local
+  - name: AUTH_UPSTREAM
+    value: http://ureka-auth.dev.svc.cluster.local
+  - name: CHAT_UPSTREAM
+    value: http://ureka-chat.dev.svc.cluster.local
+  - name: CONTENT_UPSTREAM
+    value: http://ureka-content.dev.svc.cluster.local
+  - name: OPS_UPSTREAM
+    value: http://ureka-ops.dev.svc.cluster.local
