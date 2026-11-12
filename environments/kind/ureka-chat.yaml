@@ -15,6 +15,17 @@ image:
 
 # api는 이미지 기본 명령(uvicorn app.main:app, 8080)을 쓴다. command를 비운다.
 
+# 2026-11-12 kind 측정(kubectl top, AI 꺼짐·유휴, 1분 6회): 96Mi, cgroup 최대 102Mi, CPU 7~23m.
+# request는 측정값보다 조금 크게, limit은 AI 호출·SSE 동시 연결을 모르는 상태라 약 4배 여유. EC2에서 AI를 켜고 다시 잰다.
+# 마이그레이션 Job도 이 값을 쓴다(migration.resources 비움).
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 384Mi
+
 # 이름은 ureka-chat .env.example·docs/deployment-handoff.md, ureka-local compose 기준.
 env:
   # DB_PASSWORD를 DATABASE_URL보다 먼저 둬야 $(DB_PASSWORD)가 치환된다. 비밀번호는 16진수라 URL 인코딩이 필요 없다.

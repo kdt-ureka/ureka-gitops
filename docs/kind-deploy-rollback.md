@@ -30,6 +30,13 @@ kind dev는 Argo CD가 이 저장소 `main`을 보고 자동으로 맞춘다(aut
 
    **chat은 두 파일을 같이 바꾼다**: `ureka-chat.yaml`(api·마이그레이션)과 `ureka-chat-worker.yaml`(worker). 둘의 `image`·`env`가 다르면 `check-charts.sh`가 실패한다. Application `ureka-chat-kind` 하나가 둘을 배포하고, 동기화마다 PreSync Job `ureka-chat-migrate`(`alembic upgrade head`)가 먼저 돈다. 마이그레이션이 실패하면 api·worker는 이전 이미지로 남는다(`kubectl -n dev logs job/ureka-chat-migrate`로 원인 확인). 롤백해도 이미 적용된 DB 변경은 되돌리지 않으므로, 되돌릴 이미지가 새 스키마에서 동작하는지 먼저 본다.
 
+   마이그레이션 실패를 고치는 PR이 '실패 전과 같은 내용'으로 되돌리는 것이면, 병합 뒤 Argo CD는 Synced로 보고 자동 동기화를 다시 하지 않는다. 그래서 실패한 `ureka-chat-migrate` Job이 남는다(2026-11-12 kind에서 확인). 앱은 정상이지만 Job을 다시 확인하려면 **전체 sync**를 한 번 친다(선택 sync는 PreSync 훅을 건너뛴다).
+
+   ```bash
+   kubectl -n argocd patch app ureka-chat-kind --type merge -p '{"operation":{"sync":{}}}'
+   kubectl -n dev get job ureka-chat-migrate   # Complete 1/1
+   ```
+
 4. `scripts/check-charts.sh` 통과 → PR(본문에 CI 실행 링크와 digest) → 승인 1명 → Squash 병합.
 5. Argo CD가 main 변경을 감지해 동기화한다. kind는 GitHub webhook을 받을 수 없어 폴링(기본 3분 주기)만 쓴다. 2026-11-09 확인에서 push 후 반영까지 1분 53초~6분 14초(한 번은 리비전 캐시 때문에 한 주기를 놓쳤다). 시연처럼 바로 봐야 하면 아래 refresh를 친다.
 
