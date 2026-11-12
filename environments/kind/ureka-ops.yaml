@@ -1,0 +1,34 @@
+# kind(로컬) dev용 ureka-ops values. chart: charts/ureka-backend
+# 이미지를 바꾸는 방법(배포·롤백)은 docs/kind-deploy-rollback.md
+# DB는 environments/kind/data(ureka-dev-data-kind), 비밀값은 scripts/kind/create-secrets.sh가 만든 Secret.
+# 앱이 기동할 때 Flyway가 ops_db에 ops 스키마를 만들고 마이그레이션을 적용한다(차트의 migration Job은 쓰지 않음).
+# 접속 계정 ops_db_app은 ops_db 소유자이고 슈퍼유저·CREATEROLE이 없다.
+name: ureka-ops
+
+replicaCount: 1
+
+image:
+  # kind 로컬 레지스트리. ECR 이미지를 scripts/kind/sync-ecr-image.sh로 digest 그대로 복사해 둔다.
+  repository: localhost:5001/ureka/ops
+  # tag = ureka-ops main 커밋, digest = 그 커밋 CI artifact image-ref.json의 digest
+  tag: sha-a3095eea6f4d7242099c3e5eb3142cd2c16a8963
+  digest: sha256:98bd802bde62689da3365a2c8e55e16af1342c28c2fc2eedeae249786c18549f
+  pullPolicy: IfNotPresent
+
+# 이름은 ureka-ops .env.example 기준. 비밀값은 값 대신 Secret 참조만 둔다.
+# Redis는 받지 않는다(JWT 계약상 토큰 계열 확인은 auth만 한다). 내부 호출 토큰도 쓰지 않는다.
+env:
+  - name: DB_URL
+    value: jdbc:postgresql://postgres:5432/ops_db
+  - name: DB_USERNAME
+    value: ops_db_app
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: ureka-ops-secrets
+        key: DB_PASSWORD
+  - name: JWT_PUBLIC_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-ops-secrets
+        key: JWT_PUBLIC_KEY
