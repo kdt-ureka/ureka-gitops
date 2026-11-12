@@ -31,6 +31,7 @@
 #   chat values(environments/kind/ureka-chat*.yaml)가 이 Secret을 optional로 읽는다. 없으면 AI_MODE가 비어 꺼짐(disabled).
 #   키는 개인 Gemini 키를 쓴다(요금·무료 등급 한도는 키 주인 부담, 무료 등급 입력은 Google 개선에 쓰일 수 있어 시험 문장만 넣는다).
 #   키는 표준 입력으로만 받는다: 터미널이면 화면에 보이지 않게 입력, 아니면 파이프(예: pbpaste | ... --chat-ai).
+#   파이프 입력은 한 줄이어야 한다(두 줄 이상이면 멈춤). 셸 추적(bash -x)을 켜고 실행해도 스크립트가 처음에 끈다.
 #   명령 인자·화면·Git에 싣지 않는다. 이미 있으면 덮어쓰지 않는다(바꾸거나 끄려면 지운 뒤 다시, 스크립트 끝의 안내 참고).
 #
 # 값이 지나가는 곳: 이 스크립트의 임시 디렉터리(권한 700, 끝나면 삭제)와 kubectl create 표준 입력뿐이다.
@@ -40,6 +41,9 @@
 # (kind delete cluster --name ureka → scripts/kind/up.sh → 이 스크립트). 이유: DB 계정 비밀번호·슈퍼유저
 # 비밀번호·앱 재시작을 한 번에 맞추고 실패를 되돌리는 절차를 이 PR에서 검증하지 않았다.
 # 운영(EKS)은 이 스크립트를 쓰지 않는다. Secrets Manager → ESO로 넣는다.
+# 셸 추적(bash -x, SHELLOPTS=xtrace, BASH_XTRACEFD)이 켜져 있어도 먼저 끈다. 추적은 확장된 값(비밀값 포함)을 출력한다.
+# 이 뒤로 다시 켜지 않는다.
+{ set +x; } 2>/dev/null
 set -euo pipefail
 
 ctx="${KUBE_CONTEXT:-kind-ureka}"
@@ -105,15 +109,18 @@ if [ "$chat_ai" = 1 ]; then
     IFS= read -rs key || true
     echo >&2
   else
-    IFS= read -r key || true
+    # 파이프: 입력 전체를 받는다(끝 줄바꿈만 빠진다). 두 줄 이상이면 아래 검사에서 멈춘다.
+    key="$(cat)" || true
   fi
-  # 공백·줄바꿈·따옴표가 섞이면 멈춘다(복사 실수). 키 내용은 오류 메시지에도 싣지 않는다.
+  # 공백·줄바꿈(두 줄 이상)·따옴표가 섞이면 멈춘다(복사 실수). 키 내용은 오류 메시지에도 싣지 않는다.
+  # 허용 문자·길이만 본다. 실제 Gemini 키인지(발급·권한·한도)는 확인하지 않는다.
   # (길이는 따로 본다. macOS 정규식은 반복 횟수 255를 넘으면 오류다.)
   if ! [[ "$key" =~ ^[A-Za-z0-9._-]+$ ]] || [ "${#key}" -lt 20 ] || [ "${#key}" -gt 256 ]; then
     key=""
     echo "키 형식이 아닙니다(빈 값이거나 영문·숫자·._- 외 문자, 20~256자 밖). 아무것도 만들지 않았습니다." >&2
     exit 1
   fi
+  # 이상 종료(SIGKILL 등)로 EXIT trap이 돌지 않으면 임시 디렉터리($TMPDIR/tmp.*)에 키 파일이 남을 수 있다(문서 참고).
   printf '%s' "$key" >"$work/ai_key"
   key=""
   printf 'gemini' >"$work/ai_mode"

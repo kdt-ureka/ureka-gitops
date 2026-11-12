@@ -159,13 +159,17 @@ check "already_exists_on_create"     already_exists_on_create "" nonzero 2 || tr
 check "already_exists_on_create(추가)" already_exists_on_create "$BASE" nonzero 2 || true
 
 # --chat-ai (선택 AI 키). 키는 표준 입력으로만 들어간다.
-export FAKE_AI_KEY="AIzaFake$(openssl rand -hex 16)"
+# 제공자 키 모양(AIza…)을 피한 합성 값. 비밀 탐지 규칙에 걸리지 않게 한다.
+export FAKE_AI_KEY="ReviewOnlyChatAi$(openssl rand -hex 16)"
 check_ai() { # 이름, 모드, 이미 있는 Secret, 표준 입력 내용, 기대 종료, 기대 create 수
   local name="$1" input="$4" want_rc="$5" want_creates="$6"
   : >"$fake/log"
   rc=0
+  : >"$fake/xtrace"
+  # CHECK_BASH: 셸 추적을 켠 실행(bash -x 등)도 같은 검사를 받게 한다. fd 3은 BASH_XTRACEFD 시험용 추적 파일.
   printf '%s' "$input" | FAKE_MODE="$2" FAKE_EXISTING="$3" FAKE_LOG="$fake/log" PATH="$fake:$PATH" \
-    bash scripts/kind/create-secrets.sh --chat-ai >"$fake/out" 2>&1 || rc=$?
+    ${CHECK_ENV:-} ${CHECK_BASH:-bash} scripts/kind/create-secrets.sh --chat-ai >"$fake/out" 2>&1 3>"$fake/xtrace" || rc=$?
+  cat "$fake/xtrace" >>"$fake/out"
   creates="$(grep -c '^CREATE' "$fake/log" || true)"
   if grep -q APPLY "$fake/log"; then echo "FAIL ${name}: apply를 썼다"; status=1; return 1; fi
   if grep -qF -e "$FAKE_AI_KEY" "$fake/out"; then echo "FAIL ${name}: 키가 출력에 나왔다"; status=1; return 1; fi
@@ -191,10 +195,17 @@ check_ai "chat-ai: 공백 섞임"        ""  "" "AIza fake key with spaces 123" 
 check_ai "chat-ai: 따옴표 섞임"      ""  "" "\"${FAKE_AI_KEY}\"" nonzero 0 || true
 check_ai "chat-ai: 너무 짧음"        ""  "" "AIzaShort" nonzero 0 || true
 check_ai "chat-ai: 너무 긺(257자)"   ""  "" "$(printf 'a%.0s' $(seq 257))" nonzero 0 || true
-check_ai "chat-ai: 두 줄"            ""  "" "${FAKE_AI_KEY}"$'\n'"second" 0 1 || true
+check_ai "chat-ai: 두 줄"            ""  "" "${FAKE_AI_KEY}"$'\n'"second" nonzero 0 || true
+check_ai "chat-ai: CRLF"             ""  "" "${FAKE_AI_KEY}"$'\r\n' nonzero 0 || true
 check_ai "chat-ai: secret_forbidden" secret_forbidden "" "$FAKE_AI_KEY" nonzero 0 || true
 check_ai "chat-ai: ns_forbidden"     ns_forbidden "" "$FAKE_AI_KEY" nonzero 0 || true
 check_ai "chat-ai: 생성 중 AlreadyExists" already_exists_on_create_first "" "$FAKE_AI_KEY" nonzero 0 || true
+# 셸 추적을 켜고 실행해도 키가 출력(stderr 포함)·추적 파일·kubectl 인자에 나오지 않아야 한다.
+CHECK_BASH="bash -x" check_ai "chat-ai: bash -x 성공"   "" "" "$FAKE_AI_KEY" 0 1 || true
+CHECK_BASH="bash -x" check_ai "chat-ai: bash -x 형식 오류" "" "" "${FAKE_AI_KEY} x" nonzero 0 || true
+CHECK_ENV="env SHELLOPTS=xtrace" check_ai "chat-ai: SHELLOPTS=xtrace" "" "" "$FAKE_AI_KEY" 0 1 || true
+CHECK_ENV="env BASH_XTRACEFD=3" CHECK_BASH="bash -x" check_ai "chat-ai: BASH_XTRACEFD=3" "" "" "$FAKE_AI_KEY" 0 1 || true
+CHECK_BASH="bash -x" check_ai "chat-ai: bash -x 이미 있음" "" "ureka-chat-ai" "$FAKE_AI_KEY" nonzero 0 || true
 
 : >"$fake/log"
 rc=0; FAKE_LOG="$fake/log" PATH="$fake:$PATH" bash scripts/kind/create-secrets.sh --unknown </dev/null >/dev/null 2>&1 || rc=$?
