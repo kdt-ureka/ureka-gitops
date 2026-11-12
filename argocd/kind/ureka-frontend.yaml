@@ -1,0 +1,31 @@
+# kind dev용 Argo CD Application: ureka-frontend.
+# main의 environments/kind/ureka-frontend.yaml이 바뀌면 자동으로 배포한다. 이미지 변경·롤백은 values 파일 PR로 한다.
+# Secret·DB를 쓰지 않는다. 백엔드가 아직 없어도 Ready가 되고 해당 /api 경로만 502가 난다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-frontend-kind
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+    targetRevision: main
+    path: charts/ureka-backend
+    helm:
+      releaseName: frontend
+      valueFiles:
+        - ../../environments/kind/ureka-frontend.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

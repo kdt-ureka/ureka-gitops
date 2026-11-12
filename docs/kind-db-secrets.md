@@ -13,6 +13,7 @@ kind dev에 PostgreSQL 18 + pgvector, Redis, 비밀값 Secret을 붙이고 auth�
 | auth (auth_db) | `environments/kind/ureka-auth.yaml` | `ureka-auth-kind` |
 | content (content_db) | `environments/kind/ureka-content.yaml` | `ureka-content-kind` |
 | ops (ops_db, Flyway가 기동 때 `ops` 스키마 생성) | `environments/kind/ureka-ops.yaml` | `ureka-ops-kind` |
+| frontend (nginx 정적 서빙 + `/api/*` 프록시, DB·Secret 없음) | `environments/kind/ureka-frontend.yaml` | `ureka-frontend-kind` |
 | chat_db·ops_db와 계정 (앱은 `ureka-chat-kind`·`ureka-ops-kind`) | 같은 `db-bootstrap.sql` | 〃 |
 | 비밀값 Secret 9개 (기본 6 + chat·ops 3, 3장 목록) | Git에 없음. `scripts/kind/create-secrets.sh` | (Argo CD가 관리하지 않음) |
 
