@@ -54,7 +54,8 @@ env:
     value: http://ureka-chat
   - name: CONTENT_SERVICE_URL
     value: http://ureka-content
-  # 메일 서버는 아직 kind에 없다(가입 인증 메일 발송만 실패, 기동·/readyz와 무관).
+  # 메일 서버: environments/kind/data/mailpit.yaml (Service mailpit, SMTP 1025, 받기만 하고 밖으로 보내지 않음).
+  # 받은 메일은 kubectl -n dev port-forward deploy/mailpit 8025:8025 → http://localhost:8025
   - name: MAIL_HOST
     value: mailpit
   - name: MAIL_PORT
