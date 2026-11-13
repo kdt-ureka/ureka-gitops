@@ -15,7 +15,7 @@ kind dev에 PostgreSQL 18 + pgvector, Redis, 비밀값 Secret을 붙이고 auth�
 | ops (ops_db, Flyway가 기동 때 `ops` 스키마 생성) | `environments/kind/ureka-ops.yaml` | `ureka-ops-kind` |
 | frontend (nginx 정적 서빙 + `/api/*` 프록시, DB·Secret 없음) | `environments/kind/ureka-frontend.yaml` | `ureka-frontend-kind` |
 | chat_db·ops_db와 계정 (앱은 `ureka-chat-kind`·`ureka-ops-kind`) | 같은 `db-bootstrap.sql` | 〃 |
-| 비밀값 Secret 9개 (기본 6 + chat·ops 3, 3장 목록) | Git에 없음. `scripts/kind/create-secrets.sh` | (Argo CD가 관리하지 않음) |
+| 비밀값 Secret 10개 (기본 6 + chat·ops 3 + recommend 1, 3장 목록) | Git에 없음. `scripts/kind/create-secrets.sh` | (Argo CD가 관리하지 않음) |
 
 이미지는 모두 digest로 고정한다(`scripts/check-charts.sh`가 chart와 kustomize 양쪽을 검사). PSA restricted 그대로(비root uid 999, 읽기 전용 루트 FS, capability 제거, seccomp).
 
@@ -26,7 +26,7 @@ Application마다 자동 동기화가 따로 돈다. **data가 끝나고 계정�
 ```bash
 scripts/kind/up.sh
 kubectl apply -f argocd/kind/ureka-dev-namespace.yaml   # dev 네임스페이스
-scripts/kind/create-secrets.sh                           # Secret 9개(값은 이 PC에서 생성, 출력 안 함)
+scripts/kind/create-secrets.sh                           # Secret 10개(값은 이 PC에서 생성, 출력 안 함)
 kubectl apply -f argocd/kind/ureka-dev-data.yaml         # PostgreSQL·Redis + db-bootstrap Job
 
 # data 확인: Synced/Healthy, 마지막 동기화 Succeeded, Job 로그 "db-bootstrap 완료"
@@ -66,10 +66,12 @@ scripts/kind/p11-check.sh                                # V14가 content main �
 | chat·ops | `db-accounts-chat-ops` | `CHAT_DB_APP_SCRAM`, `OPS_DB_APP_SCRAM` (해시만) | db-bootstrap Job |
 | 〃 | `ureka-chat-secrets` | `DB_PASSWORD`(`chat_db_app`), `JWT_PUBLIC_KEY`, `INTERNAL_SERVICE_TOKEN` | chat api·worker·마이그레이션 Job |
 | 〃 | `ureka-ops-secrets` | `DB_PASSWORD`(`ops_db_app`), `JWT_PUBLIC_KEY` | ops |
+| recommend | `ureka-recommend-secrets` | `INTERNAL_SERVICE_TOKEN` | recommend(chat → recommend 내부 호출 확인. 비어 있으면 모든 내부 요청 401) |
 
 - 변수 이름은 각 저장소 `.env.example`과 ureka-local compose 기준이다. chat은 `DATABASE_URL` 한 줄로 받으므로 values에서 `$(DB_PASSWORD)` 참조로 조립한다(비밀번호는 16진수라 URL 인코딩이 필요 없다. `DB_PASSWORD`를 env 목록에서 `DATABASE_URL`보다 **앞에** 둬야 치환된다).
-- `JWT_PUBLIC_KEY`·`INTERNAL_SERVICE_TOKEN`은 모든 서비스가 같은 값이다(auth가 서명한 토큰을 각 서비스가 검증, 내부 호출 토큰 공유). JWT 개인키는 auth만 받는다. ops는 내부 토큰을 받지 않는다(`.env.example`에 없음).
-- AI 키(`AI_API_KEY`)는 위 9개에 넣지 않는다. kind chat AI는 기본 꺼짐(chat `AI_MODE` 기본값 `disabled`)이고, 켜려는 사람만 아래 선택 Secret을 만든다.
+- `JWT_PUBLIC_KEY`·`INTERNAL_SERVICE_TOKEN`은 모든 서비스가 같은 값이다(auth가 서명한 토큰을 각 서비스가 검증, 내부 호출 토큰 공유). JWT 개인키는 auth만 받는다. ops는 내부 토큰을 받지 않는다(`.env.example`에 없음). recommend는 내부 토큰만 받는다(JWT·DB 비밀번호 없음, mock 모드). recommend 실제 모드의 DB 접속(`ureka-recommend-db`)은 아직 values에 넣지 않았다.
+- recommend 전용 Secret을 따로 둔 이유: 서비스마다 Secret을 따로 두면 관리·교체 범위가 서비스 단위로 나뉜다(다른 서비스 Secret을 지우거나 다시 만들 때 recommend가 같이 영향받지 않는다). 나중에 `envFrom`이나 Secret 전체를 볼륨으로 붙이는 방식으로 바뀌어도 recommend에는 내부 토큰 하나만 들어간다. (지금처럼 키 하나만 `secretKeyRef`로 참조하면 다른 Secret을 빌려도 그 키만 env로 들어가고, 공통 차트는 ServiceAccount 토큰을 붙이지 않아 Pod가 Secret을 직접 조회하지도 않는다.) 운영(EKS)도 Secrets Manager → ESO로 서비스별 ExternalSecret을 둔다.
+- AI 키(`AI_API_KEY`)는 위 10개에 넣지 않는다. kind chat AI는 기본 꺼짐(chat `AI_MODE` 기본값 `disabled`)이고, 켜려는 사람만 아래 선택 Secret을 만든다.
 
 **(선택) chat AI 켜기 — `ureka-chat-ai`**
 
@@ -99,18 +101,23 @@ kubectl --context kind-ureka -n dev get pods -l 'app.kubernetes.io/name in (urek
 - 키는 **개인 Gemini 키**를 쓴다. 요금·무료 등급 한도는 키 주인 부담(팀 예산과 별개)이고, 무료 등급 입력은 Google 제품 개선에 쓰일 수 있어 **시험 문장만** 넣는다. 범위는 chat 해석·답변·페르소나(api·worker 둘 다 Gemini 호출)이고 recommend는 mock 그대로다. 공유 환경·EKS는 팀 키를 Secrets Manager → ESO로 넣는다.
 - 회귀 시험(`scripts/test-create-secrets.sh`, 합성 키 `ReviewOnlyChatAi<난수>`): 새로 만들기(키 목록·`AI_MODE=gemini`·입력값 일치·끝 줄바꿈 제거), 이미 있음·빈 입력·공백·따옴표·너무 짧음/긺·두 줄·CRLF·Forbidden·생성 중 AlreadyExists는 만들지 않음, **`bash -x`·`SHELLOPTS=xtrace`·`BASH_XTRACEFD` 실행 포함** 모든 경우 키가 출력(stderr 포함)·추적 파일·kubectl 인자에 없음, kind가 아닌 컨텍스트 거부. `set +x`를 빼면 추적 실행 4경우가 실패하는 것을 확인했다.
 
-**기존 클러스터에 chat·ops Secret 추가하기**
+**기존 클러스터에 chat·ops·recommend Secret 추가하기**
 
-Secret을 두 묶음으로 나눈 이유: 기본 묶음은 PostgreSQL 슈퍼유저 비밀번호와 묶여 있어 "일부만 있음"이면 클러스터(DB 볼륨)를 새로 만들어야 한다. chat·ops 계정은 나중에 생겼고, 슈퍼유저 비밀번호와 무관해 기존 DB에 그대로 더할 수 있다. 그래서 스크립트는 묶음마다 "전부 있음/전부 없음"만 받는다.
+Secret을 세 묶음으로 나눈 이유: 기본 묶음은 PostgreSQL 슈퍼유저 비밀번호와 묶여 있어 "일부만 있음"이면 클러스터(DB 볼륨)를 새로 만들어야 한다. chat·ops 계정과 recommend 토큰은 나중에 생겼고, 슈퍼유저 비밀번호와 무관해 기존 클러스터에 그대로 더할 수 있다. 그래서 스크립트는 묶음마다 "전부 있음/전부 없음"만 받고, 기본 묶음이 있으면 **없는 묶음만** 만든다.
 
-| 기본 6개 | chat·ops 3개 | 스크립트 동작 |
-|---|---|---|
-| 없음 | 없음 | 처음 만들기: 9개 생성(DB 볼륨이 남아 있으면 멈춤) |
-| 전부 | 없음 | **추가**: 3개만 생성. `JWT_PUBLIC_KEY`·`INTERNAL_SERVICE_TOKEN`은 `ureka-auth-secrets` 값을 그대로 복사(값은 화면·argv에 싣지 않음), DB 비밀번호 2개는 새로 생성 |
-| 전부 | 전부 | 아무것도 바꾸지 않음 |
-| 일부 | (무관) | 멈춤. 기존 규칙 그대로(클러스터 새로 만들기) |
-| 전부 | 일부 | 멈춤. chat·ops 3개만 지우고 다시 실행하라고 안내 |
-| 없음 | 일부·전부 | 멈춤. 새 기본 Secret과 JWT 공개키가 어긋나므로 chat·ops 3개를 지우고 다시 실행 |
+| 기본 6개 | chat·ops 3개 | recommend 1개 | 스크립트 동작 |
+|---|---|---|---|
+| 없음 | 없음 | 없음 | 처음 만들기: 10개 생성(DB 볼륨이 남아 있으면 멈춤) |
+| 전부 | 없음 | 없음 | **추가**: 4개 생성. `JWT_PUBLIC_KEY`·`INTERNAL_SERVICE_TOKEN`은 `ureka-auth-secrets` 값을 그대로 복사(값은 화면·argv에 싣지 않음), DB 비밀번호 2개는 새로 생성 |
+| 전부 | 전부 | 없음 | **추가**: recommend 1개만 생성. `INTERNAL_SERVICE_TOKEN`만 auth 값에서 복사(11/13 이전에 만든 클러스터) |
+| 전부 | 없음 | 있음 | **추가**: chat·ops 3개만 생성 |
+| 전부 | 전부 | 있음 | 아무것도 바꾸지 않음 |
+| 일부 | (무관) | (무관) | 멈춤. 기존 규칙 그대로(클러스터 새로 만들기) |
+| 전부 | 일부 | (무관) | 멈춤. chat·ops 3개만 지우고 다시 실행하라고 안내 |
+| 없음 | 일부·전부 | (무관) | 멈춤. 새 기본 Secret과 JWT 공개키·내부 토큰이 어긋나므로 chat·ops·recommend Secret을 지우고 다시 실행 |
+| 없음 | 없음 | 있음 | 멈춤. 같은 이유(recommend 내부 토큰이 새 기본 Secret과 어긋남) |
+
+기존 클러스터에 recommend Secret만 추가할 때: recommend values(`environments/kind/ureka-recommend.yaml`)는 이 Secret을 필수로 읽는다. 필수 참조는 **Secret·키가 없을 때** 시작을 막을 뿐, 값이 빈 문자열인지는 보지 않는다(빈 값이면 mock 모드 `/readyz`는 준비됨이라 1/1로 뜨고 내부 요청은 401). 스크립트는 빈 값을 만들지 않지만, 401이 나면 토큰 값부터 확인한다. **Secret을 먼저 만들고 values 변경을 병합**하면 새 Pod가 바로 토큰을 받고 뜬다. 순서가 바뀌면 새 Pod는 `CreateContainerConfigError`로 기다리고 기존 Pod가 남아 있다가, Secret을 만들면 이어서 뜬다. Secret을 values보다 나중에 다시 만들었다면(지우고 재실행) Pod는 시작할 때만 env를 읽으므로 `kubectl -n dev rollout restart deployment/ureka-recommend`로 재시작한다.
 
 기존 클러스터 순서: ① 이 PR이 main에 병합되기 **전에** `scripts/kind/create-secrets.sh`(추가) → ② 병합 후 data 자동 동기화(또는 수동 sync)로 db-bootstrap이 `chat_db`·`ops_db`와 계정을 만든다. 순서가 바뀌어 Secret보다 동기화가 먼저 오면, db-bootstrap Pod는 `db-accounts-chat-ops`가 없어 `CreateContainerConfigError`로 기다리다 Secret이 생기면 이어서 돈다(Job 제한 10분을 넘기면 동기화 Failed → Secret을 만든 뒤 다시 sync). 기존 auth·content Pod와 DB는 영향이 없다.
 

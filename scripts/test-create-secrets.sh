@@ -2,9 +2,10 @@
 # scripts/kind/create-secrets.sh 회귀 시험. 클러스터 없이 가짜 kubectl로 돈다(CI Helm 워크플로와 로컬에서 같이 쓴다).
 # - 조회가 NotFound가 아닌 오류(Forbidden·연결 실패)면 Secret을 하나도 만들지 않고 실패해야 한다.
 # - 이미 있는 Secret은 덮어쓰지 않는다(전부 있으면 아무것도 안 함, 묶음 하나라도 일부만 있으면 실패).
-# - 모두 없을 때만 9개(기본 6 + chat·ops 3)를 create로 만든다(apply 아님).
-# - 기본 6개가 있고 chat·ops 3개가 없으면 3개만 추가한다. 이때 JWT 공개키·내부 토큰은 ureka-auth-secrets 값을 그대로 쓴다.
-# - 각 Secret의 키 목록이 정해진 그대로다(chat·ops에 JWT 개인키·AI 키가 들어가지 않는다).
+# - 모두 없을 때만 10개(기본 6 + chat·ops 3 + recommend 1)를 create로 만든다(apply 아님).
+# - 기본 6개가 있으면 없는 묶음(chat·ops 3개, recommend 1개)만 추가한다. 이때 JWT 공개키·내부 토큰은 ureka-auth-secrets 값을 그대로 쓴다.
+# - 기본 묶음 없이 chat·ops나 recommend만 있으면 멈춘다.
+# - 각 Secret의 키 목록이 정해진 그대로다(chat·ops·recommend에 JWT 개인키·AI 키가 들어가지 않는다, recommend는 내부 토큰 하나뿐).
 # - --chat-ai: 표준 입력의 키로 ureka-chat-ai(AI_MODE=gemini, AI_API_KEY) 하나만 만든다. 키는 argv·출력에 나오지 않는다.
 #   이미 있음·빈 값·형식 아님·조회 오류면 만들지 않는다.
 set -euo pipefail
@@ -15,6 +16,7 @@ trap 'rm -rf "$fake"' EXIT
 
 BASE="postgres-admin db-accounts ureka-auth-secrets ureka-content-secrets ureka-recommend-db ureka-ingest-db"
 CHAT_OPS="db-accounts-chat-ops ureka-chat-secrets ureka-ops-secrets"
+REC="ureka-recommend-secrets"
 # 가짜 클러스터의 ureka-auth-secrets 값(추가 경로에서 복사돼야 하는 값)
 export FAKE_PUB="fake-public-key-$(openssl rand -hex 8)"
 export FAKE_INTERNAL="fake-internal-token-$(openssl rand -hex 8)"
@@ -117,37 +119,64 @@ expect_keys() { # Secret 이름, 기대 키 목록
   expect_eq "  ${1} 키" "$(gen_keys "$1")" "$2"
 }
 
-# 1) 처음 만들기: 9개, 각 Secret 키 목록, 서비스끼리 같은 값·다른 값
-if check "none_exist" "" "" 0 9; then
-  expect_eq "  만든 순서" "$(sed -n 's/^GEN \([^ ]*\).*/\1/p' "$fake/log" | tr '\n' ' ')" "$BASE $CHAT_OPS "
+made() { sed -n 's/^GEN \([^ ]*\).*/\1/p' "$fake/log" | tr '\n' ' '; }
+
+# 1) 처음 만들기: 10개, 각 Secret 키 목록, 서비스끼리 같은 값·다른 값
+if check "none_exist" "" "" 0 10; then
+  expect_eq "  만든 순서" "$(made)" "$BASE $CHAT_OPS $REC "
   expect_keys db-accounts "AUTH_DB_APP_SCRAM CONTENT_DB_APP_SCRAM CONTENT_DB_RECOMMEND_SCRAM CONTENT_DB_INGEST_SCRAM"
   expect_keys db-accounts-chat-ops "CHAT_DB_APP_SCRAM OPS_DB_APP_SCRAM"
   expect_keys ureka-chat-secrets "DB_PASSWORD JWT_PUBLIC_KEY INTERNAL_SERVICE_TOKEN"
   expect_keys ureka-ops-secrets "DB_PASSWORD JWT_PUBLIC_KEY"
+  expect_keys ureka-recommend-secrets "INTERNAL_SERVICE_TOKEN"
   expect_eq "  chat JWT 공개키 = auth" "$(key_sha ureka-chat-secrets JWT_PUBLIC_KEY)" "$(key_sha ureka-auth-secrets JWT_PUBLIC_KEY)"
   expect_eq "  ops JWT 공개키 = auth" "$(key_sha ureka-ops-secrets JWT_PUBLIC_KEY)" "$(key_sha ureka-auth-secrets JWT_PUBLIC_KEY)"
   expect_eq "  chat 내부 토큰 = auth" "$(key_sha ureka-chat-secrets INTERNAL_SERVICE_TOKEN)" "$(key_sha ureka-auth-secrets INTERNAL_SERVICE_TOKEN)"
+  expect_eq "  recommend 내부 토큰 = auth" "$(key_sha ureka-recommend-secrets INTERNAL_SERVICE_TOKEN)" "$(key_sha ureka-auth-secrets INTERNAL_SERVICE_TOKEN)"
   n="$(awk '$1=="KEY" && $3=="DB_PASSWORD" {print $4}' "$fake/log" | sort -u | wc -l | tr -d ' ')"
   expect_eq "  DB 비밀번호 6개 모두 다름" "$n" 6
   expect_eq "  기존 값 읽지 않음" "$(grep -c '^READ' "$fake/log" || true)" 0
 fi
 
-# 2) 추가: 기본 6개만 있음(DB 볼륨도 있음) → chat·ops 3개만, 값은 auth에서 복사
-if check "add_chat_ops" pvc_exists "$BASE" 0 3; then
-  expect_eq "  만든 것" "$(sed -n 's/^GEN \([^ ]*\).*/\1/p' "$fake/log" | tr '\n' ' ')" "$CHAT_OPS "
+# 2) 추가: 기본 6개만 있음(DB 볼륨도 있음) → chat·ops 3개 + recommend 1개, 값은 auth에서 복사
+if check "add_chat_ops_recommend" pvc_exists "$BASE" 0 4; then
+  expect_eq "  만든 것" "$(made)" "$CHAT_OPS $REC "
   expect_keys ureka-chat-secrets "DB_PASSWORD JWT_PUBLIC_KEY INTERNAL_SERVICE_TOKEN"
   expect_keys ureka-ops-secrets "DB_PASSWORD JWT_PUBLIC_KEY"
+  expect_keys ureka-recommend-secrets "INTERNAL_SERVICE_TOKEN"
   expect_eq "  chat JWT 공개키 = 기존 auth 값" "$(key_sha ureka-chat-secrets JWT_PUBLIC_KEY)" "$(str_sha "$FAKE_PUB")"
   expect_eq "  ops JWT 공개키 = 기존 auth 값" "$(key_sha ureka-ops-secrets JWT_PUBLIC_KEY)" "$(str_sha "$FAKE_PUB")"
   expect_eq "  chat 내부 토큰 = 기존 auth 값" "$(key_sha ureka-chat-secrets INTERNAL_SERVICE_TOKEN)" "$(str_sha "$FAKE_INTERNAL")"
+  expect_eq "  recommend 내부 토큰 = 기존 auth 값" "$(key_sha ureka-recommend-secrets INTERNAL_SERVICE_TOKEN)" "$(str_sha "$FAKE_INTERNAL")"
   expect_eq "  읽은 Secret은 ureka-auth-secrets뿐" "$(sed -n 's/^READ //p' "$fake/log" | sort -u)" ureka-auth-secrets
 fi
-check "add: auth 값이 비어 있음"     auth_key_empty "$BASE" nonzero 0 || true
-check "all_exist"                    ""  "$BASE $CHAT_OPS" 0 0 || true
-check "base partial"                 ""  "postgres-admin" nonzero 0 || true
-check "base partial + chat·ops 전부" ""  "postgres-admin $CHAT_OPS" nonzero 0 || true
-check "chat·ops partial"             ""  "$BASE ureka-chat-secrets" nonzero 0 || true
-check "chat·ops만 있음"              ""  "$CHAT_OPS" nonzero 0 || true
+
+# 3) 추가: 기본·chat·ops가 있음(11/13 이전 클러스터) → recommend 1개만, 토큰은 auth 값, JWT 공개키는 읽지 않음
+if check "add_recommend" pvc_exists "$BASE $CHAT_OPS" 0 1; then
+  expect_eq "  만든 것" "$(made)" "$REC "
+  expect_keys ureka-recommend-secrets "INTERNAL_SERVICE_TOKEN"
+  expect_eq "  recommend 내부 토큰 = 기존 auth 값" "$(key_sha ureka-recommend-secrets INTERNAL_SERVICE_TOKEN)" "$(str_sha "$FAKE_INTERNAL")"
+  expect_eq "  읽은 Secret은 ureka-auth-secrets뿐" "$(sed -n 's/^READ //p' "$fake/log" | sort -u)" ureka-auth-secrets
+  expect_eq "  JWT 공개키는 읽지 않음" "$(grep -c '^ARGV .*JWT_PUBLIC_KEY' "$fake/log" || true)" 0
+  expect_eq "  data 동기화 안내 없음(chat·ops 안 만듦)" "$(grep -c 'data를 다시 동기화' "$fake/out" || true)" 0
+  expect_eq "  recommend 재시작 안내" "$(grep -c 'rollout restart deployment/ureka-recommend' "$fake/out" || true)" 1
+fi
+
+# 4) 추가: 기본·recommend가 있음 → chat·ops 3개만
+if check "add_chat_ops(recommend 있음)" pvc_exists "$BASE $REC" 0 3; then
+  expect_eq "  만든 것" "$(made)" "$CHAT_OPS "
+fi
+check "add: auth 값이 비어 있음"            auth_key_empty "$BASE" nonzero 0 || true
+check "add_recommend: auth 값이 비어 있음"  auth_key_empty "$BASE $CHAT_OPS" nonzero 0 || true
+check "all_exist"                           ""  "$BASE $CHAT_OPS $REC" 0 0 || true
+check "base partial"                        ""  "postgres-admin" nonzero 0 || true
+check "base partial + chat·ops 전부"        ""  "postgres-admin $CHAT_OPS" nonzero 0 || true
+check "base partial + recommend"            ""  "postgres-admin $REC" nonzero 0 || true
+check "chat·ops partial"                    ""  "$BASE ureka-chat-secrets" nonzero 0 || true
+check "chat·ops partial + recommend"        ""  "$BASE ureka-chat-secrets $REC" nonzero 0 || true
+check "chat·ops만 있음"                     ""  "$CHAT_OPS" nonzero 0 || true
+check "recommend만 있음"                    ""  "$REC" nonzero 0 || true
+check "chat·ops·recommend만 있음"           ""  "$CHAT_OPS $REC" nonzero 0 || true
 check "pvc_exists(처음)"             pvc_exists "" nonzero 0 || true
 check "secret_forbidden"             secret_forbidden "" nonzero 0 || true
 check "secret_forbidden(추가)"       secret_forbidden "$BASE" nonzero 0 || true
@@ -157,6 +186,7 @@ check "conn_refused"                 conn_refused "" nonzero 0 || true
 # 중간 실패: 앞의 2개는 남고 스크립트는 실패로 끝난다(덮어쓰지 않음). 다음 실행은 '일부만 있음'으로 멈춘다.
 check "already_exists_on_create"     already_exists_on_create "" nonzero 2 || true
 check "already_exists_on_create(추가)" already_exists_on_create "$BASE" nonzero 2 || true
+check "AlreadyExists(recommend 추가)" already_exists_on_create_first "$BASE $CHAT_OPS" nonzero 0 || true
 
 # --chat-ai (선택 AI 키). 키는 표준 입력으로만 들어간다.
 # 제공자 키 모양(AIza…)을 피한 합성 값. 비밀 탐지 규칙에 걸리지 않게 한다.
