@@ -70,7 +70,7 @@ scripts/kind/p11-check.sh                                # V14가 content main �
 
 - 변수 이름은 각 저장소 `.env.example`과 ureka-local compose 기준이다. chat은 `DATABASE_URL` 한 줄로 받으므로 values에서 `$(DB_PASSWORD)` 참조로 조립한다(비밀번호는 16진수라 URL 인코딩이 필요 없다. `DB_PASSWORD`를 env 목록에서 `DATABASE_URL`보다 **앞에** 둬야 치환된다).
 - `JWT_PUBLIC_KEY`·`INTERNAL_SERVICE_TOKEN`은 모든 서비스가 같은 값이다(auth가 서명한 토큰을 각 서비스가 검증, 내부 호출 토큰 공유). JWT 개인키는 auth만 받는다. ops는 내부 토큰을 받지 않는다(`.env.example`에 없음). recommend는 내부 토큰만 받는다(JWT·DB 비밀번호 없음, mock 모드). recommend 실제 모드의 DB 접속(`ureka-recommend-db`)은 아직 values에 넣지 않았다.
-- recommend 전용 Secret을 따로 둔 이유: 다른 서비스 Secret(예: `ureka-content-secrets`)을 빌려 쓰면 recommend Pod가 그 Secret의 DB 비밀번호·JWT 키까지 읽을 수 있는 구조가 되고, 한쪽 Secret을 바꿀 때 다른 서비스가 같이 영향을 받는다. 운영(EKS)도 Secrets Manager → ESO로 서비스별 ExternalSecret을 둔다.
+- recommend 전용 Secret을 따로 둔 이유: 서비스마다 Secret을 따로 두면 관리·교체 범위가 서비스 단위로 나뉜다(다른 서비스 Secret을 지우거나 다시 만들 때 recommend가 같이 영향받지 않는다). 나중에 `envFrom`이나 Secret 전체를 볼륨으로 붙이는 방식으로 바뀌어도 recommend에는 내부 토큰 하나만 들어간다. (지금처럼 키 하나만 `secretKeyRef`로 참조하면 다른 Secret을 빌려도 그 키만 env로 들어가고, 공통 차트는 ServiceAccount 토큰을 붙이지 않아 Pod가 Secret을 직접 조회하지도 않는다.) 운영(EKS)도 Secrets Manager → ESO로 서비스별 ExternalSecret을 둔다.
 - AI 키(`AI_API_KEY`)는 위 10개에 넣지 않는다. kind chat AI는 기본 꺼짐(chat `AI_MODE` 기본값 `disabled`)이고, 켜려는 사람만 아래 선택 Secret을 만든다.
 
 **(선택) chat AI 켜기 — `ureka-chat-ai`**
@@ -117,7 +117,7 @@ Secret을 세 묶음으로 나눈 이유: 기본 묶음은 PostgreSQL 슈퍼유�
 | 없음 | 일부·전부 | (무관) | 멈춤. 새 기본 Secret과 JWT 공개키·내부 토큰이 어긋나므로 chat·ops·recommend Secret을 지우고 다시 실행 |
 | 없음 | 없음 | 있음 | 멈춤. 같은 이유(recommend 내부 토큰이 새 기본 Secret과 어긋남) |
 
-기존 클러스터에 recommend Secret만 추가할 때: recommend values(`environments/kind/ureka-recommend.yaml`)는 이 Secret을 필수로 읽는다. **Secret을 먼저 만들고 values 변경을 병합**하면 새 Pod가 바로 토큰을 받고 뜬다. 순서가 바뀌면 새 Pod는 `CreateContainerConfigError`로 기다리고 기존 Pod가 남아 있다가, Secret을 만들면 이어서 뜬다. Secret을 values보다 나중에 다시 만들었다면(지우고 재실행) Pod는 시작할 때만 env를 읽으므로 `kubectl -n dev rollout restart deployment/ureka-recommend`로 재시작한다.
+기존 클러스터에 recommend Secret만 추가할 때: recommend values(`environments/kind/ureka-recommend.yaml`)는 이 Secret을 필수로 읽는다. 필수 참조는 **Secret·키가 없을 때** 시작을 막을 뿐, 값이 빈 문자열인지는 보지 않는다(빈 값이면 mock 모드 `/readyz`는 준비됨이라 1/1로 뜨고 내부 요청은 401). 스크립트는 빈 값을 만들지 않지만, 401이 나면 토큰 값부터 확인한다. **Secret을 먼저 만들고 values 변경을 병합**하면 새 Pod가 바로 토큰을 받고 뜬다. 순서가 바뀌면 새 Pod는 `CreateContainerConfigError`로 기다리고 기존 Pod가 남아 있다가, Secret을 만들면 이어서 뜬다. Secret을 values보다 나중에 다시 만들었다면(지우고 재실행) Pod는 시작할 때만 env를 읽으므로 `kubectl -n dev rollout restart deployment/ureka-recommend`로 재시작한다.
 
 기존 클러스터 순서: ① 이 PR이 main에 병합되기 **전에** `scripts/kind/create-secrets.sh`(추가) → ② 병합 후 data 자동 동기화(또는 수동 sync)로 db-bootstrap이 `chat_db`·`ops_db`와 계정을 만든다. 순서가 바뀌어 Secret보다 동기화가 먼저 오면, db-bootstrap Pod는 `db-accounts-chat-ops`가 없어 `CreateContainerConfigError`로 기다리다 Secret이 생기면 이어서 돈다(Job 제한 10분을 넘기면 동기화 Failed → Secret을 만든 뒤 다시 sync). 기존 auth·content Pod와 DB는 영향이 없다.
 
