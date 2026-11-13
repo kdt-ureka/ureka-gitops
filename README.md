@@ -72,7 +72,7 @@ scripts/kind/sync-ecr-image.sh frontend <ureka-frontend main 커밋 SHA 40자>
 kubectl apply -f argocd/kind/
 ```
 
-Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, 메일 서버 Mailpit, DB 계정 생성 Job), recommend(MOCK_MODE), auth, content, ops, frontend, chat(api·worker·Alembic 마이그레이션 Job, AI 기본 꺼짐 — 켜기는 [docs/kind-db-secrets.md](docs/kind-db-secrets.md) "chat AI 켜기"). 가입 인증 메일은 `kubectl -n dev port-forward deploy/mailpit 8025:8025` → http://localhost:8025 에서 본다. 화면은 `kubectl -n dev port-forward svc/ureka-frontend 3000:80` → http://localhost:3000 (nginx가 `/api/*`를 각 서비스로 넘긴다). 이미 있는 kind 클러스터는 `create-secrets.sh`를 한 번 더 실행하면 chat·ops Secret만 추가된다. 비밀값 교체는 클러스터를 새로 만든다. DB 계정 구조·비밀값 방식·데이터 보존은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
+Argo CD로 배포하는 것: 데이터 계층(PostgreSQL 18 + pgvector, Redis, 메일 서버 Mailpit, DB 계정 생성 Job), recommend(MOCK_MODE, 계약 v2 `/internal/v1/recommendations`, 내부 토큰 Secret `ureka-recommend-secrets` 필수), auth, content, ops, frontend, chat(api·worker·Alembic 마이그레이션 Job, AI 기본 꺼짐 — 켜기는 [docs/kind-db-secrets.md](docs/kind-db-secrets.md) "chat AI 켜기"). 가입 인증 메일은 `kubectl -n dev port-forward deploy/mailpit 8025:8025` → http://localhost:8025 에서 본다. 화면은 `kubectl -n dev port-forward svc/ureka-frontend 3000:80` → http://localhost:3000 (nginx가 `/api/*`를 각 서비스로 넘긴다). 이미 있는 kind 클러스터는 `create-secrets.sh`를 한 번 더 실행하면 없는 Secret 묶음(chat·ops, recommend 내부 토큰)만 추가된다. 비밀값 교체는 클러스터를 새로 만든다. DB 계정 구조·비밀값 방식·데이터 보존은 [docs/kind-db-secrets.md](docs/kind-db-secrets.md).
 
 출력된 digest는 해당 CI 실행의 artifact `image-ref.json` digest와 같아야 한다. 이후 배포·롤백은 [docs/kind-deploy-rollback.md](docs/kind-deploy-rollback.md).
 

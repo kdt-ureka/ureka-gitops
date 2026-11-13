@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # kind dev 네임스페이스에 로컬 전용 비밀값 Secret을 처음 한 번 만든다. 값은 이 PC에서 새로 만들고 Git에 남기지 않는다.
 #
-#   scripts/kind/create-secrets.sh             기본·chat·ops Secret(아래 9개)
+#   scripts/kind/create-secrets.sh             기본·chat·ops·recommend Secret(아래 10개)
 #   scripts/kind/create-secrets.sh --chat-ai   (선택) chat AI 키 Secret ureka-chat-ai만. 키는 표준 입력으로 받는다
 #
-# Secret은 두 묶음이다. 묶음마다 "전부 있음 / 전부 없음"만 받고, 일부만 있으면 멈춘다.
-#   기본 묶음(6개)      처음 만들 때만 만든다(PostgreSQL 슈퍼유저 비밀번호와 묶여 있어 DB 볼륨과 같이 새로 만든다)
-#   chat·ops 묶음(3개)  기본 묶음이 이미 있는 클러스터에는 이것만 추가로 만든다("추가" 경로).
-#                       JWT 공개키·내부 토큰은 새로 만들지 않고 ureka-auth-secrets 값을 그대로 복사한다(서비스끼리 같은 값이어야 한다).
-#                       DB 비밀번호는 새로 만들고 해시만 db-accounts-chat-ops에 둔다. 계정은 다음 data 동기화의 db-bootstrap이 만든다.
+# Secret은 세 묶음이다. 묶음마다 "전부 있음 / 전부 없음"만 받고, 일부만 있으면 멈춘다.
+#   기본 묶음(6개)       처음 만들 때만 만든다(PostgreSQL 슈퍼유저 비밀번호와 묶여 있어 DB 볼륨과 같이 새로 만든다)
+#   chat·ops 묶음(3개)
+#   recommend 묶음(1개)  처음 만들 때는 기본 묶음과 같이 만든다. 기본 묶음이 이미 있는 클러스터에는 둘 중 없는 묶음만 추가로 만든다("추가" 경로).
+#                        추가 때 JWT 공개키·내부 토큰은 새로 만들지 않고 ureka-auth-secrets 값을 그대로 복사한다(서비스끼리 같은 값이어야 한다).
+#                        chat·ops DB 비밀번호는 새로 만들고 해시만 db-accounts-chat-ops에 둔다. 계정은 다음 data 동기화의 db-bootstrap이 만든다.
+#                        기본 묶음 없이 chat·ops나 recommend 묶음만 있으면 멈춘다(값이 새 기본 묶음과 어긋난다).
 #
 # 만드는 Secret (네임스페이스 dev)
 # [기본 묶음]
@@ -23,9 +25,12 @@
 #   db-accounts-chat-ops   CHAT_DB_APP_SCRAM, OPS_DB_APP_SCRAM    chat_db_app·ops_db_app 비밀번호의 SCRAM-SHA-256 해시(db-bootstrap Job용)
 #   ureka-chat-secrets     DB_PASSWORD, JWT_PUBLIC_KEY, INTERNAL_SERVICE_TOKEN
 #   ureka-ops-secrets      DB_PASSWORD, JWT_PUBLIC_KEY
+# [recommend 묶음]
+#   ureka-recommend-secrets INTERNAL_SERVICE_TOKEN                chat → recommend 내부 호출 확인용(없으면 recommend가 모든 내부 요청을 401로 거절)
 #
-# 서비스마다 필요한 값만 따로 담는다(content·chat·ops는 JWT 개인키를 받지 않는다, ops는 내부 토큰도 받지 않는다).
-# AI 키(AI_API_KEY)는 위 9개에 넣지 않는다. kind chat AI는 기본 꺼짐이고, 켜려는 사람만 --chat-ai로 따로 만든다.
+# 서비스마다 필요한 값만 따로 담는다(content·chat·ops·recommend는 JWT 개인키를 받지 않는다, ops는 내부 토큰도 받지 않는다,
+# recommend는 내부 토큰만 받는다).
+# AI 키(AI_API_KEY)는 위 10개에 넣지 않는다. kind chat AI는 기본 꺼짐이고, 켜려는 사람만 --chat-ai로 따로 만든다.
 #
 # [선택] --chat-ai: ureka-chat-ai   AI_MODE(=gemini), AI_API_KEY
 #   chat values(environments/kind/ureka-chat*.yaml)가 이 Secret을 optional로 읽는다. 없으면 AI_MODE가 비어 꺼짐(disabled).
@@ -50,6 +55,7 @@ ctx="${KUBE_CONTEXT:-kind-ureka}"
 ns=dev
 base_secrets=(postgres-admin db-accounts ureka-auth-secrets ureka-content-secrets ureka-recommend-db ureka-ingest-db)
 chat_ops_secrets=(db-accounts-chat-ops ureka-chat-secrets ureka-ops-secrets)
+recommend_secrets=(ureka-recommend-secrets)
 k() { kubectl --context "$ctx" -n "$ns" "$@"; }
 
 chat_ai=0
@@ -142,11 +148,13 @@ count_existing() { # Secret 이름... → 있는 개수
 # exists가 멈춘 경우(Forbidden 등) 명령 치환 안에서 끝나므로 여기서도 멈춘다.
 base_n="$(count_existing "${base_secrets[@]}")" || exit 1
 chat_ops_n="$(count_existing "${chat_ops_secrets[@]}")" || exit 1
+recommend_n="$(count_existing "${recommend_secrets[@]}")" || exit 1
 base_total=${#base_secrets[@]}
 chat_ops_total=${#chat_ops_secrets[@]}
+recommend_total=${#recommend_secrets[@]}
 
-if [ "$base_n" -eq "$base_total" ] && [ "$chat_ops_n" -eq "$chat_ops_total" ]; then
-  echo "Secret $((base_total + chat_ops_total))개가 이미 있습니다. 아무것도 바꾸지 않았습니다."
+if [ "$base_n" -eq "$base_total" ] && [ "$chat_ops_n" -eq "$chat_ops_total" ] && [ "$recommend_n" -eq "$recommend_total" ]; then
+  echo "Secret $((base_total + chat_ops_total + recommend_total))개가 이미 있습니다. 아무것도 바꾸지 않았습니다."
   exit 0
 fi
 if [ "$base_n" -ne 0 ] && [ "$base_n" -ne "$base_total" ]; then
@@ -160,12 +168,16 @@ if [ "$chat_ops_n" -ne 0 ] && [ "$chat_ops_n" -ne "$chat_ops_total" ]; then
   echo "다시 만든 뒤 data를 동기화하면 db-bootstrap이 chat_db_app·ops_db_app 비밀번호를 새 해시로 바꾼다. 그 뒤 chat·ops Pod를 재시작한다." >&2
   exit 1
 fi
-if [ "$base_n" -eq 0 ] && [ "$chat_ops_n" -ne 0 ]; then
-  echo "기본 Secret 없이 chat·ops Secret만 있습니다. JWT 공개키·내부 토큰이 새 기본 Secret과 맞지 않게 되므로 멈춥니다." >&2
-  echo "kubectl --context $ctx -n $ns delete secret ${chat_ops_secrets[*]} 후 다시 실행하세요." >&2
+if [ "$base_n" -eq 0 ] && { [ "$chat_ops_n" -ne 0 ] || [ "$recommend_n" -ne 0 ]; }; then
+  echo "기본 Secret 없이 chat·ops 또는 recommend Secret만 있습니다. JWT 공개키·내부 토큰이 새 기본 Secret과 맞지 않게 되므로 멈춥니다." >&2
+  echo "kubectl --context $ctx -n $ns delete secret ${chat_ops_secrets[*]} ${recommend_secrets[*]} --ignore-not-found 후 다시 실행하세요." >&2
   exit 1
 fi
-# 여기부터: (기본 0, chat·ops 0) = 처음 만들기, (기본 전부, chat·ops 0) = chat·ops 추가
+# 여기부터: 기본 0(나머지도 0) = 처음 만들기(10개 전부), 기본 전부 = 없는 묶음(chat·ops, recommend)만 추가
+make_chat_ops=0
+make_recommend=0
+if [ "$chat_ops_n" -eq 0 ]; then make_chat_ops=1; fi
+if [ "$recommend_n" -eq 0 ]; then make_recommend=1; fi
 mode=add
 if [ "$base_n" -eq 0 ]; then
   mode=fresh
@@ -206,11 +218,14 @@ if [ "$mode" = fresh ]; then
   printf 'content_db_recommend' >"$work/recommend_user"
   printf 'content_db_ingest' >"$work/ingest_user"
 else
-  # chat·ops 추가: 서비스끼리 같아야 하는 값은 auth Secret에서 그대로 가져온다.
-  read_key ureka-auth-secrets JWT_PUBLIC_KEY "$work/jwt-public.pem"
+  # 추가: 서비스끼리 같아야 하는 값은 auth Secret에서 그대로 가져온다(만들 묶음에 필요한 값만 읽는다).
+  # 만들기 전에 모두 읽는다. 읽기에 실패하면 아무것도 만들지 않고 멈춘다.
+  if [ "$make_chat_ops" = 1 ]; then read_key ureka-auth-secrets JWT_PUBLIC_KEY "$work/jwt-public.pem"; fi
   read_key ureka-auth-secrets INTERNAL_SERVICE_TOKEN "$work/internal"
 fi
-for v in chat_db ops_db; do rand "$v"; scram "$work/$v" "$work/$v.scram"; done
+if [ "$make_chat_ops" = 1 ]; then
+  for v in chat_db ops_db; do rand "$v"; scram "$work/$v" "$work/$v.scram"; done
+fi
 
 if [ "$mode" = fresh ]; then
   apply_secret postgres-admin POSTGRES_PASSWORD="$work/postgres"
@@ -232,20 +247,29 @@ if [ "$mode" = fresh ]; then
   apply_secret ureka-recommend-db DB_USERNAME="$work/recommend_user" DB_PASSWORD="$work/recommend_db"
   apply_secret ureka-ingest-db DB_USERNAME="$work/ingest_user" DB_PASSWORD="$work/ingest_db"
 fi
-# chat·ops 묶음: 해시 Secret을 먼저 만든다(서비스 Secret만 있고 계정 해시가 없는 상태를 피한다).
-apply_secret db-accounts-chat-ops \
-  CHAT_DB_APP_SCRAM="$work/chat_db.scram" \
-  OPS_DB_APP_SCRAM="$work/ops_db.scram"
-apply_secret ureka-chat-secrets \
-  DB_PASSWORD="$work/chat_db" \
-  JWT_PUBLIC_KEY="$work/jwt-public.pem" \
-  INTERNAL_SERVICE_TOKEN="$work/internal"
-apply_secret ureka-ops-secrets \
-  DB_PASSWORD="$work/ops_db" \
-  JWT_PUBLIC_KEY="$work/jwt-public.pem"
+if [ "$make_chat_ops" = 1 ]; then
+  # chat·ops 묶음: 해시 Secret을 먼저 만든다(서비스 Secret만 있고 계정 해시가 없는 상태를 피한다).
+  apply_secret db-accounts-chat-ops \
+    CHAT_DB_APP_SCRAM="$work/chat_db.scram" \
+    OPS_DB_APP_SCRAM="$work/ops_db.scram"
+  apply_secret ureka-chat-secrets \
+    DB_PASSWORD="$work/chat_db" \
+    JWT_PUBLIC_KEY="$work/jwt-public.pem" \
+    INTERNAL_SERVICE_TOKEN="$work/internal"
+  apply_secret ureka-ops-secrets \
+    DB_PASSWORD="$work/ops_db" \
+    JWT_PUBLIC_KEY="$work/jwt-public.pem"
+fi
+if [ "$make_recommend" = 1 ]; then
+  apply_secret ureka-recommend-secrets INTERNAL_SERVICE_TOKEN="$work/internal"
+fi
 
-if [ "$mode" = add ]; then
+if [ "$mode" = add ] && [ "$make_chat_ops" = 1 ]; then
   echo "chat·ops Secret을 추가했습니다. data를 다시 동기화해야 db-bootstrap이 chat_db·ops_db와 계정을 만듭니다:"
   echo "  kubectl --context $ctx -n argocd patch app ureka-dev-data-kind --type merge -p '{\"operation\":{\"sync\":{}}}'"
+fi
+if [ "$mode" = add ] && [ "$make_recommend" = 1 ]; then
+  echo "recommend Secret을 추가했습니다. recommend Pod는 시작할 때만 env를 읽는다. 이미 떠 있으면 재시작한다:"
+  echo "  kubectl --context $ctx -n $ns rollout restart deployment/ureka-recommend"
 fi
 echo "완료. 값은 출력하지 않는다. 확인: kubectl --context $ctx -n $ns get secret -l ureka.io/created-by=create-secrets.sh"

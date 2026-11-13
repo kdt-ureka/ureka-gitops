@@ -4,18 +4,28 @@ name: ureka-recommend
 
 replicaCount: 1
 
+# recommend main(계약 v2: POST /internal/v1/recommendations). scripts/kind/sync-ecr-image.sh로 로컬 레지스트리에 복사한 digest.
 image:
   repository: localhost:5001/ureka/recommend
-  tag: sha-1593061700ec1e92b144186553d320400d445572
-  digest: sha256:5572cac7b69017002dd4c5e5a9eb5ff1eb2d89ee3d87d1f32a0f030c6b22f598
+  tag: sha-be3038ae1ff49e8ed7327f77ba65e7b6ed9d03e4
+  digest: sha256:b93e8f89b46209801406a825cc4d9f9435859a23385b06aa92e355fab71f1da7
   pullPolicy: IfNotPresent
 
 containerPort: 8000
 
-# Gemini·DB 없이 fixtures로 응답한다. 실제 모드는 DB·비밀값(ESO)이 준비된 뒤(S7).
+# Gemini·DB 없이 합성 후보로 응답한다(MOCK_CONTENT_IDS 기본값 1건, recommend app/config.py).
+# 실제 모드(MOCK_MODE=false, GEMINI_API_KEY·PG_DSN·MAPPING_FILE)는 작품 적재·매핑 파일이 준비된 뒤.
 env:
   - name: MOCK_MODE
     value: "true"
+  # chat → recommend 내부 호출 확인용. 비어 있으면 recommend가 모든 내부 요청을 401로 거절한다.
+  # 값은 다른 서비스와 같다(scripts/kind/create-secrets.sh가 ureka-auth-secrets 값으로 만든다).
+  # optional이 아니다: Secret이 없으면 새 Pod가 뜨지 않고(CreateContainerConfigError) 기존 Pod가 그대로 남는다.
+  - name: INTERNAL_SERVICE_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: ureka-recommend-secrets
+        key: INTERNAL_SERVICE_TOKEN
 
 resources:
   requests:
