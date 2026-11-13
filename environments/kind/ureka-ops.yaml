@@ -11,8 +11,8 @@ image:
   # kind 로컬 레지스트리. ECR 이미지를 scripts/kind/sync-ecr-image.sh로 digest 그대로 복사해 둔다.
   repository: localhost:5001/ureka/ops
   # tag = ureka-ops main 커밋, digest = 그 커밋 CI artifact image-ref.json의 digest
-  tag: sha-a3095eea6f4d7242099c3e5eb3142cd2c16a8963
-  digest: sha256:98bd802bde62689da3365a2c8e55e16af1342c28c2fc2eedeae249786c18549f
+  tag: sha-895b3c0daaca2c15f720037c23789c0babcd1f6a
+  digest: sha256:25cf8667f5b857bfeeb29644a983214a418b93372b6523acfea58e871af1fdc3
   pullPolicy: IfNotPresent
 
 # 이름은 ureka-ops .env.example 기준. 비밀값은 값 대신 Secret 참조만 둔다.

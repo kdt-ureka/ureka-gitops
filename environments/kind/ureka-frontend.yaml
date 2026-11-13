@@ -10,8 +10,8 @@ image:
   # kind 로컬 레지스트리. ECR 이미지를 scripts/kind/sync-ecr-image.sh로 digest 그대로 복사해 둔다.
   repository: localhost:5001/ureka/frontend
   # tag = ureka-frontend main 커밋, digest = 그 커밋 CI artifact image-ref.json의 digest
-  tag: sha-83486e30d7c735d3f17e24ad94829258bced031b
-  digest: sha256:3216527710a3b53e686913dc6d7df12a8aa6f4534644948f6217b73d5a022965
+  tag: sha-3344d570b2a6b39609ebb24385564e8a40b0f609
+  digest: sha256:3d9edbfcc2c702a77f07bb3668fb459129656883a48037c7d8dc980f38789ebf
   pullPolicy: IfNotPresent
 
 # nginx 이미지는 /healthz만 있다(/readyz 없음). 정적 서빙이라 살아 있으면 요청을 받을 수 있다.
