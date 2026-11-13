@@ -5,6 +5,15 @@ name: ureka-content
 
 replicaCount: 1
 
+# Spring Boot: 힙(MaxRAMPercentage 70%) + 힙 바깥(Metaspace·스레드)이 512Mi를 넘어 OOMKilled → 768Mi
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 768Mi
+
 image:
   repository: localhost:5001/ureka/content
   tag: sha-e58615b12b34f30e48e3ffb7c903710cd7439c5c
