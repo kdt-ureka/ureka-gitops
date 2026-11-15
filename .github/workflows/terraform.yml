@@ -23,12 +23,22 @@ concurrency:
 jobs:
   check:
     # AWS 자격 없이 형식·문법·정책 테스트(mock provider)만 한다. plan·apply는 사람이 로컬에서 한다.
-    name: Terraform fmt, validate and test
+    # 폴더(root·module)마다 따로 init·validate·test 한다. 새 폴더를 만들면 matrix에 추가한다.
+    name: Terraform check (${{ matrix.dir }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - infra/environments/shared
+          - infra/environments/network
+          - infra/modules/network
+          - infra/environments/ec2
+          - infra/modules/k3s_host
     defaults:
       run:
-        working-directory: infra/environments/shared
+        working-directory: ${{ matrix.dir }}
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -40,7 +50,8 @@ jobs:
           terraform_version: '~1.15.0'
           terraform_wrapper: false
       - name: Check formatting
-        run: terraform fmt -check -recursive ../..
+        working-directory: infra
+        run: terraform fmt -check -recursive
       - name: Init without backend
         run: terraform init -backend=false -input=false -lockfile=readonly
       - name: Validate
