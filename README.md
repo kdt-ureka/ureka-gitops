@@ -22,6 +22,11 @@ Ureka AWS·EKS 인프라 및 Argo CD 배포 설정
 
 S6~S7 dev는 노트북 kind 클러스터 + Argo CD다. 이미지는 CI가 ECR에 게시한 것을 digest 그대로 kind 로컬 레지스트리(`localhost:5001`)에 복사해 쓴다. 클러스터와 이 저장소에는 AWS 자격 증명을 두지 않는다.
 
+> **맥(Apple Silicon)에서는 메모리·CPU·응답 시간 숫자를 그대로 쓰지 않는다.** CI는 운영(EC2·EKS, x86)에 맞춰 `linux/amd64` 이미지만 만든다. 그래서 arm64 노드의 kind에서는 Docker Desktop의 Rosetta가 x86을 번역해 실행한다.
+> - JVM 서비스는 Pod마다 약 150MB가 더 잡혔다(content 실측 486MB, 그중 Java가 아는 몫 312MB). CPU와 기동 시간도 더 든다.
+> - kind는 "뜨는지, 설정이 맞는지" 확인용이다. limit·request·노드 크기는 x86(EC2·EKS)에서 잰 값으로 정한다.
+> - 확인: 노드 `kubectl get node -o jsonpath='{.items[0].status.nodeInfo.architecture}'`가 `arm64`인데 `kubectl -n dev exec deploy/ureka-auth -- uname -m`이 `x86_64`면 번역 실행 중이다.
+
 ### 1. 조회 전용 SSO 프로필 추가 (처음 한 번)
 
 ECR에서 받기만 하므로 관리자 프로필이 아니라 **ReadOnlyAccess 권한 세트** 프로필을 쓴다(push 권한 없음).
