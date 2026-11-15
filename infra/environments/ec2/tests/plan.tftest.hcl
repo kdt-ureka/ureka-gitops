@@ -47,7 +47,10 @@ run "registry_and_pull_scope" {
   }
 
   assert {
-    condition     = length(local.ecr_repository_arns) == 7 && contains(local.ecr_repository_arns, "arn:aws:ecr:ap-northeast-2:123456789012:repository/ureka/auth")
+    condition = toset(local.ecr_repository_arns) == toset([
+      for s in ["auth", "chat", "content", "ops", "recommend", "frontend", "ingest"] :
+      "arn:aws:ecr:ap-northeast-2:123456789012:repository/ureka/${s}"
+    ]) && length(local.ecr_repository_arns) == 7
     error_message = "Pull access must cover exactly the seven service repositories."
   }
 }

@@ -13,12 +13,14 @@ variable "vpc_cidr" {
   description = "VPC IPv4 CIDR. Must be a /16 that does not overlap k3s defaults (10.42.0.0/16 pods, 10.43.0.0/16 services)."
 
   validation {
+    # 표기를 정규화해서 비교한다(10.42.1.0/16도 실제로는 10.42.0.0/16). IPv4 /16의 네트워크 주소로 쓴 값만 받는다.
     condition = (
       can(cidrhost(var.vpc_cidr, 0)) &&
-      endswith(var.vpc_cidr, "/16") &&
-      !contains(["10.42.0.0/16", "10.43.0.0/16"], var.vpc_cidr)
+      can(regex("^[0-9.]+/16$", var.vpc_cidr)) &&
+      try("${cidrhost(var.vpc_cidr, 0)}/16" == var.vpc_cidr, false) &&
+      !contains(["10.42.0.0/16", "10.43.0.0/16"], try("${cidrhost(var.vpc_cidr, 0)}/16", ""))
     )
-    error_message = "vpc_cidr must be a valid /16 other than 10.42.0.0/16 and 10.43.0.0/16 (k3s pod/service ranges)."
+    error_message = "vpc_cidr must be a canonical IPv4 /16 (network address, e.g. 10.0.0.0/16) and must not be 10.42.0.0/16 or 10.43.0.0/16 (k3s pod/service ranges)."
   }
 }
 

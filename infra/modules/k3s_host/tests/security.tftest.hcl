@@ -168,3 +168,52 @@ run "rejects_unpinned_k3s" {
 
   expect_failures = [var.k3s_version]
 }
+
+run "local_port_range_is_1024_to_65535" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for p in ["1024", "8080", "65535"] :
+      can(regex(jsondecode(aws_ssm_document.port_forward_http.content).parameters.localPortNumber.allowedPattern, p))
+    ])
+    error_message = "Local ports 1024-65535 must be accepted."
+  }
+
+  assert {
+    condition = alltrue([
+      for p in ["0", "80", "1023", "65536", "99999", "8080;", "80 80"] :
+      !can(regex(jsondecode(aws_ssm_document.port_forward_http.content).parameters.localPortNumber.allowedPattern, p))
+    ])
+    error_message = "Local ports outside 1024-65535 must be rejected."
+  }
+}
+
+run "user_data_keeps_safety_settings" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for needle in [
+        "--proto '=https' --proto-redir '=https'",
+        "--max-time 300",
+        "sha256sum -c -",
+        "secrets-encryption: true",
+        "write-kubeconfig-mode: \"0600\"",
+        "INSTALL_K3S_SKIP_DOWNLOAD=true",
+        "INSTALL_K3S_SKIP_SELINUX_RPM=true",
+        "\"Enforcing\"",
+        "apiVersion: credentialprovider.kubelet.k8s.io/v1",
+        "K3S_SHA256='${var.k3s_sha256}'",
+        "ECR_PROVIDER_SHA256='${var.ecr_credential_provider_sha256}'",
+        "K3S_INSTALL_SHA256='${var.k3s_install_sha256}'",
+      ] : strcontains(local.user_data, needle)
+    ])
+    error_message = "User data must keep HTTPS-only pinned downloads, checksum checks, secret encryption, private kubeconfig and the SELinux stop."
+  }
+
+  assert {
+    condition     = !strcontains(local.user_data, "set -x") && !strcontains(local.user_data, "get.k3s.io")
+    error_message = "User data must not trace commands or fetch the unpinned get.k3s.io script."
+  }
+}

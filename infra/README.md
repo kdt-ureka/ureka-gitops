@@ -7,7 +7,7 @@ Ureka AWS 인프라 Terraform.
 | `modules/service_ecr` | 서비스 하나의 ECR 저장소 (태그 변경 불가, push 시 기본 스캔, 태그 없는 이미지만 7일 후 정리) |
 | `modules/github_ecr_publisher` | GitHub Actions OIDC로 받는 서비스별 ECR push 전용 IAM Role |
 | `modules/network` | 공유 실행 환경 VPC: 공개·사설 서브넷 2개씩(2개 AZ), 인터넷 게이트웨이, 사설은 인터넷 경로 없음, 기본 보안 그룹 규칙 없음 |
-| `modules/k3s_host` | EC2 한 대 + k3s: 인바운드 0·아웃바운드 443, IMDSv2 hop 1, SSM, ECR 읽기 Role, 80번 고정 포트 포워딩 문서 |
+| `modules/k3s_host` | EC2 한 대 + k3s: 인바운드 0·아웃바운드 443, IMDSv2 hop 1, SSM, ECR 받기 전용 Role, 80번 고정 포트 포워딩 문서(로컬 포트 1024~65535) |
 | `bootstrap` | 원격 state S3 버킷을 만드는 절차(문서만) |
 | `environments/shared` | 계정에 한 벌만 두는 자원: GitHub OIDC provider, 서비스 7개(auth, chat, content, ops, recommend, frontend, ingest) ECR·게시 Role |
 | `environments/network` | 공유 실행 환경 네트워크(VPC `10.0.0.0/16`, 2a·2c). 프로젝트 끝까지 둔다 |
@@ -28,6 +28,14 @@ Ureka AWS 인프라 Terraform.
 - 다른 층의 state를 직접 읽지 않는다. `network`의 VPC·서브넷은 태그(`Project`, `Stack=network`, `Tier`)로 찾고, 결과가 0개나 여러 개면 plan이 실패한다.
 - apply 순서: `shared` → `network` → `ec2` → `data` → `eks`. 지울 때는 반대 순서.
 - 새 폴더를 만들면 `.github/workflows/terraform.yml`의 matrix에 추가한다. 모듈도 `tests/`가 있으면 추가한다.
+
+### ec2 운영 한계 (첫 버전에서 수용)
+
+- **다시 만들지 않는다.** k3s 상태·Secret·첫 버전 DB가 루트 디스크에만 있고, 종료하면 지워진다(`delete_on_termination = true`, 잃어도 되는 dev). 종료 보호를 켜 두었다.
+- `ignore_changes = [ami, user_data]`는 **새 AMI·user data 수정이 기존 서버에 적용되지 않는다**는 뜻이다. OS 보안 업데이트는 SSM 셸에서 `dnf upgrade`로 하고, user data를 고쳤다면 같은 내용을 서버에서 직접 실행하거나 승인 후 `terraform apply -replace`로 다시 만든다.
+- ignore_changes는 그 두 필드만 막는다. 서브넷·AZ·이름 변경이나 리소스 삭제는 여전히 교체·삭제가 된다. **plan에 `-/+`나 destroy가 보이면 데이터 손실 승인 없이 apply하지 않는다.**
+- user data(레지스트리 주소 = 계정 ID 포함)는 서버 파일뿐 아니라 EC2 API·Terraform state·cloud-init 파일에도 남는다. "공개 저장소·공개 로그에 쓰지 않는다"는 규칙이지, 계정 관리자에게 숨기는 경계는 아니다.
+- 첫 부팅 결과는 서버의 `/var/log/ureka-bootstrap.log`에서 본다. 받는 파일의 체크섬이 맞지 않거나 5분 안에 Ready가 아니면 멈춘다. Ready는 노드 기동 확인일 뿐이고, ECR 받기·80번 접속·Pod 메타데이터 차단은 apply 뒤 따로 확인한다(이슈 #32 완료 확인).
 
 ## 보안 기준
 

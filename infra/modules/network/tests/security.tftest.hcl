@@ -85,3 +85,43 @@ run "rejects_same_az_twice" {
 
   expect_failures = [var.availability_zones]
 }
+
+run "rejects_non_canonical_k3s_pod_range" {
+  command = plan
+
+  variables {
+    vpc_cidr = "10.42.1.0/16"
+  }
+
+  expect_failures = [var.vpc_cidr]
+}
+
+run "rejects_non_canonical_k3s_service_range" {
+  command = plan
+
+  variables {
+    vpc_cidr = "10.43.200.0/16"
+  }
+
+  expect_failures = [var.vpc_cidr]
+}
+
+run "rejects_non_canonical_cidr" {
+  command = plan
+
+  variables {
+    vpc_cidr = "10.0.5.0/16"
+  }
+
+  expect_failures = [var.vpc_cidr]
+}
+
+run "rejects_non_16_prefix" {
+  command = plan
+
+  variables {
+    vpc_cidr = "10.0.0.0/8"
+  }
+
+  expect_failures = [var.vpc_cidr]
+}
