@@ -1,0 +1,33 @@
+# EC2 dev(k3s) root 앱(app-of-apps). 이것 하나만 클러스터에 등록하면 argocd/ec2/apps가 나머지 앱을 만든다.
+# 직접 kubectl apply 하지 않는다: scripts/ec2/up.sh가 /etc/ureka/registry.env의 ECR 주소를 helm 파라미터 ecrRegistry로 넣어 등록한다.
+# ECR 주소에는 계정 ID가 있어 이 PUBLIC 저장소에 쓰지 않는다(Git에는 빈칸, 비면 apps 렌더링이 실패한다).
+# 이 Application 자체는 Git에서 동기화되지 않으므로(up.sh가 등록) 주입한 값이 Argo CD에 지워지지 않는다. 다시 넣으려면 up.sh를 다시 실행한다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-ec2-dev-root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+    targetRevision: main
+    path: argocd/ec2/apps
+    helm:
+      releaseName: ureka-ec2-dev-root
+      parameters:
+        - name: ecrRegistry
+          value: ""
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

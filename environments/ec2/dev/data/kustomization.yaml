@@ -1,0 +1,7 @@
+# EC2 dev 데이터 계층. 첫 버전은 kind와 같은 구성(PostgreSQL+pgvector·Redis·Mailpit·DB 계정 Job)을 그대로 쓴다.
+# 저장소는 k3s 기본 StorageClass(local-path, EC2 루트 디스크). EC2를 다시 만들면 데이터가 사라진다(잃어도 되는 dev).
+# RDS PR(11/18~)에서 PostgreSQL을 빼고 RDS로 바꾼다. 그때 이 파일이 kind와 갈라진다.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../kind/data
