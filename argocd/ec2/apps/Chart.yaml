@@ -1,0 +1,5 @@
+apiVersion: v2
+name: ureka-ec2-apps
+description: EC2 dev(k3s)의 Argo CD Application 목록(app-of-apps). root 앱(argocd/ec2/root-app.yaml)이 렌더링한다.
+type: application
+version: 0.1.0

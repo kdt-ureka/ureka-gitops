@@ -1,0 +1,28 @@
+# 모든 환경 공통 ureka-ops values. chart: charts/ureka-backend
+# 환경마다 다른 값(이미지·메모리·Ingress)은 environments/<환경>/ureka-ops.yaml이 덮어쓴다(지금은 ec2/dev만).
+# kind는 이 파일을 쓰지 않는다(environments/kind/를 그대로 쓰고, base로 옮기는 건 따로 PR).
+# DB는 데이터 계층 앱(ureka-dev-data), 비밀값은 create-secrets.sh가 만든 Secret.
+# 앱이 기동할 때 Flyway가 ops_db에 ops 스키마를 만들고 마이그레이션을 적용한다(차트의 migration Job은 쓰지 않음).
+# 접속 계정 ops_db_app은 ops_db 소유자이고 슈퍼유저·CREATEROLE이 없다.
+name: ureka-ops
+# 이름은 ureka-ops .env.example 기준. 비밀값은 값 대신 Secret 참조만 둔다.
+# Redis는 받지 않는다(JWT 계약상 토큰 계열 확인은 auth만 한다). 내부 호출 토큰도 쓰지 않는다.
+env:
+  # JVM 힙 상한 고정(이미지 기본 MaxRAMPercentage=70보다 -Xmx가 우선). limit 768Mi 안에 힙 바깥(Metaspace·스레드)을 남긴다.
+  # kind 측정(#31)은 Rosetta 영향이 있어 EC2 x86에서 다시 재고 정한다.
+  - name: JAVA_TOOL_OPTIONS
+    value: "-Xmx256m -XX:MaxMetaspaceSize=192m"
+  - name: DB_URL
+    value: jdbc:postgresql://postgres:5432/ops_db
+  - name: DB_USERNAME
+    value: ops_db_app
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: ureka-ops-secrets
+        key: DB_PASSWORD
+  - name: JWT_PUBLIC_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-ops-secrets
+        key: JWT_PUBLIC_KEY

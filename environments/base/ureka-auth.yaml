@@ -1,0 +1,62 @@
+# 모든 환경 공통 ureka-auth values. chart: charts/ureka-backend
+# 환경마다 다른 값(이미지·메모리·Ingress)은 environments/<환경>/ureka-auth.yaml이 덮어쓴다(지금은 ec2/dev만).
+# kind는 이 파일을 쓰지 않는다(environments/kind/를 그대로 쓰고, base로 옮기는 건 따로 PR).
+# DB·Redis는 데이터 계층 앱(ureka-dev-data), 비밀값은 create-secrets.sh가 만든 Secret.
+name: ureka-auth
+# 이름은 ureka-auth .env.example 기준. 비밀값은 값 대신 Secret 참조만 둔다.
+env:
+  # JVM 힙 상한 고정(이미지 기본 MaxRAMPercentage=70보다 -Xmx가 우선). limit 768Mi 안에 힙 바깥(Metaspace·스레드)을 남긴다.
+  # kind 측정(#31)은 Rosetta 영향이 있어 EC2 x86에서 다시 재고 정한다.
+  - name: JAVA_TOOL_OPTIONS
+    value: "-Xmx256m -XX:MaxMetaspaceSize=192m"
+  - name: DB_URL
+    value: jdbc:postgresql://postgres:5432/auth_db
+  - name: DB_USERNAME
+    value: auth_db_app
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: DB_PASSWORD
+  - name: REDIS_HOST
+    value: redis
+  - name: REDIS_PORT
+    value: "6379"
+  - name: JWT_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: JWT_PRIVATE_KEY
+  - name: JWT_PUBLIC_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: JWT_PUBLIC_KEY
+  - name: EMAIL_CODE_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: EMAIL_CODE_SECRET
+  - name: INTERNAL_SERVICE_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-secrets
+        key: INTERNAL_SERVICE_TOKEN
+  # 탈퇴 전파 대상(같은 네임스페이스 Service).
+  - name: CHAT_SERVICE_URL
+    value: http://ureka-chat
+  - name: CONTENT_SERVICE_URL
+    value: http://ureka-content
+  # 메일 서버: 데이터 계층의 Mailpit(Service mailpit, SMTP 1025, 받기만 하고 밖으로 보내지 않음). 실제 메일 서버는 EKS 때.
+  # 받은 메일은 kubectl -n dev port-forward deploy/mailpit 8025:8025 → http://localhost:8025
+  - name: MAIL_HOST
+    value: mailpit
+  - name: MAIL_PORT
+    value: "1025"
+  - name: MAIL_SMTP_AUTH
+    value: "false"
+  - name: MAIL_STARTTLS
+    value: "false"
+  # dev는 HTTP(kind 포트 포워딩, EC2 SSM 터널)로 접속한다. https 입구가 생기면(EKS) 환경 values에서 true로 바꾼다.
+  - name: COOKIE_SECURE
+    value: "false"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind dev 네임스페이스에 로컬 전용 비밀값 Secret을 처음 한 번 만든다. 값은 이 PC에서 새로 만들고 Git에 남기지 않는다.
+# EC2 dev(k3s)도 같은 스크립트를 쓴다: 서버 안에서 scripts/ec2/up.sh가 UREKA_TARGET=ec2로 부른다(값은 그 서버에서 생긴다).
 #
 #   scripts/kind/create-secrets.sh             기본·chat·ops·recommend Secret(아래 10개)
 #   scripts/kind/create-secrets.sh --chat-ai   (선택) chat AI 키 Secret ureka-chat-ai만. 키는 표준 입력으로 받는다
@@ -51,7 +52,15 @@
 { set +x; } 2>/dev/null
 set -euo pipefail
 
-ctx="${KUBE_CONTEXT:-kind-ureka}"
+# 대상: kind(기본) 또는 ec2(EC2 dev k3s, scripts/ec2/up.sh가 UREKA_TARGET=ec2로 부른다).
+target="${UREKA_TARGET:-kind}"
+case "$target" in
+  kind) ctx="${KUBE_CONTEXT:-kind-ureka}"; data_app=ureka-dev-data-kind
+        ns_hint="kubectl apply -f argocd/kind/ureka-dev-namespace.yaml" ;;
+  ec2)  ctx="${KUBE_CONTEXT:-default}"; data_app=ureka-dev-data-ec2-dev
+        ns_hint="scripts/ec2/up.sh(네임스페이스를 먼저 만든다)" ;;
+  *) echo "UREKA_TARGET은 kind 또는 ec2만 됩니다: $target" >&2; exit 2 ;;
+esac
 ns=dev
 base_secrets=(postgres-admin db-accounts ureka-auth-secrets ureka-content-secrets ureka-recommend-db ureka-ingest-db)
 chat_ops_secrets=(db-accounts-chat-ops ureka-chat-secrets ureka-ops-secrets)
@@ -65,10 +74,25 @@ elif [ $# -ne 0 ]; then
   echo "사용법: $0 [--chat-ai]   (값 교체는 클러스터 재생성, 스크립트 주석 참고)" >&2
   exit 2
 fi
-# 로컬 kind 클러스터에만 쓴다. 다른 클러스터(EKS 등)에 실수로 만들지 않게 막는다.
-if ! [[ "$ctx" =~ ^kind- ]]; then
+# 로컬 kind 클러스터와 EC2 dev k3s(그 서버 안에서 실행)에만 쓴다. 다른 클러스터(EKS 등)에 실수로 만들지 않게 막는다.
+if [ "$target" = kind ] && ! [[ "$ctx" =~ ^kind- ]]; then
   echo "kind 클러스터 컨텍스트(kind-*)에만 쓸 수 있습니다: $ctx" >&2
   exit 2
+fi
+if [ "$target" = ec2 ]; then
+  # EC2 서버 안의 k3s만: 컨텍스트 이름 default, API 주소 127.0.0.1:6443(이 호스트), EC2 첫 부팅이 남긴 파일이 있어야 한다.
+  # 내 PC에서 다른 클러스터를 가리키는 default 컨텍스트로 실행되는 것을 막는다.
+  ec2_marker="${UREKA_EC2_MARKER:-/etc/ureka/registry.env}"
+  if [ "$ctx" != default ]; then
+    echo "ec2 대상은 EC2 서버 안의 k3s 컨텍스트(default)에만 쓸 수 있습니다: $ctx" >&2; exit 2
+  fi
+  server="$(kubectl config view --minify --context "$ctx" -o 'jsonpath={.clusters[0].cluster.server}' 2>/dev/null || true)"
+  if [ "$server" != "https://127.0.0.1:6443" ]; then
+    echo "ec2 대상은 이 서버의 k3s(https://127.0.0.1:6443)에만 쓸 수 있습니다. 지금 API 주소가 다릅니다." >&2; exit 2
+  fi
+  if [ ! -f "$ec2_marker" ]; then
+    echo "EC2 dev 서버가 아닙니다(${ec2_marker} 없음). 서버 안(SSM 셸)에서 scripts/ec2/up.sh로 실행하세요." >&2; exit 2
+  fi
 fi
 command -v openssl >/dev/null || { echo "openssl이 필요합니다" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3이 필요합니다(SCRAM 해시 계산)" >&2; exit 1; }
@@ -84,7 +108,7 @@ exists() { # kubectl get 인자...
 }
 
 exists namespace "$ns" ||
-  { echo "네임스페이스 $ns가 없습니다. kubectl apply -f argocd/kind/ureka-dev-namespace.yaml 후 다시 실행하세요" >&2; exit 1; }
+  { echo "네임스페이스 $ns가 없습니다. ${ns_hint} 후 다시 실행하세요" >&2; exit 1; }
 
 umask 077
 work="$(mktemp -d)"
@@ -159,7 +183,12 @@ if [ "$base_n" -eq "$base_total" ] && [ "$chat_ops_n" -eq "$chat_ops_total" ] &&
 fi
 if [ "$base_n" -ne 0 ] && [ "$base_n" -ne "$base_total" ]; then
   echo "기본 Secret이 일부(${base_n}/${base_total})만 있습니다. 값이 서로 맞지 않을 수 있어 멈춥니다." >&2
-  echo "클러스터를 새로 만들거나, 남은 Secret을 지우고(kubectl --context $ctx -n $ns delete secret -l ureka.io/created-by=create-secrets.sh) DB 볼륨도 지운 뒤 다시 실행하세요." >&2
+  if [ "$target" = ec2 ]; then
+    # EC2는 Argo CD 자동 동기화가 지우는 도중 postgres·PVC를 다시 만들어 경합한다. 클러스터 안에서 지우지 않는다.
+    echo "EC2에서는 여기서 지우지 말고 docs/ec2-dev.md '다시 만들기 (EC2 교체)'를 따르세요(DB·Secret이 모두 새로 생깁니다)." >&2
+  else
+    echo "클러스터를 새로 만들거나, 남은 Secret을 지우고(kubectl --context $ctx -n $ns delete secret -l ureka.io/created-by=create-secrets.sh) DB 볼륨도 지운 뒤 다시 실행하세요." >&2
+  fi
   exit 1
 fi
 if [ "$chat_ops_n" -ne 0 ] && [ "$chat_ops_n" -ne "$chat_ops_total" ]; then
@@ -184,7 +213,11 @@ if [ "$base_n" -eq 0 ]; then
   # Secret이 하나도 없는데 DB 볼륨이 남아 있으면, 새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않는다.
   if exists -n "$ns" pvc data-postgres-0; then
     echo "Secret은 없는데 DB 볼륨(pvc/data-postgres-0)이 남아 있습니다. 새 비밀번호가 기존 DB에 맞지 않습니다." >&2
-    echo "kind dev 데이터를 버려도 되면: kubectl --context $ctx -n $ns delete statefulset postgres && kubectl --context $ctx -n $ns delete pvc data-postgres-0 후 다시 실행" >&2
+    if [ "$target" = ec2 ]; then
+      echo "EC2에서는 여기서 지우지 말고 docs/ec2-dev.md '다시 만들기 (EC2 교체)'를 따르세요." >&2
+    else
+      echo "kind dev 데이터를 버려도 되면: kubectl --context $ctx -n $ns delete statefulset postgres && kubectl --context $ctx -n $ns delete pvc data-postgres-0 후 다시 실행" >&2
+    fi
     exit 1
   fi
 fi
@@ -266,7 +299,7 @@ fi
 
 if [ "$mode" = add ] && [ "$make_chat_ops" = 1 ]; then
   echo "chat·ops Secret을 추가했습니다. data를 다시 동기화해야 db-bootstrap이 chat_db·ops_db와 계정을 만듭니다:"
-  echo "  kubectl --context $ctx -n argocd patch app ureka-dev-data-kind --type merge -p '{\"operation\":{\"sync\":{}}}'"
+  echo "  kubectl --context $ctx -n argocd patch app ${data_app} --type merge -p '{\"operation\":{\"sync\":{}}}'"
 fi
 if [ "$mode" = add ] && [ "$make_recommend" = 1 ]; then
   echo "recommend Secret을 추가했습니다. recommend Pod는 시작할 때만 env를 읽는다. 이미 떠 있으면 재시작한다:"

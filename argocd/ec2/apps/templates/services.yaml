@@ -1,0 +1,30 @@
+{{- /* 서비스 앱. 공통 차트에 values 두 겹(base → 환경)을 주고, 레지스트리 주소를 image.registry로 넘긴다. */ -}}
+{{- $registry := include "ec2apps.registry" . }}
+{{- range .Values.services }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-{{ .name }}-{{ $.Values.suffix }}
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    {{- range required (printf "services[%s].releases must not be empty" .name) .releases }}
+    - repoURL: {{ $.Values.repoURL }}
+      targetRevision: {{ $.Values.targetRevision }}
+      path: charts/ureka-backend
+      helm:
+        releaseName: {{ . }}
+        valueFiles:
+          - ../../environments/base/ureka-{{ . }}.yaml
+          - ../../environments/{{ $.Values.valuesDir }}/ureka-{{ . }}.yaml
+        parameters:
+          - name: image.registry
+            value: {{ $registry | quote }}
+    {{- end }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ $.Values.namespace }}
+  {{- include "ec2apps.syncPolicy" $ | nindent 2 }}
+{{- end }}

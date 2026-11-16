@@ -1,0 +1,20 @@
+# EC2 dev(k3s) ureka-auth values. environments/base/ureka-auth.yaml 위에 겹친다(Argo CD valueFiles: base → ec2/dev).
+# 여기에는 EC2 dev만 다른 값만 둔다: 이미지 digest, 메모리.
+# 이미지: ECR에서 노드(kubelet)가 바로 받는다. 레지스트리 주소(계정 ID 포함)는 Git에 쓰지 않고 root 앱이 image.registry로 넣는다.
+# 이미지를 바꾸는 방법: 서비스 CI artifact(image-ref.json)의 tag·digest로 이 파일을 고치는 PR. kind와 같은 digest면 kind에서 검증한 이미지다.
+
+image:
+  requireRegistry: true
+  repository: ureka/auth
+  tag: sha-4d8ca370bc2446749d7f3529ad2f7e2e6bb1f2e9
+  digest: sha256:22e2953d633581f20d5053972a5d1a6a2db6f4e807ba535c29686b18fd9d2435
+  pullPolicy: IfNotPresent
+
+# JVM: limit 768Mi + base의 -Xmx256m. 첫날 x86 측정(kubectl top·cgroup 최대)으로 다시 정한다.
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 768Mi

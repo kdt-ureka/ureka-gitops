@@ -1,0 +1,17 @@
+# dev 네임스페이스(PSA restricted). 가장 먼저(wave -2) 만든다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-dev-namespace-{{ .Values.suffix }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.repoURL }}
+    targetRevision: {{ .Values.targetRevision }}
+    path: environments/{{ .Values.valuesDir }}/namespace
+  destination:
+    server: https://kubernetes.default.svc
+  {{- include "ec2apps.syncPolicy" . | nindent 2 }}

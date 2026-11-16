@@ -1,0 +1,27 @@
+# ECR 레지스트리 주소(<계정>.dkr.ecr.<리전>.amazonaws.com). Git에는 비워 두고 scripts/ec2/up.sh가 root 앱 파라미터로 넣는다.
+# 비어 있으면 렌더링이 실패한다(서비스 앱이 레지스트리 없이 만들어지지 않게).
+ecrRegistry: ""
+
+repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+targetRevision: main
+
+# values 두 겹: environments/base/<파일> → environments/<valuesDir>/<파일>
+valuesDir: ec2/dev
+namespace: dev
+# Application 이름 끝에 붙는다(ureka-auth-ec2-dev). kind 앱(-kind)과 구분한다.
+suffix: ec2-dev
+
+# 서비스 앱. releases가 여러 개면 한 Application에 묶는다(chat: api의 PreSync 마이그레이션이 worker보다 먼저 돈다).
+services:
+  - name: auth
+    releases: [auth]
+  - name: chat
+    releases: [chat, chat-worker]
+  - name: content
+    releases: [content]
+  - name: ops
+    releases: [ops]
+  - name: recommend
+    releases: [recommend]
+  - name: frontend
+    releases: [frontend]
