@@ -6,6 +6,12 @@ name: ""
 replicaCount: 1
 
 image:
+  # 레지스트리 주소(host[:port]). 값이 있으면 registry/repository로 받는다.
+  # kind는 비워 두고 repository에 로컬 주소(localhost:5001/...)를 통째로 쓴다.
+  # EC2·EKS는 ECR 주소에 계정 ID가 있어 Git에 쓰지 않는다. 배포할 때 root 앱이 넣는다(argocd/ec2).
+  registry: ""
+  # true면 registry가 비어 있을 때 렌더링을 실패시킨다(EC2·EKS values에서 켠다).
+  requireRegistry: false
   repository: ""
   tag: ""
   # 정식 경로(ECR)에서는 digest를 채운다. 값이 있으면 tag 대신 repository@digest로 배포한다.
@@ -24,6 +30,18 @@ service:
   # 이때 기본 HTTP 헬스 체크는 쓸 수 없다. probes.enabled=false로 끄거나 probes.startup·liveness·readiness를 직접 준다.
   enabled: true
   port: 80
+
+# 클러스터 밖 요청을 이 Service로 넘기는 Ingress. 기본은 끔. 지금은 frontend만 켠다(frontend nginx가 /api/*를 각 서비스로 넘긴다).
+ingress:
+  enabled: false
+  # EC2 k3s: traefik(기본 내장). EKS는 alb로 바꾼다.
+  className: ""
+  # 비우면 모든 호스트 이름을 받는다(EC2는 SSM 터널로만 들어와 호스트 이름이 localhost다).
+  host: ""
+  annotations: {}
+  paths:
+    - path: /
+      pathType: Prefix
 
 # 모든 백엔드가 같은 경로를 쓴다 (/healthz: 앱이 살아 있는지, /readyz: 요청을 받을 준비가 됐는지)
 probes:

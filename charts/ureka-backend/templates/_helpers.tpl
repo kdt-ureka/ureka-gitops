@@ -20,6 +20,19 @@ tag도 함께 있으면 사람이 읽기 쉽게 repository:tag@digest로 쓴다.
 */ -}}
 {{- define "ureka-backend.image" -}}
 {{- $repo := required "values.image.repository is required" .Values.image.repository -}}
+{{- /* registry가 있으면 앞에 붙인다(EC2·EKS: ECR 주소는 계정 ID가 있어 Git에 쓰지 않고 배포할 때 넣는다). */ -}}
+{{- $registry := .Values.image.registry | default "" -}}
+{{- if $registry -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$" $registry) -}}
+{{- fail "values.image.registry must be a host[:port] without scheme or path (e.g. <account>.dkr.ecr.<region>.amazonaws.com)" -}}
+{{- end -}}
+{{- if hasPrefix "/" $repo -}}
+{{- fail "values.image.repository must not start with / when image.registry is set" -}}
+{{- end -}}
+{{- $repo = printf "%s/%s" $registry $repo -}}
+{{- else if .Values.image.requireRegistry -}}
+{{- fail "values.image.registry is required here (image.requireRegistry=true). It is injected at deploy time, never written in Git." -}}
+{{- end -}}
 {{- $tag := .Values.image.tag -}}
 {{- $digest := .Values.image.digest -}}
 {{- if $digest -}}

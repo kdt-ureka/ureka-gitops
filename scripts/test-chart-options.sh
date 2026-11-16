@@ -78,4 +78,28 @@ must_fail "Service 끄고 probe 하나만 이름 포트(tcpSocket http)" -f test
 numeric=(--set probes.enabled=true)
 for p in startup liveness readiness; do numeric+=(--set "probes.${p}.tcpSocket.port=8080"); done
 if helm template t "$chart" -f tests/chart/worker-no-service.yaml "${numeric[@]}" >/dev/null 2>&1; then ok "Service 끄고 probe 숫자 포트: 허용"; else fail "Service 끄고 probe 숫자 포트가 거부됐다"; fi
+# 6) 레지스트리 주입(EC2·EKS): registry를 앞에 붙이고, 필수인데 비면·형식이 틀리면 실패한다
+reg=123456789012.dkr.ecr.ap-northeast-2.amazonaws.com
+ec2=(-f environments/kind/ureka-frontend.yaml --set image.repository=ureka/frontend --set image.requireRegistry=true)
+out="$(helm template t "$chart" "${ec2[@]}" --set "image.registry=${reg}")"
+expect "registry: registry/repository:tag@digest" "$out" "select(.kind==\"Deployment\") | .spec.template.spec.containers[0].image | test(\"^${reg//./\\\\.}/ureka/frontend:sha-[0-9a-f]{40}@sha256:[0-9a-f]{64}\$\")"
+must_render_fail() { # 이름, helm 추가 인자...
+  local name="$1"; shift
+  if helm template t "$chart" "$@" >/dev/null 2>&1; then fail "${name}: 렌더링이 성공했다"; else ok "${name}: 렌더링 실패"; fi
+}
+must_render_fail "registry 필수인데 비어 있음" "${ec2[@]}"
+for bad in "https://${reg}" "${reg}/ureka" "${reg}:" "-${reg}" "UPPER.example.com"; do
+  must_render_fail "registry 형식 틀림(${bad})" "${ec2[@]}" --set "image.registry=${bad}"
+done
+must_render_fail "registry와 /로 시작하는 repository" "${ec2[@]}" --set "image.registry=${reg}" --set image.repository=/ureka/frontend
+
+# 7) Ingress: 기본 없음(1·3에서 종류로 확인), 켜면 이 Service의 포트로 넘긴다
+ing=(-f environments/kind/ureka-frontend.yaml --set ingress.enabled=true --set ingress.className=traefik)
+out="$(helm template t "$chart" "${ing[@]}")"
+[ "$(kinds "$out")" = "Service,Deployment,Ingress" ] && ok "ingress: Service+Deployment+Ingress" || fail "ingress: 종류 $(kinds "$out")"
+expect "ingress: traefik, / Prefix → ureka-frontend:80, host 없음" "$out" 'select(.kind=="Ingress") | .spec | ((.ingressClassName=="traefik") and (.rules | length==1) and (.rules[0] | has("host") | not) and (.rules[0].http.paths[0].path=="/") and (.rules[0].http.paths[0].pathType=="Prefix") and (.rules[0].http.paths[0].backend.service.name=="ureka-frontend") and (.rules[0].http.paths[0].backend.service.port.number==80))'
+out="$(helm template t "$chart" "${ing[@]}" --set ingress.host=dev.example.com)"
+expect "ingress: host 지정" "$out" 'select(.kind=="Ingress") | .spec.rules[0].host=="dev.example.com"'
+must_render_fail "ingress className 없음" -f environments/kind/ureka-frontend.yaml --set ingress.enabled=true
+must_render_fail "ingress인데 Service 끔" -f tests/chart/worker-no-service.yaml --set ingress.enabled=true --set ingress.className=traefik
 exit "$status"
