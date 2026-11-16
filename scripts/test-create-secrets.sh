@@ -6,6 +6,7 @@
 # - 기본 6개가 있으면 없는 묶음(chat·ops 3개, recommend 1개)만 추가한다. 이때 JWT 공개키·내부 토큰은 ureka-auth-secrets 값을 그대로 쓴다.
 # - 기본 묶음 없이 chat·ops나 recommend만 있으면 멈춘다.
 # - 각 Secret의 키 목록이 정해진 그대로다(chat·ops·recommend에 JWT 개인키·AI 키가 들어가지 않는다, recommend는 내부 토큰 하나뿐).
+# - UREKA_TARGET=ec2: 컨텍스트 default + API 127.0.0.1:6443 + EC2 표식 파일이 모두 맞을 때만 실행한다(하나라도 틀리면 호출 전에 거부).
 # - --chat-ai: 표준 입력의 키로 ureka-chat-ai(AI_MODE=gemini, AI_API_KEY) 하나만 만든다. 키는 argv·출력에 나오지 않는다.
 #   이미 있음·빈 값·형식 아님·조회 오류면 만들지 않는다.
 set -euo pipefail
@@ -38,6 +39,9 @@ arg_after() { # 단어 → 그 다음 인자
 }
 sha() { shasum -a 256 "$1" | cut -c1-16; }
 case "$args" in
+  *" config view "*)
+    # ec2 대상의 API 주소 확인용. FAKE_SERVER로 바꾼다(기본: EC2 k3s 주소).
+    printf '%s' "${FAKE_SERVER-https://127.0.0.1:6443}"; exit 0 ;;
   *" get namespace "*)
     [ "$mode" = ns_forbidden ] && forbid namespaces dev
     exit 0 ;;
@@ -256,5 +260,37 @@ if KUBE_CONTEXT=arn:aws:eks:example FAKE_LOG="$fake/log" PATH="$fake:$PATH" bash
   echo "FAIL non-kind context: 실행됐다"; status=1
 else
   echo "ok   non-kind context: 거부"
+fi
+# ec2 대상: 세 조건(컨텍스트 default, API 127.0.0.1:6443, EC2 표식 파일)이 모두 맞을 때만 실행한다.
+marker="$fake/registry.env"; : >"$marker"
+ec2_run() { # 설명, 기대(0|nonzero), 기대 create 수, env 인자...
+  local name="$1" want="$2" want_creates="$3"; shift 3
+  : >"$fake/log"; rc=0
+  env UREKA_TARGET=ec2 UREKA_EC2_MARKER="$marker" FAKE_LOG="$fake/log" PATH="$fake:$PATH" "$@" \
+    bash scripts/kind/create-secrets.sh </dev/null >"$fake/out" 2>&1 || rc=$?
+  local creates; creates="$(grep -c '^CREATE' "$fake/log" || true)"
+  if { [ "$want" = 0 ] && [ "$rc" -ne 0 ]; } || { [ "$want" = nonzero ] && [ "$rc" -eq 0 ]; } || [ "$creates" -ne "$want_creates" ]; then
+    echo "FAIL ${name}: 종료 ${rc}(기대 ${want}), create ${creates}개(기대 ${want_creates})"; tail -3 "$fake/out"; status=1
+  else
+    echo "ok   ${name}: 종료 ${rc}, create ${creates}개"
+  fi
+}
+ec2_run "ec2: 조건 모두 맞음 → 10개" 0 10
+expect_eq "  ec2: 컨텍스트 default로 호출" "$(grep -c -- '--context default' "$fake/log")" "$(grep -c '^ARGV' "$fake/log")"
+ec2_run "ec2: 컨텍스트가 default 아님" nonzero 0 KUBE_CONTEXT=arn:aws:eks:example
+ec2_run "ec2: kind 컨텍스트" nonzero 0 KUBE_CONTEXT=kind-ureka
+ec2_run "ec2: API 주소가 다른 클러스터" nonzero 0 FAKE_SERVER=https://ABC.gr7.ap-northeast-2.eks.amazonaws.com
+ec2_run "ec2: API 주소 못 읽음(빈 값)" nonzero 0 FAKE_SERVER=
+ec2_run "ec2: EC2 표식 파일 없음" nonzero 0 UREKA_EC2_MARKER="$fake/none"
+ec2_run "ec2: 추가 경로 안내에 ec2 data 앱 이름" 0 3 FAKE_EXISTING="$BASE $REC"
+grep -q 'ureka-dev-data-ec2-dev' "$fake/out" && echo "ok   ec2: data 동기화 안내가 ec2 앱" || { echo "FAIL ec2: data 동기화 안내가 ec2 앱이 아님"; status=1; }
+: >"$fake/log"; rc=0
+UREKA_TARGET=eks FAKE_LOG="$fake/log" PATH="$fake:$PATH" bash scripts/kind/create-secrets.sh </dev/null >/dev/null 2>&1 || rc=$?
+expect_eq "알 수 없는 UREKA_TARGET → 종료 2, 호출 없음" "${rc}:$(grep -c '^ARGV' "$fake/log" || true)" "2:0"
+: >"$fake/log"
+if KUBE_CONTEXT=default FAKE_LOG="$fake/log" PATH="$fake:$PATH" bash scripts/kind/create-secrets.sh </dev/null >/dev/null 2>&1; then
+  echo "FAIL kind 대상 + default 컨텍스트: 실행됐다"; status=1
+else
+  echo "ok   kind 대상 + default 컨텍스트: 거부"
 fi
 exit "$status"
