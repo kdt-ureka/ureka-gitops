@@ -1,0 +1,20 @@
+# EC2 dev(k3s) ureka-chat values. environments/base/ureka-chat.yaml 위에 겹친다(Argo CD valueFiles: base → ec2/dev).
+# 여기에는 EC2 dev만 다른 값만 둔다: 이미지 digest, 메모리.
+# 이미지: ECR에서 노드(kubelet)가 바로 받는다. 레지스트리 주소(계정 ID 포함)는 Git에 쓰지 않고 root 앱이 image.registry로 넣는다.
+# 이미지를 바꾸는 방법: 서비스 CI artifact(image-ref.json)의 tag·digest로 이 파일을 고치는 PR. kind와 같은 digest면 kind에서 검증한 이미지다.
+
+image:
+  requireRegistry: true
+  repository: ureka/chat
+  tag: sha-8cffeee34f0f50e18baeeed5523c3822f85c45ed
+  digest: sha256:7ca4f9815798950e2c384dc43b331d97de2c4317d4b0f76dce8e4716689fbfca
+  pullPolicy: IfNotPresent
+
+# kind 측정값 기준 그대로. EC2 x86에서 다시 잰다.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 384Mi

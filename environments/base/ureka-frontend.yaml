@@ -1,0 +1,24 @@
+# 모든 환경 공통 ureka-frontend values. chart: charts/ureka-backend
+# 환경마다 다른 값(이미지·메모리·Ingress)은 environments/<환경>/ureka-frontend.yaml이 덮어쓴다(지금은 ec2/dev만).
+# kind는 이 파일을 쓰지 않는다(environments/kind/를 그대로 쓰고, base로 옮기는 건 따로 PR).
+# nginx가 빌드된 화면을 정적으로 서빙하고 /api/{auth,chat,content,admin}/을 각 서비스로 넘긴다(ureka-frontend nginx/default.conf.template).
+# 읽기 전용 루트 FS에서 nginx 설정을 /tmp에 만드는 이미지가 필요하다(ureka-frontend#48 이후 이미지).
+name: ureka-frontend
+# nginx 이미지는 /healthz만 있다(/readyz 없음). 정적 서빙이라 살아 있으면 요청을 받을 수 있다.
+probes:
+  readinessPath: /healthz
+# 이름은 ureka-frontend Dockerfile ENV·ureka-local compose 기준.
+# nginx resolver는 검색 도메인을 쓰지 않으므로 Service 이름을 전체 주소(<서비스>.<네임스페이스>.svc.cluster.local)로 적는다.
+# Service 포트는 80(차트 기본)이다. 대상 서비스가 아직 없어도 nginx는 뜨고, 그 경로만 502가 난다(요청 때 이름을 푼다).
+env:
+  - name: NGINX_RESOLVER
+    # 클러스터 DNS. nginx가 시작할 때 이 이름을 한 번 풀어 IP로 쓴다(kind·k3s·EKS 모두 kube-system/kube-dns).
+    value: kube-dns.kube-system.svc.cluster.local
+  - name: AUTH_UPSTREAM
+    value: http://ureka-auth.dev.svc.cluster.local
+  - name: CHAT_UPSTREAM
+    value: http://ureka-chat.dev.svc.cluster.local
+  - name: CONTENT_UPSTREAM
+    value: http://ureka-content.dev.svc.cluster.local
+  - name: OPS_UPSTREAM
+    value: http://ureka-ops.dev.svc.cluster.local
