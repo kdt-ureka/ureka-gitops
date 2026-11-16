@@ -88,6 +88,12 @@ delete_and_confirm() { # 종류 이름: 지우고 사라졌는지 확인(최대 
   done
   return 1
 }
+pods_gone() { # bootstrap Pod가 없으면 0, 남아 있으면 1, 조회가 실패해 알 수 없으면 2. 성공한 빈 목록만 "없음"으로 본다.
+  local out
+  k wait --for=delete pod -l "job-name=${job}" --timeout=60s >/dev/null 2>&1 || true
+  out="$(k get pod -l "job-name=${job}" -o name 2>/dev/null)" || return 2
+  [ -z "$out" ] || return 1
+}
 cleanup() {
   local rc=$? failed=0
   trap - EXIT INT TERM
@@ -95,11 +101,12 @@ cleanup() {
   # 끝나지 않은 Job(실패·중단·시간 초과)은 Pod까지 지운다. Pod가 env로 읽은 마스터 비밀번호를 계속 들고 있지 않게.
   if [ "$job_done" != 1 ]; then
     delete_and_confirm job "$job" || { echo "경고: Job ${job}을(를) 지우지 못했습니다. sudo k3s kubectl -n ${ns} delete job ${job}" >&2; failed=1; }
-    if ! k wait --for=delete pod -l "job-name=${job}" --timeout=60s >/dev/null 2>&1; then
-      if [ -n "$(k get pod -l "job-name=${job}" -o name 2>/dev/null)" ]; then
-        echo "경고: bootstrap Pod가 남아 있습니다. sudo k3s kubectl -n ${ns} delete pod -l job-name=${job}" >&2; failed=1
-      fi
-    fi
+    local p=0
+    pods_gone || p=$?
+    case "$p" in
+      1) echo "경고: bootstrap Pod가 남아 있습니다. sudo k3s kubectl -n ${ns} delete pod -l job-name=${job}" >&2; failed=1 ;;
+      2) echo "경고: bootstrap Pod가 없어졌는지 확인하지 못했습니다(조회 실패). sudo k3s kubectl -n ${ns} get pod -l job-name=${job}" >&2; failed=1 ;;
+    esac
   fi
   delete_and_confirm secret rds-master || { echo "경고: 임시 Secret rds-master를 지우지 못했습니다(마스터 비밀번호 포함). sudo k3s kubectl -n ${ns} delete secret rds-master" >&2; failed=1; }
   if [ "$failed" = 1 ] && [ "$rc" = 0 ]; then rc=3; fi
@@ -110,8 +117,12 @@ trap 'exit 130' INT TERM
 
 # 0) 이전 실행이 남긴 것(SIGKILL 등)을 먼저 지운다. Secret은 이전 Job·Pod가 사라진 뒤에만 새로 만든다.
 delete_and_confirm job "$job" || { echo "이전 Job ${job}을(를) 지우지 못했습니다." >&2; exit 1; }
-k wait --for=delete pod -l "job-name=${job}" --timeout=60s >/dev/null 2>&1 || true
-[ -z "$(k get pod -l "job-name=${job}" -o name 2>/dev/null)" ] || { echo "이전 bootstrap Pod가 남아 있습니다." >&2; exit 1; }
+p=0
+pods_gone || p=$?
+case "$p" in
+  1) echo "이전 bootstrap Pod가 남아 있습니다. 마스터 비밀을 읽지 않고 멈춥니다." >&2; exit 1 ;;
+  2) echo "이전 bootstrap Pod를 조회하지 못했습니다(권한·연결). 마스터 비밀을 읽지 않고 멈춥니다." >&2; exit 1 ;;
+esac
 delete_and_confirm secret rds-master || { echo "이전 Secret rds-master를 지우지 못했습니다." >&2; exit 1; }
 
 # 1) 마스터 비밀(JSON: username, password) → 파일 두 개(권한 600). ARN은 입력 파일로만 넘기고, 오류 출력도 감춘다.
