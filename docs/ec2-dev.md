@@ -117,6 +117,8 @@ Argo CD 초기 비밀번호는 서버 안에서만 확인합니다(채팅·문�
 sudo k3s kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
+처음 로그인한 뒤 화면의 User Info → Update Password에서 비밀번호를 바꿉니다. 그다음 초기 비밀번호 Secret을 지웁니다(`sudo k3s kubectl -n argocd delete secret argocd-initial-admin-secret`). 바꾼 비밀번호는 팀 비밀번호 관리 도구에만 둡니다.
+
 ## 비밀값 다시 넣기
 
 Secret은 `create-secrets.sh`가 이 서버에서 만들고, 이미 있으면 절대 덮어쓰지 않습니다. 그래서 값을 바꾸려면 **지우고 다시 만듭니다.** 값은 출력하지 않습니다.
@@ -124,20 +126,25 @@ Secret은 `create-secrets.sh`가 이 서버에서 만들고, 이미 있으면 �
 | 상황 | 할 일 (서버 안, `ureka-gitops` 폴더) |
 |---|---|
 | chat AI 키 바꾸기·끄기 | `sudo k3s kubectl -n dev delete secret ureka-chat-ai`. 바꿀 때만 다시 `sudo bash scripts/ec2/up.sh --chat-ai`를 실행합니다. 그다음 `sudo k3s kubectl -n dev rollout restart deployment/ureka-chat deployment/ureka-chat-worker` |
-| 묶음 일부만 남아 `up.sh`가 멈춤 | 멈출 때 나온 안내대로 그 묶음만 지우고 `sudo bash scripts/ec2/up.sh`를 다시 실행합니다. chat·ops 묶음을 다시 만들면 data 앱을 다시 동기화해야 계정 비밀번호가 바뀝니다(안내에 명령이 나옵니다) |
-| 전부 새로(유출이 의심될 때 등) | 아래 순서. **DB 데이터가 사라집니다** |
+| chat·ops 묶음(`db-accounts-chat-ops`·`ureka-chat-secrets`·`ureka-ops-secrets`)이 일부만 남아 `up.sh`가 멈춤 | 이 묶음만 다시 만듭니다. DB는 그대로 둡니다. 아래 "chat·ops 묶음 다시 만들기" |
+| 기본 묶음(`postgres-admin`·`db-accounts`·`ureka-auth-secrets` 등 6개)이 일부만 남음, 또는 전부 새로(유출이 의심될 때 등) | **EC2 다시 만들기**로 합니다(아래 절). DB·Secret이 모두 사라집니다 |
 
-전부 새로 만드는 순서(서버 안). PostgreSQL 슈퍼유저 비밀번호는 DB를 처음 만들 때만 쓰이기 때문에, DB 볼륨도 같이 지워야 합니다.
+chat·ops 묶음 다시 만들기(서버 안):
 
 ```bash
-sudo k3s kubectl -n dev delete secret -l ureka.io/created-by=create-secrets.sh
-sudo k3s kubectl -n dev delete statefulset postgres
-sudo k3s kubectl -n dev delete pvc data-postgres-0
+sudo k3s kubectl -n dev delete secret db-accounts-chat-ops ureka-chat-secrets ureka-ops-secrets --ignore-not-found
 sudo bash scripts/ec2/up.sh
-sudo k3s kubectl -n dev rollout restart deployment
+# 새 비밀번호를 DB 계정에 반영(db-bootstrap은 data 앱이 동기화될 때 PostSync로 돈다).
+# 끝난 이전 Job을 먼저 지워야 아래 wait가 이전 Job을 보고 바로 성공하지 않는다.
+sudo k3s kubectl -n dev delete job db-bootstrap --ignore-not-found
+sudo k3s kubectl -n argocd patch app ureka-dev-data-ec2-dev --type merge -p '{"operation":{"sync":{}}}'
+sudo k3s kubectl -n dev wait --for=create job/db-bootstrap --timeout=300s
+sudo k3s kubectl -n dev wait --for=condition=complete job/db-bootstrap --timeout=600s
+# Pod는 시작할 때만 env를 읽는다
+sudo k3s kubectl -n dev rollout restart deployment/ureka-chat deployment/ureka-chat-worker deployment/ureka-ops
 ```
 
-Argo CD가 postgres를 다시 만들면 새 비밀번호로 DB가 초기화되고, db-bootstrap Job이 계정을 다시 만듭니다. RDS로 옮긴 뒤에는 이 절차가 바뀝니다(RDS PR).
+기본 묶음은 클러스터 안에서 다시 만들지 않습니다. PostgreSQL 슈퍼유저 비밀번호가 DB를 처음 만들 때만 쓰여서 DB 볼륨까지 같이 지워야 합니다. 그런데 Argo CD 자동 동기화가 켜져 있으면, 지우는 도중에 postgres·PVC가 다시 만들어지는 경합이 생깁니다. 이 절차(자동 동기화 멈춤 → DB 사용 앱 중지 → 볼륨 삭제 확인 → 새 Secret → data 동기화·db-bootstrap 확인 → 재기동 → 자동 동기화 복구)는 아직 검증하지 않았습니다. 그래서 첫 버전에서는 EC2 다시 만들기만 안내합니다. 지금 DB는 잃어도 되는 dev 데이터입니다. RDS로 옮기면 이 절차가 바뀝니다(RDS PR).
 
 ## 다시 만들기 (EC2 교체)
 
