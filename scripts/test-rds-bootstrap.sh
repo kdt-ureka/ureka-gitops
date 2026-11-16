@@ -199,4 +199,26 @@ start_refuses "이전 Job 못 지움" '이전 Job db-bootstrap-rds을(를) 지�
 start_refuses "이전 Pod 잔존" '이전 bootstrap Pod가 남아 있습니다' pod_stuck job pod
 start_refuses "Pod 조회 실패(시작)" '이전 bootstrap Pod를 조회하지 못했습니다' pod_query_fails
 
+# 6) 처음 입력(rds.env 없음, 비TTY): 붙여넣기 표시(ESC[200~·ESC[201~)·CR·공백이 섞여도 받고, 틀린 값은 원인만 알린다
+first_input() { # 모드, 입력 문자열 → rds.env 없이 실행
+  rm -rf "$t/state"; mkdir -p "$t/state"; : >"$t/log"
+  printf 'AWS_REGION=ap-northeast-2\n' >"$t/etc/registry.env"; rm -f "$t/etc/rds.env"
+  rc=0
+  printf '%b' "$2" | FAKE_MODE="$1" FAKE_LOG="$t/log" FAKE_STATE="$t/state" PATH="$t/bin:$PATH" \
+    UREKA_ETC_DIR="$t/etc" UREKA_LOCK_FILE="$t/lock" RDS_BOOTSTRAP_WAIT_SECONDS=10 \
+    bash scripts/ec2/rds-bootstrap.sh >"$t/out" 2>&1 || rc=$?
+}
+saved_ok() { grep -qxF "RDS_MASTER_SECRET_ARN=${FAKE_ARN}" "$t/etc/rds.env" && grep -qxF "RDS_ENDPOINT=${FAKE_HOST}" "$t/etc/rds.env"; }
+first_input job_ok "\e[200~${FAKE_ARN}\e[201~\r\n  ${FAKE_HOST} \r\n"
+check "붙여넣기 표시·CR·공백: 받아들임" rc_is 0 || show
+check "붙여넣기 표시·CR·공백: 깨끗한 값으로 저장" saved_ok
+check "붙여넣기 표시·CR·공백: 무노출" no_leak
+first_input job_ok "cd ~/ureka-gitops && git log\n${FAKE_HOST}\n"
+check "잘못 붙여 넣은 명령어: 실패 종료" rc_nonzero
+check "잘못 붙여 넣은 명령어: 원인 안내" out_has 'arn:aws:secretsmanager:로 시작하지 않음'
+check "잘못 붙여 넣은 명령어: 저장하지 않음" test ! -f "$t/etc/rds.env"
+check "잘못 붙여 넣은 명령어: 마스터 비밀을 읽지 않음" log_hasnt '^AWS '
+first_input job_ok "\n${FAKE_HOST}\n"
+check "빈 입력: 원인 안내" out_has '비어 있음'
+
 exit "$status"

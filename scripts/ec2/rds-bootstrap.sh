@@ -47,6 +47,20 @@ region="$(sed -n 's/^AWS_REGION=//p' "$registry_env" | head -n1)"
 
 arn_re='^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:rds![A-Za-z0-9-]+$'
 host_re='^[a-z0-9-]+\.[a-z0-9]+\.[a-z0-9-]+\.rds\.amazonaws\.com$'
+clean_input() { # 앞뒤 공백·CR·따옴표, bracketed paste 표시를 지운다
+  local v="$1"
+  v="${v//$'\e[200~'/}"; v="${v//$'\e[201~'/}"; v="${v//$'\r'/}"
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  v="${v#[\"\']}"; v="${v%[\"\']}"
+  printf '%s' "$v"
+}
+describe_arn() { # 진단(값 없이): 비었는지, 앞부분, 제어 문자, rds! 여부
+  local v="$1"
+  [ -n "$v" ] || { echo "비어 있음(붙여넣기가 안 됐을 수 있음)"; return; }
+  case "$v" in arn:aws:secretsmanager:*) ;; *) echo "arn:aws:secretsmanager:로 시작하지 않음"; return ;; esac
+  case "$v" in *[[:cntrl:]]*) echo "제어 문자가 섞여 있음"; return ;; esac
+  case "$v" in *':secret:rds!'*) echo "앞부분은 맞음, 나머지 형식이 다름" ;; *) echo "':secret:rds!'가 없음(RDS 관리 비밀이 아님)" ;; esac
+}
 read_setting() { [ -f "$rds_env" ] && sed -n "s/^$1=//p" "$rds_env" | head -n1 || true; }
 arn="$(read_setting RDS_MASTER_SECRET_ARN)"
 host="$(read_setting RDS_ENDPOINT)"
@@ -57,7 +71,13 @@ if [ -z "$arn" ] || [ -z "$host" ]; then
   else
     IFS= read -r arn || true; IFS= read -r host || true
   fi
-  [[ "$arn" =~ $arn_re ]] || { echo "RDS 관리 비밀 ARN 형식이 아닙니다(값은 출력하지 않음)." >&2; exit 1; }
+  # 붙여넣기에 섞이는 보이지 않는 문자(터미널 bracketed paste 표시 ESC[200~·ESC[201~, CR, 공백, 따옴표)를 걷어낸다.
+  arn="$(clean_input "$arn")"; host="$(clean_input "$host")"
+  if ! [[ "$arn" =~ $arn_re ]]; then
+    # 값은 출력하지 않고 원인만 알려 준다.
+    echo "RDS 관리 비밀 ARN 형식이 아닙니다(값은 출력하지 않음). 길이 ${#arn}자, $(describe_arn "$arn")" >&2
+    exit 1
+  fi
   [[ "$host" =~ $host_re ]] || { echo "RDS 엔드포인트 형식이 아닙니다." >&2; exit 1; }
   install -d -m 0750 "$etc_dir"
   ( umask 027; printf 'RDS_MASTER_SECRET_ARN=%s\nRDS_ENDPOINT=%s\n' "$arn" "$host" >"$rds_env" )
