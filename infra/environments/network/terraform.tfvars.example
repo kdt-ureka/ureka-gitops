@@ -1,0 +1,2 @@
+# terraform.tfvars로 복사해서 쓴다. terraform.tfvars는 .gitignore 대상이다(커밋 금지).
+allowed_account_ids = ["000000000000"]
