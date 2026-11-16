@@ -33,6 +33,23 @@ resource "aws_security_group" "host" {
     self             = false
   }
 
+  # RDS(environments/data): 사설 서브넷으로 가는 PostgreSQL만. 사설 서브넷에는 인터넷 경로가 없다.
+  dynamic "egress" {
+    for_each = length(var.db_egress_cidrs) > 0 ? [1] : []
+    content {
+      description = "PostgreSQL to RDS in the private subnets"
+      protocol    = "tcp"
+      from_port   = 5432
+      to_port     = 5432
+      cidr_blocks = var.db_egress_cidrs
+
+      ipv6_cidr_blocks = []
+      prefix_list_ids  = []
+      security_groups  = []
+      self             = false
+    }
+  }
+
   tags = {
     Name = "${var.name}-k3s-host"
   }

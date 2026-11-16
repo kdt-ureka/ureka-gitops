@@ -23,6 +23,13 @@ mock_provider "aws" {
     defaults = {
       id                = "subnet-0123456789abcdef0"
       availability_zone = "ap-northeast-2a"
+      cidr_block        = "10.0.16.0/20"
+    }
+  }
+
+  mock_data "aws_subnets" {
+    defaults = {
+      ids = ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"]
     }
   }
 
@@ -63,4 +70,23 @@ run "rejects_bad_account_id" {
   }
 
   expect_failures = [var.allowed_account_ids]
+}
+
+run "db_egress_only_to_private_subnets" {
+  command = plan
+
+  override_data {
+    target = data.aws_subnet.private["subnet-0aaaaaaaaaaaaaaaa"]
+    values = { cidr_block = "10.0.16.0/20" }
+  }
+
+  override_data {
+    target = data.aws_subnet.private["subnet-0bbbbbbbbbbbbbbbb"]
+    values = { cidr_block = "10.0.32.0/20" }
+  }
+
+  assert {
+    condition     = local.private_subnet_cidrs == tolist(["10.0.16.0/20", "10.0.32.0/20"])
+    error_message = "EC2 database egress must target exactly the private subnet CIDRs."
+  }
 }

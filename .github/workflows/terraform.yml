@@ -36,6 +36,7 @@ jobs:
           - infra/modules/network
           - infra/environments/ec2
           - infra/modules/k3s_host
+          - infra/environments/data
     defaults:
       run:
         working-directory: ${{ matrix.dir }}

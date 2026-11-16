@@ -1,0 +1,7 @@
+# backend.hcl로 복사해서 쓴다. backend.hcl은 .gitignore 대상이다(커밋 금지).
+# 버킷은 shared와 같은 것을 쓰고 key만 다르게 둔다(state를 섞지 않는다).
+bucket       = "ureka-tfstate-<random-suffix>" # 계정 ID를 넣지 않는다
+key          = "data/terraform.tfstate"
+region       = "ap-northeast-2"
+encrypt      = true
+use_lockfile = true
