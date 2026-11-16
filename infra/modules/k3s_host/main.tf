@@ -195,6 +195,8 @@ resource "aws_instance" "host" {
 
   lifecycle {
     # 새 AMI·user data로 서버가 저절로 교체되지 않게 한다. 교체는 승인 후 -replace로만.
-    ignore_changes = [ami, user_data]
+    # associate_public_ip_address: 중지하면 AWS가 자동 공인 IP를 반납해 상태가 false로 읽히고, 이 값은 바꾸면 교체가 된다.
+    # 꺼진 상태에서 plan하면 서버 교체(디스크·k3s·Secret 손실)가 나오므로 무시한다. 새로 만들 때는 위 설정(true)대로 받는다.
+    ignore_changes = [ami, user_data, associate_public_ip_address]
   }
 }
