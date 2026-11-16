@@ -22,7 +22,7 @@ Ureka AWS 인프라 Terraform.
 | `shared` | 계정에 한 벌 | `shared/ecr/terraform.tfstate` | 있음 |
 | `network` | 프로젝트 끝까지 | `network/terraform.tfstate` | 있음 |
 | `ec2` | 끄고 켜며 계속 (다시 만들지 않음) | `ec2/terraform.tfstate` | 있음 |
-| `data` | 오래 (RDS, 백업·삭제 보호) | `data/terraform.tfstate` | 11/18~ |
+| `data` | 오래 (RDS, 백업·삭제 보호) | `data/terraform.tfstate` | 11/17 생성 |
 | `eks` | 시연 때만 만들고 지움 | `eks/terraform.tfstate` | S8 |
 
 - 다른 층의 state를 직접 읽지 않는다. `network`의 VPC·서브넷은 태그(`Project`, `Stack=network`, `Tier`)로 찾고, 결과가 0개나 여러 개면 plan이 실패한다.
@@ -32,7 +32,7 @@ Ureka AWS 인프라 Terraform.
 ### ec2 운영 한계 (첫 버전에서 수용)
 
 - **다시 만들지 않는다.** k3s 상태·Secret·첫 버전 DB가 루트 디스크에만 있고, 종료하면 지워진다(`delete_on_termination = true`, 잃어도 되는 dev). 종료 보호를 켜 두었다.
-- `ignore_changes = [ami, user_data]`는 **새 AMI·user data 수정이 기존 서버에 적용되지 않는다**는 뜻이다. OS 보안 업데이트는 SSM 셸에서 `dnf upgrade`로 하고, user data를 고쳤다면 같은 내용을 서버에서 직접 실행하거나 승인 후 `terraform apply -replace`로 다시 만든다.
+- `ignore_changes = [ami, user_data, associate_public_ip_address]`는 **새 AMI·user data 수정이 기존 서버에 적용되지 않는다**는 뜻이다. `associate_public_ip_address`는 꺼진 서버가 자동 공인 IP를 반납해 false로 읽혀, 꺼진 상태 plan이 서버 교체로 나오는 것을 막는다(11/17 발견). OS 보안 업데이트는 SSM 셸에서 `dnf upgrade`로 하고, user data를 고쳤다면 같은 내용을 서버에서 직접 실행하거나 승인 후 `terraform apply -replace`로 다시 만든다.
 - ignore_changes는 그 두 필드만 막는다. 서브넷·AZ·이름 변경이나 리소스 삭제는 여전히 교체·삭제가 된다. **plan에 `-/+`나 destroy가 보이면 데이터 손실 승인 없이 apply하지 않는다.**
 - user data(레지스트리 주소 = 계정 ID 포함)는 서버 파일뿐 아니라 EC2 API·Terraform state·cloud-init 파일에도 남는다. "공개 저장소·공개 로그에 쓰지 않는다"는 규칙이지, 계정 관리자에게 숨기는 경계는 아니다.
 - 첫 부팅 결과는 서버의 `/var/log/ureka-bootstrap.log`에서 본다. 받는 파일의 체크섬이 맞지 않거나 5분 안에 Ready가 아니면 멈춘다. Ready는 노드 기동 확인일 뿐이고, ECR 받기·80번 접속·Pod 메타데이터 차단은 apply 뒤 따로 확인한다(이슈 #32 완료 확인).
