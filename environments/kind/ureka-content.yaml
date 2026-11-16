@@ -5,7 +5,8 @@ name: ureka-content
 
 replicaCount: 1
 
-# Spring Boot: 힙(MaxRAMPercentage 70%) + 힙 바깥(Metaspace·스레드)이 512Mi를 넘어 OOMKilled → 768Mi
+# Spring Boot: kind에서 512Mi는 OOMKilled → 768Mi. 힙은 50M 안쪽이고 대부분 힙 바깥 + Rosetta 번역 몫(README 'kind dev 환경' 경고).
+# 운영(x86) 값은 EC2·EKS에서 따로 잰다.
 resources:
   requests:
     cpu: 100m
