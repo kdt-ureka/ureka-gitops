@@ -129,7 +129,7 @@ Secret은 `create-secrets.sh`가 이 서버에서 만들고, 이미 있으면 �
 | chat·ops 묶음(`db-accounts-chat-ops`·`ureka-chat-secrets`·`ureka-ops-secrets`)이 일부만 남아 `up.sh`가 멈춤 | 이 묶음만 다시 만듭니다. DB는 그대로 둡니다. 아래 "chat·ops 묶음 다시 만들기" |
 | 기본 묶음(`postgres-admin`·`db-accounts`·`ureka-auth-secrets` 등 6개)이 일부만 남음, 또는 전부 새로(유출이 의심될 때 등) | **EC2 다시 만들기**로 합니다(아래 절). DB·Secret이 모두 사라집니다 |
 
-chat·ops 묶음 다시 만들기(서버 안):
+chat·ops 묶음 다시 만들기(서버 안). 무중단 교체가 아니므로 팀에 알리고 dev 유지보수 시간에 합니다. data 앱이 다른 동기화를 하고 있지 않을 때 시작하고, 명령이 하나라도 실패하면 거기서 멈추고 원인을 봅니다.
 
 ```bash
 sudo k3s kubectl -n dev delete secret db-accounts-chat-ops ureka-chat-secrets ureka-ops-secrets --ignore-not-found
@@ -142,13 +142,16 @@ sudo k3s kubectl -n dev wait --for=create job/db-bootstrap --timeout=300s
 sudo k3s kubectl -n dev wait --for=condition=complete job/db-bootstrap --timeout=600s
 # Pod는 시작할 때만 env를 읽는다
 sudo k3s kubectl -n dev rollout restart deployment/ureka-chat deployment/ureka-chat-worker deployment/ureka-ops
+sudo k3s kubectl -n dev rollout status deployment/ureka-chat deployment/ureka-chat-worker deployment/ureka-ops --timeout=300s
 ```
+
+끝나면 화면에서 로그인과 채팅이 되는지 확인합니다(DB 연결 확인).
 
 기본 묶음은 클러스터 안에서 다시 만들지 않습니다. PostgreSQL 슈퍼유저 비밀번호가 DB를 처음 만들 때만 쓰여서 DB 볼륨까지 같이 지워야 합니다. 그런데 Argo CD 자동 동기화가 켜져 있으면, 지우는 도중에 postgres·PVC가 다시 만들어지는 경합이 생깁니다. 이 절차(자동 동기화 멈춤 → DB 사용 앱 중지 → 볼륨 삭제 확인 → 새 Secret → data 동기화·db-bootstrap 확인 → 재기동 → 자동 동기화 복구)는 아직 검증하지 않았습니다. 그래서 첫 버전에서는 EC2 다시 만들기만 안내합니다. 지금 DB는 잃어도 되는 dev 데이터입니다. RDS로 옮기면 이 절차가 바뀝니다(RDS PR).
 
 ## 다시 만들기 (EC2 교체)
 
-다음 경우에만 EC2를 다시 만듭니다: 디스크가 망가졌을 때, k3s·첫 부팅 설정을 바꿨을 때, AMI를 새로 받을 때. 평소에는 중지·시작만 합니다.
+다음 경우에만 EC2를 다시 만듭니다: 디스크가 망가졌을 때, k3s·첫 부팅 설정을 바꿨을 때, AMI를 새로 받을 때, 기본 묶음 Secret이 깨졌거나 비밀값을 전부 새로 만들어야 할 때. 평소에는 중지·시작만 합니다.
 
 - 새 AMI·user data가 나와도 서버가 저절로 교체되지 않습니다(`ignore_changes = [ami, user_data]`). 교체는 승인을 받은 뒤 `-replace`로만 합니다.
 - 다시 만들면 루트 디스크가 같이 지워집니다. **DB·Secret·Argo CD가 모두 사라지고, 이미지도 새로 받습니다.** 팀에 미리 알립니다.

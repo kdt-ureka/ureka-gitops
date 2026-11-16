@@ -183,7 +183,12 @@ if [ "$base_n" -eq "$base_total" ] && [ "$chat_ops_n" -eq "$chat_ops_total" ] &&
 fi
 if [ "$base_n" -ne 0 ] && [ "$base_n" -ne "$base_total" ]; then
   echo "기본 Secret이 일부(${base_n}/${base_total})만 있습니다. 값이 서로 맞지 않을 수 있어 멈춥니다." >&2
-  echo "클러스터를 새로 만들거나, 남은 Secret을 지우고(kubectl --context $ctx -n $ns delete secret -l ureka.io/created-by=create-secrets.sh) DB 볼륨도 지운 뒤 다시 실행하세요." >&2
+  if [ "$target" = ec2 ]; then
+    # EC2는 Argo CD 자동 동기화가 지우는 도중 postgres·PVC를 다시 만들어 경합한다. 클러스터 안에서 지우지 않는다.
+    echo "EC2에서는 여기서 지우지 말고 docs/ec2-dev.md '다시 만들기 (EC2 교체)'를 따르세요(DB·Secret이 모두 새로 생깁니다)." >&2
+  else
+    echo "클러스터를 새로 만들거나, 남은 Secret을 지우고(kubectl --context $ctx -n $ns delete secret -l ureka.io/created-by=create-secrets.sh) DB 볼륨도 지운 뒤 다시 실행하세요." >&2
+  fi
   exit 1
 fi
 if [ "$chat_ops_n" -ne 0 ] && [ "$chat_ops_n" -ne "$chat_ops_total" ]; then
@@ -208,7 +213,11 @@ if [ "$base_n" -eq 0 ]; then
   # Secret이 하나도 없는데 DB 볼륨이 남아 있으면, 새 슈퍼유저 비밀번호가 기존 DB에 적용되지 않는다.
   if exists -n "$ns" pvc data-postgres-0; then
     echo "Secret은 없는데 DB 볼륨(pvc/data-postgres-0)이 남아 있습니다. 새 비밀번호가 기존 DB에 맞지 않습니다." >&2
-    echo "kind dev 데이터를 버려도 되면: kubectl --context $ctx -n $ns delete statefulset postgres && kubectl --context $ctx -n $ns delete pvc data-postgres-0 후 다시 실행" >&2
+    if [ "$target" = ec2 ]; then
+      echo "EC2에서는 여기서 지우지 말고 docs/ec2-dev.md '다시 만들기 (EC2 교체)'를 따르세요." >&2
+    else
+      echo "kind dev 데이터를 버려도 되면: kubectl --context $ctx -n $ns delete statefulset postgres && kubectl --context $ctx -n $ns delete pvc data-postgres-0 후 다시 실행" >&2
+    fi
     exit 1
   fi
 fi

@@ -283,7 +283,17 @@ ec2_run "ec2: API 주소가 다른 클러스터" nonzero 0 FAKE_SERVER=https://A
 ec2_run "ec2: API 주소 못 읽음(빈 값)" nonzero 0 FAKE_SERVER=
 ec2_run "ec2: EC2 표식 파일 없음" nonzero 0 UREKA_EC2_MARKER="$fake/none"
 ec2_run "ec2: 추가 경로 안내에 ec2 data 앱 이름" 0 3 FAKE_EXISTING="$BASE $REC"
-grep -q 'ureka-dev-data-ec2-dev' "$fake/out" && echo "ok   ec2: data 동기화 안내가 ec2 앱" || { echo "FAIL ec2: data 동기화 안내가 ec2 앱이 아님"; status=1; }
+if grep -q 'ureka-dev-data-ec2-dev' "$fake/out"; then echo "ok   ec2: data 동기화 안내가 ec2 앱"; else echo "FAIL ec2: data 동기화 안내가 ec2 앱이 아님"; status=1; fi
+# ec2 대상: DB 볼륨·기본 묶음을 클러스터 안에서 지우라는 안내 대신 EC2 교체 문서로 보낸다(Argo 자동 동기화와 경합).
+for case_ in "pvc_exists:" "x:postgres-admin db-accounts"; do
+  m="${case_%%:*}"; ex="${case_#*:}"
+  ec2_run "ec2: 초기화가 필요한 상태(${m})" nonzero 0 FAKE_MODE="$m" FAKE_EXISTING="$ex"
+  if grep -q 'docs/ec2-dev.md' "$fake/out" && ! grep -q 'delete pvc\|delete secret -l' "$fake/out"; then
+    echo "ok     ec2 안내: EC2 교체 문서, 클러스터 안 삭제 명령 없음"
+  else
+    echo "FAIL   ec2 안내가 클러스터 안 삭제를 시킨다"; status=1
+  fi
+done
 : >"$fake/log"; rc=0
 UREKA_TARGET=eks FAKE_LOG="$fake/log" PATH="$fake:$PATH" bash scripts/kind/create-secrets.sh </dev/null >/dev/null 2>&1 || rc=$?
 expect_eq "알 수 없는 UREKA_TARGET → 종료 2, 호출 없음" "${rc}:$(grep -c '^ARGV' "$fake/log" || true)" "2:0"
