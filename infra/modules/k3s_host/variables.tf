@@ -145,7 +145,7 @@ variable "db_egress_cidrs" {
 
   validation {
     condition = alltrue([for c in var.db_egress_cidrs :
-      can(cidrhost(c, 0)) && !contains(["0.0.0.0/0"], c) && tonumber(split("/", c)[1]) >= 16
+      can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$", c)) && can(cidrhost(c, 0)) && !contains(["0.0.0.0/0"], c) && tonumber(split("/", c)[1]) >= 16
     ])
     error_message = "db_egress_cidrs must be IPv4 CIDRs of /16 or narrower (never 0.0.0.0/0)."
   }

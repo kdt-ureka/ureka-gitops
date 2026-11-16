@@ -37,12 +37,13 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "/bootstrap/run-bootstrap.sh"]
           env:
-            # Service postgres = RDS ExternalName(environments/ec2/dev/data)
+            # RDS 엔드포인트에 바로 접속한다. scripts/ec2/rds-bootstrap.sh가 /etc/ureka/rds.env 값으로 바꿔 넣는다
+            # (ExternalName 전환 전에도 RDS를 먼저 검증할 수 있게). 이 파일을 직접 apply하면 이름을 못 찾아 실패한다.
             - name: PGHOST
-              value: postgres
+              value: RDS_ENDPOINT
             - name: PGDATABASE
               value: postgres
-            # RDS는 TLS만 받는다(rds.force_ssl=1). 인증서 이름 확인(verify-full)은 하지 않는다: 호스트가 ExternalName 별칭이다.
+            # RDS는 TLS만 받는다(rds.force_ssl=1). 서버 인증서 확인(verify-full)은 하지 않는다(CA 번들 없이 암호화만, CN 전용 dev에서 수용).
             - name: PGSSLMODE
               value: require
             - name: PGUSER

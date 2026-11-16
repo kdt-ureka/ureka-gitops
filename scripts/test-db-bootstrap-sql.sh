@@ -3,8 +3,10 @@
 #   super    kind처럼 슈퍼유저(postgres)로 실행
 #   rdslike  RDS 마스터처럼 슈퍼유저가 아닌 CREATEDB·CREATEROLE 계정으로 실행(PostgreSQL 16+ 권한 규칙)
 # 두 경우 모두 같은 최종 상태(계정 속성·DB 소유자·접속 권한·멤버십·검색 계정 설정·비밀번호)인지 확인한다.
-# 한계: 일반 PostgreSQL에서는 vector를 슈퍼유저만 설치할 수 있어, rdslike는 template1에 미리 설치해 둔다
-#      (RDS에서는 rds_superuser가 직접 설치한다). RDS 전용 제약은 실제 RDS 첫 실행에서 확인한다.
+# rdslike: 일반 PostgreSQL에서는 vector를 슈퍼유저만 설치할 수 있다. RDS에서는 rds_superuser가 설치할 수 있으므로,
+#   시험 컨테이너에서만 vector를 신뢰 확장(trusted)으로 표시해 SQL 본문의 CREATE EXTENSION ... SCHEMA catalog가 그대로 돌게 한다.
+# 두 경우 모두 vector가 catalog 스키마에 있고(catalog.vector 타입) public에는 없어야 한다.
+# 한계: RDS 전용 제약(rds_superuser 고유 권한, postgres DB 소유자, pgvector 0.8.2)은 실제 RDS 첫 실행에서 확인한다.
 # 비밀번호는 시험용 고정 문자열이다(컨테이너는 끝나면 지운다).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -58,8 +60,8 @@ run_mode() { # super|rdslike
   for _ in $(seq 1 60); do docker exec "$name" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1 && break; sleep 1; done
   docker cp "$sql" "$name:/tmp/bootstrap.sql"
   if [ "$mode" = rdslike ]; then
-    docker exec "$name" psql -U postgres -q -d template1 \
-      -c "CREATE ROLE ureka_admin LOGIN CREATEDB CREATEROLE PASSWORD 'test-admin'" -c "CREATE EXTENSION vector"
+    docker exec "$name" sh -c 'ctl="$(pg_config --sharedir)/extension/vector.control"; grep -q "^trusted" "$ctl" || echo "trusted = true" >>"$ctl"'
+    docker exec "$name" psql -U postgres -q -d postgres -c "CREATE ROLE ureka_admin LOGIN CREATEDB CREATEROLE PASSWORD 'test-admin'"
     user=ureka_admin pass=test-admin
   fi
   local run rc out
@@ -80,10 +82,14 @@ SELECT 'setting '||array_to_string(setconfig, ',') FROM pg_db_role_setting s JOI
 $(docker exec "$name" psql -U postgres -At -d content_db -c "SELECT 'schema catalog owner='||pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'catalog';")"
   if [ "$state" = "$expected" ]; then ok "${mode}: 최종 상태가 기대와 같음"; else fail "${mode}: 최종 상태가 다름"; diff <(printf '%s\n' "$expected") <(printf '%s\n' "$state") || true; fi
 
-  if docker exec "$name" psql -U postgres -At -d content_db -c "SELECT count(*) FROM pg_extension WHERE extname = 'vector'" | grep -qx 1; then
-    ok "${mode}: content_db에 vector 확장"
+  local vec
+  vec="$(docker exec "$name" psql -U postgres -At -d content_db -c "
+SELECT n.nspname || ' ' || (to_regtype('catalog.vector') IS NOT NULL) || ' ' || (to_regtype('public.vector') IS NULL)
+  FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector'")"
+  if [ "$vec" = "catalog true true" ]; then
+    ok "${mode}: vector 확장이 catalog 스키마(catalog.vector 있음, public.vector 없음)"
   else
-    fail "${mode}: content_db에 vector 확장 없음"
+    fail "${mode}: vector 확장 위치가 다름(스키마·catalog 타입·public 없음: ${vec:-확장 없음})"
   fi
   # 서비스 계정 접속: 자기 DB만 된다(비밀번호가 해시대로 들어갔는지도 함께 본다)
   local svc db

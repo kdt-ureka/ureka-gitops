@@ -264,3 +264,13 @@ run "rejects_wide_db_egress" {
 
   expect_failures = [var.db_egress_cidrs]
 }
+
+run "rejects_ipv6_db_egress" {
+  command = plan
+
+  variables {
+    db_egress_cidrs = ["fd00::/64"]
+  }
+
+  expect_failures = [var.db_egress_cidrs]
+}
