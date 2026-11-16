@@ -58,6 +58,7 @@ aws ssm start-session --target "$(terraform output -raw instance_id)"
 서버 안:
 
 ```bash
+cd ~      # SSM 셸은 쓰기 권한 없는 폴더(/usr/bin 등)에서 시작한다. 그대로 clone하면 Permission denied
 sudo dnf install -y git
 git clone https://github.com/kdt-ureka/ureka-gitops.git && cd ureka-gitops
 sudo bash scripts/ec2/up.sh
@@ -95,6 +96,8 @@ aws ssm start-session --target "$(terraform output -raw instance_id)" \
 
 80번 문서는 로컬 포트로 1024~65535만 받습니다. 다른 포트로 열었으면 화면 주소도 http://localhost:18080 처럼 바꿉니다.
 
+아래 Mailpit(8025)·Argo CD(8443) 연결도 같습니다. kind Mailpit을 `kubectl port-forward`로 띄워 두었으면 내 PC의 8025가 겹치므로, 서버 쪽 포트(`portNumber`)는 그대로 두고 내 PC 쪽만 바꿉니다(예: `portNumber=8025,localPortNumber=18025` → http://localhost:18025).
+
 ## CN 전용: Argo CD 화면·받은 메일
 
 서버 안에서 서비스를 서버의 localhost로 열고, 내 PC에서 일반 포트 포워딩으로 연결합니다. 관리자 권한이 필요하며, 팀원 권한 세트에는 없습니다.
@@ -106,7 +109,7 @@ sudo k3s kubectl -n dev port-forward deploy/mailpit 8025:8025
 ```
 
 ```bash
-# 내 PC (Mailpit이면 8443 대신 8025)
+# 내 PC (Mailpit이면 8443 대신 8025. 내 PC의 8025가 겹치면 localPortNumber만 18025로)
 aws ssm start-session --target "$(terraform output -raw instance_id)" \
   --document-name AWS-StartPortForwardingSession --parameters portNumber=8443,localPortNumber=8443
 ```
