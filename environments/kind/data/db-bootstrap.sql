@@ -154,3 +154,10 @@ GRANT CONNECT ON DATABASE content_db TO content_db_recommend_search, content_db_
 CREATE SCHEMA IF NOT EXISTS catalog;
 CREATE EXTENSION IF NOT EXISTS vector SCHEMA catalog;
 ALTER SCHEMA catalog OWNER TO content_db_app;
+
+-- 5) 확인 출력(비밀값 없음). Job 로그에 남는다. RDS에서는 vector 버전이 엔진 마이너에 따라 다르다.
+SELECT 'check vector ' || extversion || ' in ' || n.nspname
+  FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector';
+SELECT 'check server ' || current_setting('server_version') || ', postgres db owner ' || pg_get_userbyid(datdba)
+       || ', public connect ' || has_database_privilege('public', 'postgres', 'CONNECT')
+  FROM pg_database WHERE datname = 'postgres';

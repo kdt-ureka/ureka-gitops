@@ -18,7 +18,7 @@ patches:
         value:
           # RDS 엔드포인트(사설 DNS, 계정 ID 없음, VPC 밖에서는 접속 불가). terraform -chdir=infra/environments/data output -raw endpoint
           type: ExternalName
-          externalName: RDS_ENDPOINT_PLACEHOLDER
+          externalName: ureka-dev.cr8k0ymewyf6.ap-northeast-2.rds.amazonaws.com
           ports:
             - name: postgres
               port: 5432
