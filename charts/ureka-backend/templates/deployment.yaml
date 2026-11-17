@@ -49,6 +49,11 @@ spec:
             {{- if .Values.metrics.enabled }}
             - name: SPRING_PROFILES_INCLUDE
               value: observability
+            - name: METRICS_SCRAPE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ printf "%s-metrics" .Values.name | quote }}
+                  key: METRICS_SCRAPE_TOKEN
             {{- end }}
           {{- end }}
           securityContext:

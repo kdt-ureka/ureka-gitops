@@ -23,7 +23,11 @@ scrape_configs:
         regex: 'container_cpu_usage_seconds_total|container_memory_working_set_bytes'
         action: keep
 {{- if .Values.appMetrics.enabled }}
-{{- range $name := list "auth" "content" "chat" }}
+{{- $services := list "auth" "content" }}
+{{- if .Values.appMetrics.chatEnabled }}
+{{- $services = append $services "chat" }}
+{{- end }}
+{{- range $name := $services }}
   - job_name: ureka-{{ $name }}
     metrics_path: {{ if eq $name "chat" }}/internal/v1/metrics{{ else }}/actuator/prometheus{{ end }}
     http_headers:

@@ -73,11 +73,18 @@ class ObservabilityRendering(unittest.TestCase):
         self.assertEqual(cfg['global']['scrape_interval'],'30s')
         self.assertFalse(jobs['kubelet-cadvisor']['tls_config'].get('insecure_skip_verify',False))
         self.assertEqual(jobs['kubelet-cadvisor']['metrics_path'],'/metrics/cadvisor')
-        for service in ('auth','content','chat'):
+        for service in ('auth','content'):
             j=jobs['ureka-'+service]
             self.assertEqual(j['http_headers']['X-Internal-Token']['files'], ['/etc/metrics-tokens/'+service])
             self.assertTrue({'namespace','pod'} <= {r.get('target_label') for r in j['relabel_configs']})
-        self.assertEqual(jobs['ureka-chat']['metrics_path'],'/internal/v1/metrics')
+        self.assertNotIn('ureka-chat',jobs)
+        enabled = render(('--set', 'appMetrics.enabled=true', '--set', 'appMetrics.chatEnabled=true'))
+        cm_chat=next(d for d in objects(enabled,'ConfigMap') if d['metadata']['name']=='obs-prometheus')
+        chat_jobs={j['job_name']:j for j in yaml.safe_load(cm_chat['data']['prometheus.yml'])['scrape_configs']}
+        self.assertEqual(chat_jobs['ureka-chat']['metrics_path'],'/internal/v1/metrics')
+        prom=next(d for d in objects(self.enabled,'Deployment') if d['metadata']['name']=='obs-prometheus')
+        token_volume=next(v for v in prom['spec']['template']['spec']['volumes'] if v['name']=='tokens')
+        self.assertEqual(token_volume['secret']['items'],[{'key':'auth','path':'auth'},{'key':'content','path':'content'}])
         self.assertFalse(cfg.get('alerting')) # rule evaluation is not notification delivery
 
     def test_resource_budget_and_persistent_storage(self):
@@ -107,8 +114,9 @@ class ObservabilityRendering(unittest.TestCase):
             before,after=get(normal),get(enabled)
             self.assertEqual(before['ports'],[{'name':'http','containerPort':8080}])
             self.assertIn({'name':'metrics','containerPort':9091},after['ports'])
-            self.assertEqual(after['env'][:-1],before['env'])
-            self.assertEqual(after['env'][-1],{'name':'SPRING_PROFILES_INCLUDE','value':'observability'})
+            self.assertEqual(after['env'][:-2],before['env'])
+            self.assertEqual(after['env'][-2],{'name':'SPRING_PROFILES_INCLUDE','value':'observability'})
+            self.assertEqual(after['env'][-1],{'name':'METRICS_SCRAPE_TOKEN','valueFrom':{'secretKeyRef':{'name':f'ureka-{name}-metrics','key':'METRICS_SCRAPE_TOKEN'}}})
             self.assertEqual(before['readinessProbe'],after['readinessProbe'])
 
 if __name__=='__main__':

@@ -108,8 +108,8 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- fail "metrics.enabled supports only auth/content HTTP workloads" -}}
 {{- end -}}
 {{- range .Values.env -}}
-{{- if eq .name "SPRING_PROFILES_INCLUDE" -}}
-{{- fail "metrics.enabled manages SPRING_PROFILES_INCLUDE; combine profiles explicitly before enabling" -}}
+{{- if or (eq .name "SPRING_PROFILES_INCLUDE") (eq .name "METRICS_SCRAPE_TOKEN") -}}
+{{- fail "metrics.enabled manages SPRING_PROFILES_INCLUDE and METRICS_SCRAPE_TOKEN" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

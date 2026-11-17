@@ -95,7 +95,15 @@ spec:
         {{- if eq $name "prometheus" }}
         {{- if $.Values.appMetrics.enabled }}
         - name: tokens
-          secret: {secretName: {{ $.Values.appMetrics.tokenSecret }}, defaultMode: 0440}
+          secret:
+            secretName: {{ $.Values.appMetrics.tokenSecret }}
+            defaultMode: 0440
+            items:
+              - {key: auth, path: auth}
+              - {key: content, path: content}
+              {{- if $.Values.appMetrics.chatEnabled }}
+              - {key: chat, path: chat}
+              {{- end }}
         {{- end }}
         {{- else }}
         - name: tmp
