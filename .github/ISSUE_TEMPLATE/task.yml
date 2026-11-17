@@ -1,0 +1,38 @@
+name: 작업
+description: 새 기능, 인프라, 문서, 관리 작업을 등록합니다
+body:
+  - type: markdown
+    attributes:
+      value: |
+        제목은 무엇이 되면 끝인지 쉬운 문장으로 씁니다. 예: "같은 IP의 인증 메일 요청 횟수를 제한한다"
+        등록한 뒤 오른쪽에서 담당자, 라벨, 마일스톤을 꼭 고릅니다.
+  - type: textarea
+    id: blocked
+    attributes:
+      label: 🚧 막힌 이유
+      description: 다른 사람 일을 기다려야 할 때만 씁니다. 누구의 어떤 작업을 기다리는지 적고 blocked 라벨을 붙입니다.
+  - type: textarea
+    id: purpose
+    attributes:
+      label: 목적
+      description: 왜 하는지, 어느 과업(Phase 3·4 산출물)에 들어가는지
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: 지금 상태
+      description: 확인한 사실만 적습니다. 확인한 날짜도 적습니다.
+  - type: textarea
+    id: done
+    attributes:
+      label: 완료 기준
+      description: 확인할 수 있는 결과를 체크박스로 적습니다. 일부러 실패시켜 보는 시험도 넣습니다.
+      value: "- [ ] "
+    validations:
+      required: true
+  - type: textarea
+    id: related
+    attributes:
+      label: 관련
+      description: 선행·후행 이슈, PR, 근거 문서
