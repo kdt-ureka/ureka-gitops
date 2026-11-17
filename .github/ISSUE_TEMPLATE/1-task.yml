@@ -40,13 +40,31 @@ body:
     - 예 — plan 결과를 PR에 붙이고 승인 뒤 apply
     - 모름
 - type: textarea
+  id: background
+  attributes:
+    label: 배경
+    description: 지금 어떤 상황이고 왜 필요한지
+- type: textarea
   id: scope
   attributes:
-    label: 작업 범위
-    description: '포함할 변경과 이번에 하지 않는 것 (예: apply, 과금이 생기는 작업).'
-    value: "- 포함: \n- 바꾸지 않는 것: "
+    label: 할 일
+    description: 체크박스로 적습니다
+    value: '- [ ] '
   validations:
     required: true
+- type: textarea
+  id: excluded
+  attributes:
+    label: 범위 밖
+    description: '이번에 하지 않는 것 (예: apply, 과금이 생기는 작업, 다른 환경)'
+- type: dropdown
+  id: secret
+  attributes:
+    label: 시크릿·권한이 바뀌나
+    options:
+    - 아니요
+    - 예 — 값은 적지 않고 이름과 넣는 방법만 적음
+    - 모름
 - type: textarea
   id: rollback
   attributes:
@@ -55,7 +73,7 @@ body:
 - type: textarea
   id: done
   attributes:
-    label: 완료 기준
+    label: 완료 조건
     description: 확인할 수 있는 결과를 체크박스로 적습니다. 실패해야 하는 경우의 시험도 넣습니다.
     value: "- [ ] \n- [ ] 막혀야 하거나 실패해야 하는 경우도 시험했다\n- [ ] 클러스터를 직접 고치지 않고 Git으로만 바꿨다\n- [ ] 확인한 명령과 결과를 PR에 남겼다"
   validations:
@@ -63,5 +81,5 @@ body:
 - type: textarea
   id: related
   attributes:
-    label: 관련
+    label: 관련 작업
     description: 선행·후행 이슈, PR, 근거 문서. 다른 레포는 kdt-ureka/ureka-docs#12처럼 씁니다.
