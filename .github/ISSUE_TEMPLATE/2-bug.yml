@@ -1,4 +1,4 @@
-name: 버그
+name: 버그 신고
 description: 잘못 동작하는 것을 알립니다
 labels:
 - bug
