@@ -93,3 +93,7 @@ scripts/test-run-bootstrap.sh    # 계정 생성 Job이 잘못된 verifier에서
 scripts/kind/p11-check.sh        # (kind 실행 중) P11 검색 함수 역할 부정 시험
 scripts/check-forbidden-files.sh # 커밋 금지 파일·계정 ID (CI Security 워크플로와 같음)
 ```
+
+## EC2 관측 (설치 전 준비)
+
+`charts/ureka-observability/`와 `environments/ec2/observability/`에 전 Pod·JVM·chat 수집을 준비합니다. 설치/활성화는 자동이 아니며 승인·공동 검증 후 진행합니다. [실행·검증 안내](docs/ec2-observability.md), 오프라인 검사는 `bash scripts/check-observability.sh`입니다.

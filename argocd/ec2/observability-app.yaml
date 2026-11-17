@@ -1,0 +1,27 @@
+# root 앱에는 넣지 않는다. 승인·Secret 준비 뒤 CN이 수동 등록/Sync한다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-observability-ec2
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+    targetRevision: main
+    path: charts/ureka-observability
+    helm:
+      releaseName: ureka-observability
+      valueFiles: [../../environments/ec2/observability/values.yaml]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+    syncOptions:
+      - CreateNamespace=true
+  # 자동 sync/prune 없음. PVC 삭제는 별도 판단.

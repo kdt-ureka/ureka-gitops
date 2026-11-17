@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: obs-prometheus}
+data:
+  prometheus.yml: |
+    {{- tpl (.Files.Get "files/prometheus.yml") . | nindent 4 }}
+  rules.yml: |
+    {{- .Files.Get "files/rules.yml" | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: obs-grafana}
+data:
+  prometheus.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://obs-prometheus:9090
+        isDefault: true
+        editable: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: obs-grafana-providers}
+data:
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+      - name: ureka
+        folder: Ureka
+        type: file
+        disableDeletion: true
+        editable: false
+        options: {path: /var/lib/grafana/dashboards}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: obs-dashboards}
+data:
+{{ (.Files.Glob "files/*.json").AsConfig | indent 2 }}

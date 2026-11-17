@@ -25,3 +25,6 @@ services:
     releases: [recommend]
   - name: frontend
     releases: [frontend]
+
+# auth#29·content#42 승인 이미지 digest 적용과 토큰/정책 준비 뒤 true
+jvmMetricsEnabled: false

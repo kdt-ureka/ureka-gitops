@@ -40,3 +40,26 @@ jobs:
       - name: db-bootstrap Job checks the verifier before any DB call
         # 정상 verifier는 psql까지 가고, 줄바꿈·원문·잘못된 salt·키·반복 수는 DB 호출 0회로 실패해야 한다. sh = dash(러너 기본).
         run: bash scripts/test-run-bootstrap.sh
+
+  observability:
+    name: Observability manifests and rules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install validation tools
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/obs-venv"
+          "$RUNNER_TEMP/obs-venv/bin/pip" install --disable-pip-version-check PyYAML==6.0.3
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --max-time 120 \
+            https://github.com/prometheus/prometheus/releases/download/v3.16.0/prometheus-3.16.0.linux-amd64.tar.gz \
+            -o "$RUNNER_TEMP/prometheus.tar.gz"
+          echo "68727009472a2c02e1ff7f062fd5b3e637285bffc8fc2d340c76fb449d6e0f34  $RUNNER_TEMP/prometheus.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/prometheus.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/obs-venv/bin" >> "$GITHUB_PATH"
+          echo "PROMTOOL=$RUNNER_TEMP/prometheus-3.16.0.linux-amd64/promtool" >> "$GITHUB_ENV"
+      - name: Validate rendering, access boundaries, PromQL and alert transitions
+        run: bash scripts/check-observability.sh

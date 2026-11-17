@@ -1,0 +1,38 @@
+# 설치 전 승인 이미지 digest를 확인한다. 빈 digest는 차트 렌더링을 거절한다.
+components:
+  prometheus:
+    repository: prom/prometheus
+    tag: v3.16.0
+    digest: ""
+    port: 9090
+    uid: 65534
+    resources:
+      requests: {cpu: 100m, memory: 512Mi}
+      limits: {cpu: 500m, memory: 1Gi}
+  grafana:
+    repository: grafana/grafana
+    tag: 13.3.1
+    digest: ""
+    port: 3000
+    uid: 472
+    resources:
+      requests: {cpu: 100m, memory: 384Mi}
+      limits: {cpu: 500m, memory: 512Mi}
+  kube-state-metrics:
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
+    tag: v2.20.0
+    digest: ""
+    port: 8080
+    uid: 65534
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: 200m, memory: 256Mi}
+# EC2는 k3s local-path. PVC는 삭제/백업을 자동으로 하지 않는다.
+storageClassName: local-path
+appNamespace: dev
+# 승인된 auth/content 이미지 배포 및 토큰 준비 전 false 유지.
+appMetrics:
+  enabled: false
+  tokenSecret: ureka-metrics-tokens
+# EC2에서 미리 생성, admin-user/admin-password 키. Git에 값 없음.
+grafanaAdminSecret: ureka-grafana-admin

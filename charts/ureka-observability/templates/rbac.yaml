@@ -1,0 +1,48 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: ureka-observability-prometheus}
+rules:
+  - apiGroups: ['']
+    resources: [nodes]
+    verbs: [get, list, watch]
+  - apiGroups: ['']
+    resources: [nodes/metrics]
+    verbs: [get]
+{{- if .Values.appMetrics.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ureka-observability-discovery
+  namespace: {{ .Values.appNamespace }}
+rules:
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ureka-observability-discovery
+  namespace: {{ .Values.appNamespace }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ureka-observability-discovery}
+subjects:
+  - {kind: ServiceAccount, name: obs-prometheus, namespace: {{ .Release.Namespace }}}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: ureka-observability-state}
+rules:
+  - apiGroups: ['']
+    resources: [pods, nodes]
+    verbs: [get, list, watch]
+{{- range $pair := list (dict "name" "prometheus" "role" "prometheus") (dict "name" "kube-state-metrics" "role" "state") }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: 'ureka-observability-{{ $pair.name }}'}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: 'ureka-observability-{{ $pair.role }}'}
+subjects:
+  - {kind: ServiceAccount, name: 'obs-{{ $pair.name }}', namespace: {{ $.Release.Namespace }}}
+{{- end }}

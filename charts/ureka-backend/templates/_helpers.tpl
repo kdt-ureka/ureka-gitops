@@ -101,3 +101,16 @@ app.kubernetes.io/part-of: ureka
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end -}}
+
+{{- define "ureka-backend.validateMetrics" -}}
+{{- if .Values.metrics.enabled -}}
+{{- if not (and .Values.service.enabled (or (eq .Values.name "ureka-auth") (eq .Values.name "ureka-content"))) -}}
+{{- fail "metrics.enabled supports only auth/content HTTP workloads" -}}
+{{- end -}}
+{{- range .Values.env -}}
+{{- if eq .name "SPRING_PROFILES_INCLUDE" -}}
+{{- fail "metrics.enabled manages SPRING_PROFILES_INCLUDE; combine profiles explicitly before enabling" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
