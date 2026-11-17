@@ -1,0 +1,67 @@
+name: 인프라 작업
+description: 배포·클러스터·Terraform·로컬 실행 환경 작업을 등록합니다
+body:
+- type: markdown
+  attributes:
+    value: |-
+      제목은 무엇이 되면 끝인지 쉬운 문장으로 씁니다. 앞에 `[feat]` 같은 머리말은 붙이지 않습니다.
+      등록한 뒤 오른쪽에서 담당자, 라벨, 마일스톤을 꼭 고릅니다.
+      **이 레포는 공개(PUBLIC)입니다. 계정 ID, 주소, 키, 토큰, 사람 이름을 적지 않습니다.**
+- type: textarea
+  id: blocked
+  attributes:
+    label: 🚧 막힌 이유
+    description: 다른 사람 일을 기다릴 때만 씁니다. 누구의 어떤 작업을 기다리는지 적고 blocked 라벨을 붙입니다.
+- type: textarea
+  id: purpose
+  attributes:
+    label: 목적
+    description: 왜 하는지, 어느 과업(Phase 3·4 산출물)이나 요구사항에 들어가는지
+  validations:
+    required: true
+- type: dropdown
+  id: env
+  attributes:
+    label: 대상 환경
+    options:
+    - 로컬 (compose·run.sh)
+    - kind
+    - EC2 (k3s)
+    - EKS
+    - 공통 (chart·Argo CD·CI)
+  validations:
+    required: true
+- type: dropdown
+  id: cost
+  attributes:
+    label: AWS 자원을 만들거나 바꾸나
+    options:
+    - 아니요
+    - 예 — plan 결과를 PR에 붙이고 승인 뒤 apply
+    - 모름
+- type: textarea
+  id: scope
+  attributes:
+    label: 작업 범위
+    description: '포함할 변경과 이번에 하지 않는 것 (예: apply, 과금이 생기는 작업).'
+    value: "- 포함: \n- 바꾸지 않는 것: "
+  validations:
+    required: true
+- type: textarea
+  id: rollback
+  attributes:
+    label: 되돌리는 방법
+    description: 문제가 생기면 어떻게 되돌리는지
+- type: textarea
+  id: done
+  attributes:
+    label: 완료 기준
+    description: 확인할 수 있는 결과를 체크박스로 적습니다. 실패해야 하는 경우의 시험도 넣습니다.
+    value: "- [ ] \n- [ ] 막혀야 하거나 실패해야 하는 경우도 시험했다\n- [ ] 클러스터를 직접 고치지 않고 Git으로만 바꿨다\n- [ ] 확인한 명령과 결과를 PR에 남겼다"
+  validations:
+    required: true
+- type: textarea
+  id: related
+  attributes:
+    label: 관련
+    description: 선행·후행 이슈, PR, 근거 문서. 다른 레포는 kdt-ureka/ureka-docs#12처럼 씁니다.
