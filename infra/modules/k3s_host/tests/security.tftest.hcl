@@ -217,3 +217,60 @@ run "user_data_keeps_safety_settings" {
     error_message = "User data must not trace commands or fetch the unpinned get.k3s.io script."
   }
 }
+
+run "db_egress_adds_only_5432_to_given_cidrs" {
+  command = plan
+
+  variables {
+    db_egress_cidrs = ["10.0.16.0/20", "10.0.32.0/20"]
+  }
+
+  assert {
+    condition     = length(aws_security_group.host.egress) == 2 && length(aws_security_group.host.ingress) == 0
+    error_message = "With RDS the host has exactly two egress rules (443 and 5432) and still no ingress."
+  }
+
+  assert {
+    condition = length([for e in aws_security_group.host.egress : e if
+      e.protocol == "tcp" && e.from_port == 5432 && e.to_port == 5432 &&
+      toset(e.cidr_blocks) == toset(["10.0.16.0/20", "10.0.32.0/20"]) &&
+      length(e.ipv6_cidr_blocks) == 0 && length(e.security_groups) == 0
+    ]) == 1
+    error_message = "The 5432 rule must target only the given private CIDRs."
+  }
+
+  assert {
+    condition     = length([for e in aws_security_group.host.egress : e if e.from_port == 443 && toset(e.cidr_blocks) == toset(["0.0.0.0/0"])]) == 1
+    error_message = "The 443 rule must stay unchanged."
+  }
+}
+
+run "rejects_db_egress_to_internet" {
+  command = plan
+
+  variables {
+    db_egress_cidrs = ["0.0.0.0/0"]
+  }
+
+  expect_failures = [var.db_egress_cidrs]
+}
+
+run "rejects_wide_db_egress" {
+  command = plan
+
+  variables {
+    db_egress_cidrs = ["10.0.0.0/8"]
+  }
+
+  expect_failures = [var.db_egress_cidrs]
+}
+
+run "rejects_ipv6_db_egress" {
+  command = plan
+
+  variables {
+    db_egress_cidrs = ["fd00::/64"]
+  }
+
+  expect_failures = [var.db_egress_cidrs]
+}

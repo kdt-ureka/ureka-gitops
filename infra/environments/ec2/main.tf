@@ -24,7 +24,28 @@ data "aws_subnet" "public" {
   }
 }
 
+# RDS(environments/data)가 있는 사설 서브넷. EC2 아웃바운드 5432를 이 범위로만 연다.
+data "aws_subnets" "private" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.shared.id]
+  }
+
+  tags = {
+    Project = var.project_name
+    Stack   = "network"
+    Tier    = "private"
+  }
+}
+
+data "aws_subnet" "private" {
+  for_each = toset(data.aws_subnets.private.ids)
+  id       = each.value
+}
+
 locals {
+  private_subnet_cidrs = sort([for s in data.aws_subnet.private : s.cidr_block])
+
   account_id = data.aws_caller_identity.current.account_id
   region     = data.aws_region.current.region
 
@@ -43,4 +64,6 @@ module "k3s_host" {
 
   ecr_registry        = local.ecr_registry
   ecr_repository_arns = local.ecr_repository_arns
+
+  db_egress_cidrs = local.private_subnet_cidrs
 }

@@ -4,7 +4,8 @@ EC2 한 대에 k3s를 올린 팀 공유 dev 환경입니다(이슈 #32). 서버�
 
 - 들어오는 포트가 없습니다. 접속은 SSM만 씁니다. 셸은 CN(관리자 권한)만 쓰고, 화면은 80번 포트 포워딩 문서로 봅니다.
 - 이미지는 노드(kubelet)가 ECR에서 바로 받습니다. ECR 주소에는 계정 ID가 들어 있어 Git에 쓰지 않습니다. 첫 부팅 때 `/etc/ureka/registry.env`에 남기고, `up.sh`가 root 앱에 넣습니다.
-- **첫 버전은 잃어도 되는 dev입니다.** DB·Secret·Argo CD가 모두 EC2 루트 디스크에 있습니다. 중지·시작해도 그대로 남지만, EC2를 **다시 만들면** 전부 사라집니다(아래 "다시 만들기").
+- DB는 **RDS PostgreSQL**(`infra/environments/data`, 사설 서브넷, EC2에서만 5432)입니다. 앱 설정의 호스트 `postgres`가 RDS를 가리킵니다(아래 "RDS").
+- Secret·Argo CD·Redis·Mailpit은 EC2 루트 디스크에 있습니다. 중지·시작해도 그대로 남지만, EC2를 **다시 만들면** 이것들은 사라집니다. DB(RDS)는 남습니다(아래 "다시 만들기").
 
 아래 명령에서 "내 PC"는 `infra/environments/ec2` 폴더에서 실행합니다. 이 폴더에서 `terraform init`을 해 두고, `export AWS_PROFILE=ureka-admin`과 `aws sso login`을 마친 상태여야 합니다. "서버 안"은 SSM 셸(`sh-5.2$`)입니다.
 
@@ -15,12 +16,27 @@ EC2 한 대에 k3s를 올린 팀 공유 dev 환경입니다(이슈 #32). 서버�
 | `argocd/ec2/root-app.yaml` | root 앱. `up.sh`가 ECR 주소를 채워 등록합니다. 직접 `kubectl apply`하지 않습니다 |
 | `argocd/ec2/apps/` | root 앱이 렌더링하는 차트. 앱을 네임스페이스(wave -2) → 데이터(-1) → 서비스 6개(0) 순서로 만듭니다 |
 | `environments/base/` | 모든 환경에 공통인 values(env·probe·포트) |
-| `environments/ec2/dev/` | EC2 dev에서만 다른 값(이미지 digest·메모리·Ingress), 네임스페이스, 데이터(첫 버전은 kind data 그대로) |
+| `environments/ec2/dev/` | EC2 dev에서만 다른 값(이미지 digest·메모리·Ingress), 네임스페이스, 데이터(kind data에서 PostgreSQL을 빼고 `postgres` → RDS ExternalName) |
+| `environments/ec2/dev/rds-bootstrap/` | RDS에 서비스 DB·계정·vector를 만드는 Job. Argo CD가 관리하지 않고 아래 스크립트만 쓴다 |
 | `scripts/ec2/up.sh` | 서버 안에서 실행: Argo CD → 네임스페이스 → Secret → root 앱 |
+| `scripts/ec2/rds-bootstrap.sh` | 서버 안에서 실행: 마스터 비밀을 잠깐 읽어 bootstrap Job을 돌리고 지운다 |
+| `infra/environments/data` | RDS(Terraform). 마스터 비밀번호는 RDS가 Secrets Manager에 관리한다 |
 
 ## 켜기·끄기
 
-평소 운영은 이것뿐입니다. 쓸 때 켜고, 다 쓰면 끕니다.
+평소 운영은 이것뿐입니다. 쓸 때 켜고, 다 쓰면 끕니다. **EC2와 RDS는 따로 켜고 끕니다.** EC2를 꺼도 RDS가 켜져 있으면 계속 과금됩니다.
+
+- 켤 때: RDS 먼저(몇 분) → EC2. 앱이 뜰 때 DB가 있어야 재시작이 적습니다.
+- 끌 때: EC2 먼저 → RDS.
+- 꺼 둔 RDS는 **7일이 지나면 AWS가 자동으로 다시 켭니다.** 오래 안 쓰면 일주일마다 다시 끕니다(예산 알림으로도 보인다).
+
+```bash
+# 내 PC: RDS 켜기·끄기·상태
+aws rds start-db-instance --db-instance-identifier ureka-dev --query 'DBInstance.DBInstanceStatus' --output text
+aws rds wait db-instance-available --db-instance-identifier ureka-dev && echo RDS READY
+aws rds stop-db-instance --db-instance-identifier ureka-dev --query 'DBInstance.DBInstanceStatus' --output text
+aws rds describe-db-instances --db-instance-identifier ureka-dev --query 'DBInstances[0].DBInstanceStatus' --output text
+```
 
 ```bash
 # 내 PC: 켜기 (1~2분 뒤 READY)
@@ -62,6 +78,7 @@ cd ~      # SSM 셸은 쓰기 권한 없는 폴더(/usr/bin 등)에서 시작한
 sudo dnf install -y git
 git clone https://github.com/kdt-ureka/ureka-gitops.git && cd ureka-gitops
 sudo bash scripts/ec2/up.sh
+sudo bash scripts/ec2/rds-bootstrap.sh            # RDS에 서비스 DB·계정(처음엔 ARN·엔드포인트를 묻는다, 아래 "RDS")
 sudo k3s kubectl -n argocd get applications      # 전부 Synced/Healthy까지 몇 분
 sudo k3s kubectl -n dev get pods
 ```
@@ -122,6 +139,79 @@ sudo k3s kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{
 
 처음 로그인한 뒤 화면의 User Info → Update Password에서 비밀번호를 바꿉니다. 그다음 초기 비밀번호 Secret을 지웁니다(`sudo k3s kubectl -n argocd delete secret argocd-initial-admin-secret`). 바꾼 비밀번호는 팀 비밀번호 관리 도구에만 둡니다.
 
+## RDS
+
+| 항목 | 값 |
+|---|---|
+| 인스턴스 | `ureka-dev`, PostgreSQL 18(11/17 생성 시 18.3), db.t4g.micro, gp3 20GB 암호화, 단일 AZ(2a) |
+| 접근 | 인터넷 공개 안 함, 사설 서브넷 2개. 인바운드는 EC2 보안 그룹에서 오는 5432뿐. TLS만 받는다(`rds.force_ssl=1`) |
+| 보호 | 삭제 보호, 지울 때 최종 스냅샷, 자동 백업 1일 |
+| 마스터 계정 | `ureka_admin`. 비밀번호는 RDS가 Secrets Manager에 관리한다(사람·Terraform state·Git에 원문 없음). 앱은 쓰지 않는다 |
+| EC2 권한 | 그 비밀 1개에 `GetSecretValue`만 |
+
+### 서비스 DB·계정 만들기 (`rds-bootstrap.sh`)
+
+처음 설치, EC2 다시 만들기, 서비스 Secret을 새로 만든 뒤에 실행합니다. 여러 번 실행해도 결과가 같습니다.
+
+순서: 실행 잠금 → 이전 Job·Pod·임시 Secret 정리 확인 → 마스터 비밀 읽기 → 임시 Secret `rds-master` → Job `db-bootstrap-rds`(RDS 엔드포인트에 TLS로 접속) → 끝나면 **성공·실패·중단 어느 경우든** 임시 Secret과 끝나지 않은 Job·Pod를 지웁니다. 지우지 못하면 경고하고 실패로 끝납니다.
+
+처음 한 번은 마스터 비밀 ARN과 엔드포인트를 묻고 서버의 `/etc/ureka/rds.env`에 저장합니다. ARN에는 계정 ID가 있어 화면에 보이지 않게 입력합니다.
+
+1. 서버 안: `sudo bash scripts/ec2/rds-bootstrap.sh`를 실행하고 ARN을 묻는 줄에서 기다린다.
+2. 내 PC(새 탭이면 프로필부터): 아래로 ARN을 클립보드에 넣는다. 90~110자가 나와야 한다(빈 값이면 `0 chars`).
+
+   ```bash
+   export AWS_PROFILE=ureka-admin && set -o pipefail && terraform -chdir=infra/environments/data output -raw master_secret_arn | pbcopy && echo "copied $(pbpaste | wc -c | tr -d ' ') chars"
+   ```
+
+3. **그 사이에 다른 것을 복사하지 말고** 서버 탭에서 ⌘V → Enter. 이어서 엔드포인트(`terraform -chdir=infra/environments/data output -raw endpoint`)를 붙여 넣는다.
+
+로그 끝에 확인 줄이 나옵니다(비밀값 없음).
+
+```text
+check vector 0.8.1 in catalog
+check server 18.3, postgres db owner ureka_admin, public connect false
+db-bootstrap 완료
+```
+
+끝난 뒤 임시 Secret이 없는지 확인합니다. 스크립트가 강제 종료(SIGKILL)되거나 서버가 꺼지면 스스로 정리하지 못하므로 그때도 이 두 줄로 확인하고 남았으면 지웁니다.
+
+```bash
+sudo k3s kubectl -n dev get secret rds-master                   # NotFound여야 한다
+sudo k3s kubectl -n dev get pod -l job-name=db-bootstrap-rds    # Running이 없어야 한다
+```
+
+### vector 버전
+
+RDS의 pgvector 버전은 엔진 마이너가 정합니다. 11/17 생성한 18.3은 **0.8.1**입니다(kind는 0.8.7). 엔진이 나중에 자동 마이너 업그레이드돼도 이미 설치된 확장은 저절로 올라가지 않습니다(`ALTER EXTENSION vector UPDATE`가 따로 필요). 어떤 기능까지 쓰는지는 AI팀과 맞춥니다.
+
+### 처음 RDS로 옮기기 (한 번)
+
+EC2 안 PostgreSQL에서 RDS로 바꿀 때 한 번만 합니다. 데이터는 옮기지 않습니다(EC2 안 DB는 시험용 데이터). 팀에 알리고 유지보수 시간에 합니다.
+
+1. RDS·EC2를 켜고 `rds-bootstrap.sh`로 RDS를 먼저 준비한다(위 확인 줄까지). 이때 앱은 아직 EC2 안 DB를 쓴다.
+2. RDS 전환 PR을 병합한다. Argo CD가 EC2 안 postgres를 내리고 `postgres` Service를 RDS ExternalName으로 바꾼다.
+3. chat 마이그레이션(Alembic, PreSync)을 RDS에 돌린다.
+
+   ```bash
+   sudo k3s kubectl -n argocd patch app ureka-chat-ec2-dev --type merge -p '{"operation":{"sync":{}}}'
+   sudo k3s kubectl -n dev get jobs ureka-chat-migrate      # Complete 1/1까지
+   ```
+
+4. 앱을 다시 시작한다(auth·content·ops는 시작할 때 Flyway가 RDS에 스키마를 만든다).
+
+   ```bash
+   sudo k3s kubectl -n dev rollout restart deployment
+   sudo k3s kubectl -n dev get pods
+   ```
+
+5. 화면에서 가입·로그인·채팅을 확인한다.
+6. 확인이 끝난 뒤에만 EC2 안 DB가 쓰던 디스크를 지운다: `sudo k3s kubectl -n dev delete pvc data-postgres-0`
+
+### RDS 지우기·다시 만들기
+
+평소에는 하지 않습니다. 삭제 보호를 끄는 변경을 plan·교차 검토·승인 뒤 apply해야 지울 수 있고, 지울 때 최종 스냅샷(`ureka-dev-final`)이 남습니다. 이 이름은 고정이라 **두 번째로 지울 때는 이전 스냅샷과 이름이 겹쳐 실패합니다.** 그 전에 이전 스냅샷을 지우거나 `final_snapshot_identifier`를 새 이름으로 바꾸는 변경을 같이 넣습니다. 다시 만들면 엔드포인트가 바뀔 수 있어 `environments/ec2/dev/data`의 ExternalName도 고칩니다. 스냅샷에서 복원하는 절차는 아직 없습니다.
+
 ## 비밀값 다시 넣기
 
 Secret은 `create-secrets.sh`가 이 서버에서 만들고, 이미 있으면 절대 덮어쓰지 않습니다. 그래서 값을 바꾸려면 **지우고 다시 만듭니다.** 값은 출력하지 않습니다.
@@ -130,19 +220,15 @@ Secret은 `create-secrets.sh`가 이 서버에서 만들고, 이미 있으면 �
 |---|---|
 | chat AI 키 바꾸기·끄기 | `sudo k3s kubectl -n dev delete secret ureka-chat-ai`. 바꿀 때만 다시 `sudo bash scripts/ec2/up.sh --chat-ai`를 실행합니다. 그다음 `sudo k3s kubectl -n dev rollout restart deployment/ureka-chat deployment/ureka-chat-worker` |
 | chat·ops 묶음(`db-accounts-chat-ops`·`ureka-chat-secrets`·`ureka-ops-secrets`)이 일부만 남아 `up.sh`가 멈춤 | 이 묶음만 다시 만듭니다. DB는 그대로 둡니다. 아래 "chat·ops 묶음 다시 만들기" |
-| 기본 묶음(`postgres-admin`·`db-accounts`·`ureka-auth-secrets` 등 6개)이 일부만 남음, 또는 전부 새로(유출이 의심될 때 등) | **EC2 다시 만들기**로 합니다(아래 절). DB·Secret이 모두 사라집니다 |
+| 기본 묶음(`postgres-admin`·`db-accounts`·`ureka-auth-secrets` 등 6개)이 일부만 남음, 또는 전부 새로(유출이 의심될 때 등) | **EC2 다시 만들기**로 합니다(아래 절). Secret은 새로 생기고 `rds-bootstrap.sh`가 RDS 계정 비밀번호를 새 값으로 바꿉니다. DB 데이터(RDS)는 남습니다 |
 
-chat·ops 묶음 다시 만들기(서버 안). 무중단 교체가 아니므로 팀에 알리고 dev 유지보수 시간에 합니다. data 앱이 다른 동기화를 하고 있지 않을 때 시작하고, 명령이 하나라도 실패하면 거기서 멈추고 원인을 봅니다.
+chat·ops 묶음 다시 만들기(서버 안). 무중단 교체가 아니므로 팀에 알리고 dev 유지보수 시간에 합니다. 명령이 하나라도 실패하면 거기서 멈추고 원인을 봅니다.
 
 ```bash
 sudo k3s kubectl -n dev delete secret db-accounts-chat-ops ureka-chat-secrets ureka-ops-secrets --ignore-not-found
 sudo bash scripts/ec2/up.sh
-# 새 비밀번호를 DB 계정에 반영(db-bootstrap은 data 앱이 동기화될 때 PostSync로 돈다).
-# 끝난 이전 Job을 먼저 지워야 아래 wait가 이전 Job을 보고 바로 성공하지 않는다.
-sudo k3s kubectl -n dev delete job db-bootstrap --ignore-not-found
-sudo k3s kubectl -n argocd patch app ureka-dev-data-ec2-dev --type merge -p '{"operation":{"sync":{}}}'
-sudo k3s kubectl -n dev wait --for=create job/db-bootstrap --timeout=300s
-sudo k3s kubectl -n dev wait --for=condition=complete job/db-bootstrap --timeout=600s
+# 새 비밀번호를 RDS 계정에 반영(마스터 비밀은 실행하는 동안에만 쓰고 지운다)
+sudo bash scripts/ec2/rds-bootstrap.sh
 # Pod는 시작할 때만 env를 읽는다
 sudo k3s kubectl -n dev rollout restart deployment/ureka-chat deployment/ureka-chat-worker deployment/ureka-ops
 sudo k3s kubectl -n dev rollout status deployment/ureka-chat deployment/ureka-chat-worker deployment/ureka-ops --timeout=300s
@@ -150,14 +236,14 @@ sudo k3s kubectl -n dev rollout status deployment/ureka-chat deployment/ureka-ch
 
 끝나면 화면에서 로그인과 채팅이 되는지 확인합니다(DB 연결 확인).
 
-기본 묶음은 클러스터 안에서 다시 만들지 않습니다. PostgreSQL 슈퍼유저 비밀번호가 DB를 처음 만들 때만 쓰여서 DB 볼륨까지 같이 지워야 합니다. 그런데 Argo CD 자동 동기화가 켜져 있으면, 지우는 도중에 postgres·PVC가 다시 만들어지는 경합이 생깁니다. 이 절차(자동 동기화 멈춤 → DB 사용 앱 중지 → 볼륨 삭제 확인 → 새 Secret → data 동기화·db-bootstrap 확인 → 재기동 → 자동 동기화 복구)는 아직 검증하지 않았습니다. 그래서 첫 버전에서는 EC2 다시 만들기만 안내합니다. 지금 DB는 잃어도 되는 dev 데이터입니다. RDS로 옮기면 이 절차가 바뀝니다(RDS PR).
+기본 묶음을 클러스터 안에서 지우고 다시 만드는 절차는 아직 검증하지 않아 안내하지 않습니다(JWT 키가 바뀌어 모든 로그인이 끊기고, 서비스 Secret 10개를 한 번에 맞춰야 한다). EC2 다시 만들기로 합니다.
 
 ## 다시 만들기 (EC2 교체)
 
 다음 경우에만 EC2를 다시 만듭니다: 디스크가 망가졌을 때, k3s·첫 부팅 설정을 바꿨을 때, AMI를 새로 받을 때, 기본 묶음 Secret이 깨졌거나 비밀값을 전부 새로 만들어야 할 때. 평소에는 중지·시작만 합니다.
 
-- 새 AMI·user data가 나와도 서버가 저절로 교체되지 않습니다(`ignore_changes = [ami, user_data]`). 교체는 승인을 받은 뒤 `-replace`로만 합니다.
-- 다시 만들면 루트 디스크가 같이 지워집니다. **DB·Secret·Argo CD가 모두 사라지고, 이미지도 새로 받습니다.** 팀에 미리 알립니다.
+- 새 AMI·user data가 나와도 서버가 저절로 교체되지 않습니다(`ignore_changes = [ami, user_data, associate_public_ip_address]`, 마지막은 꺼진 서버의 공인 IP 반납이 교체로 보이지 않게). 교체는 승인을 받은 뒤 `-replace`로만 합니다.
+- 다시 만들면 루트 디스크가 같이 지워집니다. **Secret·Argo CD·Redis(로그인 세션)·Mailpit이 사라지고, 이미지도 새로 받습니다.** DB(RDS)는 남습니다. 팀에 미리 알립니다.
 - 종료 보호가 켜져 있어서 그대로는 지울 수 없습니다. 승인을 받은 뒤 지금 서버의 종료 보호만 끄고 교체합니다. 새 서버는 Terraform 설정대로 종료 보호가 켜진 채 만들어집니다.
 
 ```bash
@@ -168,7 +254,7 @@ aws ec2 modify-instance-attribute --instance-id "$(terraform output -raw instanc
 terraform apply tfplan
 ```
 
-그다음 "처음 설치"를 처음부터 다시 합니다. 새 서버의 `/etc/ureka/registry.env`는 첫 부팅이 다시 만듭니다. apply 순서와 승인 규칙은 `infra/README.md`의 "실행 순서"를 따릅니다.
+그다음 "처음 설치"를 처음부터 다시 합니다. 새 서버의 `/etc/ureka/registry.env`는 첫 부팅이 다시 만들고, `rds.env`는 `rds-bootstrap.sh`가 처음처럼 ARN·엔드포인트를 다시 묻습니다. 새 Secret의 비밀번호가 RDS 계정에 들어가고, RDS의 데이터는 그대로입니다. apply 순서와 승인 규칙은 `infra/README.md`의 "실행 순서"를 따릅니다.
 
 ## 비용·예산 알림
 
@@ -180,15 +266,17 @@ terraform apply tfplan
 | 공인 IPv4 | 켜 둔 시간만 | 시간당 $0.005 |
 | CPU 크레딧 초과분 | 켜 둔 동안 평균 CPU가 기준(t3.large 30%)을 넘을 때 | 쓴 만큼(`unlimited`) |
 | 루트 EBS gp3 40GB | **꺼도** 과금 | 월 약 $3.6 (하루 약 $0.1) |
-| RDS (11/18~) | 켜 둔 동안 | 별도 PR에서 정함 |
+| RDS db.t4g.micro | 켜 둔 시간만 | 시간당 약 $0.03 (대략, Calculator로 확인) |
+| RDS gp3 20GB·자동 백업 | **꺼도** 과금(백업은 DB 크기까지 무료) | 월 약 $3 |
+| Secrets Manager(RDS 마스터 비밀 1개) | 항상 | 월 약 $0.4 |
 
 - 예산 알림: 월 $100, Ureka 계정 범위로 걸려 있습니다. 실제 사용 50%·80%·100%와 예측 100%에 메일을 보냅니다(11/15 설정).
-- 알림이 오면 위 "끄기 확인" 세 줄로 켜 둔 것이 없는지부터 봅니다. 그다음 Cost Explorer에서 서비스별 비용을 확인합니다.
+- 알림이 오면 위 "끄기 확인" 세 줄과 RDS 상태로 켜 둔 것이 없는지부터 봅니다(꺼 둔 RDS가 7일 뒤 저절로 켜졌을 수 있다). 그다음 Cost Explorer에서 서비스별 비용을 확인합니다.
 - 메모리가 부족해 t3.xlarge로 올리면 시간당 비용이 두 배가 됩니다(중지 → `instance_type` 변경 → apply → 시작).
 
 ## 다음에 바뀌는 것
 
-- RDS PR(11/18~): `environments/ec2/dev/data`에서 PostgreSQL을 빼고 DB 주소를 RDS로 바꿉니다. 비밀값 다시 넣기 절차도 바뀝니다.
+- EKS(S8): EC2 아웃바운드 5432를 사설 서브넷 CIDR 대신 RDS 보안 그룹 참조로 줄이고, RDS 인바운드에 EKS 노드 보안 그룹을 더한다. TLS는 RDS CA 번들로 verify-full을 검토한다.
 - 팀원 공개 PR: NetworkPolicy와 팀원 권한 세트(80번 문서만)를 같이 넣습니다. 팀원용 접속 안내는 "화면 보기"와 "로컬 포트가 겹칠 때"만 따로 뽑습니다.
 - 비밀값을 Secrets Manager → ESO로 옮기면, 다시 만들어도 비밀값이 사라지지 않습니다.
 - 환경이 둘 이상이 되면(prod·EKS): env 중 일반 값은 환경별 ConfigMap(map, 키 단위 덮어쓰기)으로, 비밀값 참조는 base로 나눕니다.

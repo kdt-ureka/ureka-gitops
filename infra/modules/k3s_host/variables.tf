@@ -137,3 +137,16 @@ variable "termination_protection" {
   description = "Block terminate (console/API). The host must not be recreated until secrets move to Secrets Manager."
   default     = true
 }
+
+variable "db_egress_cidrs" {
+  type        = list(string)
+  description = "Private subnet CIDRs the host may reach on TCP 5432 (RDS). Empty = no database egress."
+  default     = []
+
+  validation {
+    condition = alltrue([for c in var.db_egress_cidrs :
+      can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$", c)) && can(cidrhost(c, 0)) && !contains(["0.0.0.0/0"], c) && tonumber(split("/", c)[1]) >= 16
+    ])
+    error_message = "db_egress_cidrs must be IPv4 CIDRs of /16 or narrower (never 0.0.0.0/0)."
+  }
+}

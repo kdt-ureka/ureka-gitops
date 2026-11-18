@@ -1,7 +1,51 @@
-# EC2 dev 데이터 계층. 첫 버전은 kind와 같은 구성(PostgreSQL+pgvector·Redis·Mailpit·DB 계정 Job)을 그대로 쓴다.
-# 저장소는 k3s 기본 StorageClass(local-path, EC2 루트 디스크). EC2를 다시 만들면 데이터가 사라진다(잃어도 되는 dev).
-# RDS PR(11/18~)에서 PostgreSQL을 빼고 RDS로 바꾼다. 그때 이 파일이 kind와 갈라진다.
+# EC2 dev 데이터 계층. kind data(Redis·Mailpit)를 그대로 쓰고 PostgreSQL만 RDS(infra/environments/data)로 바꾼다.
+# - postgres StatefulSet을 뺀다. Service postgres는 RDS 주소를 가리키는 ExternalName으로 바꾼다.
+#   그래서 앱 values(DB_URL·DATABASE_URL의 호스트 postgres)는 kind·EC2가 같다.
+# - db-bootstrap Job(Argo PostSync)을 뺀다. RDS 마스터 비밀번호를 클러스터에 상시 두지 않으려고,
+#   scripts/ec2/rds-bootstrap.sh가 필요할 때만 Job을 만들고 끝나면 마스터 Secret을 지운다.
+# Redis·Mailpit은 클러스터 안 그대로(k3s local-path, 잃어도 되는 dev).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../../kind/data
+patches:
+  - target:
+      kind: Service
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec
+        value:
+          # RDS 엔드포인트(사설 DNS, 계정 ID 없음, VPC 밖에서는 접속 불가). terraform -chdir=infra/environments/data output -raw endpoint
+          type: ExternalName
+          externalName: ureka-dev.cr8k0ymewyf6.ap-northeast-2.rds.amazonaws.com
+          ports:
+            - name: postgres
+              port: 5432
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: postgres
+  - target:
+      kind: Job
+      name: db-bootstrap
+    patch: |-
+      $patch: delete
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: db-bootstrap
+  - target:
+      kind: ConfigMap
+      name: db-bootstrap
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: db-bootstrap

@@ -48,6 +48,22 @@ for dir in environments/*/data environments/ec2/*/data; do
     fi
     echo "image: ${image}"
   done < <(printf '%s\n' "$rendered" | sed -n 's/^ *image: *//p' | sort -u)
+  # ExternalName(EC2: Service postgres → RDS)은 실제 RDS 엔드포인트여야 한다(자리표시·다른 주소면 실패).
+  while read -r ext; do
+    [ -n "$ext" ] || continue
+    if ! [[ "$ext" =~ ^[a-z0-9-]+\.[a-z0-9]+\.[a-z0-9-]+\.rds\.amazonaws\.com$ ]]; then
+      echo "::error file=${dir}::ExternalName이 RDS 엔드포인트가 아니다(apply 뒤 terraform output -raw endpoint로 채운다): ${ext}"
+      status=1
+    fi
+    echo "externalName: ${ext}"
+  done < <(printf '%s\n' "$rendered" | yq ea 'select(.kind == "Service" and .spec.type == "ExternalName") | .spec.externalName' - | grep -v '^---$' || true)
+  # EC2 data에는 PostgreSQL을 클러스터 안에 띄우는 StatefulSet·PostSync 계정 Job이 없어야 한다(마스터 비밀번호 상시 보관 방지).
+  case "$dir" in environments/ec2/*)
+    if printf '%s\n' "$rendered" | yq ea 'select(.kind == "StatefulSet" or .kind == "Job") | .metadata.name' - | grep -qv '^---$'; then
+      echo "::error file=${dir}::EC2 data에 StatefulSet·Job이 있다(RDS 계정 Job은 scripts/ec2/rds-bootstrap.sh만 만든다)"
+      status=1
+    fi ;;
+  esac
 done
 # 두 겹 values: base → environments/ec2/<환경>. 시험용 레지스트리(예시 계정 ID)를 넣어 렌더링한다.
 test_registry=123456789012.dkr.ecr.ap-northeast-2.amazonaws.com

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # EC2 dev(k3s) 첫 설치: Argo CD → dev 네임스페이스 → 비밀값 Secret → root 앱 등록. 여러 번 실행해도 된다.
+# DB는 RDS(infra/environments/data)다. 서비스 DB·계정은 이어서 scripts/ec2/rds-bootstrap.sh가 만든다.
 # EC2 서버 안(SSM 셸)에서 root로 실행한다: sudo bash scripts/ec2/up.sh
 #   sudo bash scripts/ec2/up.sh --chat-ai   (선택) chat AI 키 Secret만 만든다. 키는 표준 입력(화면에 보이지 않음)
 # k3s는 첫 부팅(user data)이 이미 설치했다. 이 스크립트는 AWS 자격 증명을 쓰지 않는다(이미지는 노드가 ECR에서 받는다).
@@ -74,7 +75,9 @@ ecr_registry=""
 echo "root 앱(ureka-ec2-dev-root) 등록"
 
 cat <<'EOF'
-준비 완료. 앱이 다 뜨는 데 몇 분 걸린다(이미지 첫 pull, DB 초기화).
+준비 완료. 다음: RDS에 서비스 DB·계정을 만든다(처음 한 번, 그리고 비밀값을 새로 만든 뒤).
+  sudo bash scripts/ec2/rds-bootstrap.sh
+앱이 다 뜨는 데 몇 분 걸린다(이미지 첫 pull). rds-bootstrap 전에는 DB를 쓰는 앱이 재시작을 반복한다.
   상태:   sudo k3s kubectl -n argocd get applications
   Pod:    sudo k3s kubectl -n dev get pods
   (선택) chat AI 켜기: sudo bash scripts/ec2/up.sh --chat-ai   (키는 화면에 보이지 않게 입력)
