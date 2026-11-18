@@ -22,6 +22,7 @@ dir="$root/environments/ec2/dev/ingest"
 tools="$root/scripts/ec2/ingest"
 registry_env="${UREKA_ETC_DIR:-/etc/ureka}/registry.env"
 upload_dir="${UREKA_INGEST_UPLOAD_DIR:-/var/lib/ureka-ingest-upload}"
+lock_file="${UREKA_LOCK_FILE:-/run/lock/ureka-ingest.lock}"
 port=18090
 ns=dev
 pod=ingest-files
@@ -32,6 +33,7 @@ kinds=(common movie tv)
 case ":$PATH:" in *:/usr/local/bin:*) ;; *) export PATH="$PATH:/usr/local/bin" ;; esac
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 k() { kubectl --context default -n "$ns" --request-timeout=30s "$@"; }
+command -v flock >/dev/null || { echo "flock이 필요합니다(AL2023: sudo dnf install -y util-linux)" >&2; exit 1; }
 kx() { kubectl --context default -n "$ns" "$@"; } # 오래 걸리는 exec(파일 전송·sha256)용, 시간 제한 없음
 
 registry() {
@@ -68,12 +70,31 @@ need_pod() {
 }
 tool() { kx exec -i "$pod" -- python /tools/csvtool.py "$@"; }
 
+# 상태를 바꾸는 명령(prepare·recv·store·run·cleanup)은 한 번에 하나만 실행한다(두 운영자·두 터미널이 겹치지 않게).
+lock() {
+  install -d -m 0755 "$(dirname "$lock_file")"
+  exec 9>"$lock_file"
+  flock -n 9 || { echo "다른 ingest.sh 명령이 실행 중입니다. 끝난 뒤 다시 실행하세요." >&2; exit 1; }
+}
+# 끝나지 않은 적재 Job(Pending 포함): Complete·Failed 조건이 True가 아닌 Job.
+unfinished_jobs() {
+  local out
+  out="$(k get jobs -l app.kubernetes.io/name=ingest-load -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.conditions[?(@.status=="True")]}{.type}{","}{end}{"\n"}{end}')" \
+    || { echo "적재 Job 상태를 읽지 못했습니다." >&2; exit 1; }
+  printf '%s\n' "$out" | awk 'NF && $2 !~ /(^|,)(Complete|Failed),/ {print $1}'
+}
+no_unfinished() { # 적재 중에는 입력을 바꾸거나 다른 적재를 시작하지 않는다
+  local u
+  u="$(unfinished_jobs)"
+  [ -z "$u" ] || { echo "끝나지 않은 적재 Job이 있습니다: $(tr '\n' ' ' <<<"$u"). 끝난 뒤 다시 실행하세요." >&2; exit 1; }
+}
 check_job() { [[ "$1" =~ ^ingest-load-(sample|full)-[0-9]{8}-[0-9]{4}$ ]] || { echo "Job 이름 형식이 아닙니다: ingest-load-sample|full-YYYYMMDD-HHMM" >&2; exit 2; }; }
 latest_job() {
   k get jobs -l app.kubernetes.io/name=ingest-load --sort-by=.metadata.creationTimestamp -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | tail -n1
 }
 
 cmd="${1:-}"; shift || true
+case "$cmd" in prepare|recv|store|run|cleanup) lock ;; esac
 case "$cmd" in
   prepare)
     k apply -f "$dir/storage.yaml"
@@ -90,11 +111,13 @@ case "$cmd" in
     ;;
   recv)
     command -v python3 >/dev/null || { echo "python3가 필요합니다" >&2; exit 1; }
+    no_unfinished
     echo "내 PC 순서: ① 새 탭에서 SSM 포트 포워딩(로컬 ${port} → 서버 ${port}) ② 다른 탭에서 curl -T 세 번(docs/ec2-ingest.md)"
     python3 -I "$tools/recv.py" "$upload_dir" "$port"
     ;;
   store)
     need_pod
+    no_unfinished
     ok=1
     for i in 0 1 2; do
       f="$upload_dir/${names[$i]}"
@@ -105,7 +128,8 @@ case "$cmd" in
       if [ "$host_sha" = "$pod_sha" ]; then echo "같음  $info"; else echo "다름  ${names[$i]} 서버 $host_sha / PVC $pod_sha" >&2; ok=0; fi
     done
     if [ "$ok" = 1 ]; then
-      rm -f -- "${upload_dir:?}"/*.csv
+      # 대조한 세 파일만 지운다.
+      for name in "${names[@]}"; do rm -f -- "${upload_dir:?}/$name"; done
       echo "세 파일 모두 sha256이 같습니다. 서버 임시 사본을 지웠습니다(PVC에만 남음)."
       echo "내 PC의 sha256·행 수와도 맞춰 보세요(docs/ec2-ingest.md)."
     else
@@ -123,8 +147,7 @@ case "$cmd" in
       *) echo "사용법: run sample [N] | run full" >&2; exit 2 ;;
     esac
     need_pod
-    active="$(k get jobs -l app.kubernetes.io/name=ingest-load -o jsonpath='{range .items[?(@.status.active)]}{.metadata.name}{"\n"}{end}')"
-    [ -z "$active" ] || { echo "이미 실행 중인 적재 Job이 있습니다: $active" >&2; exit 1; }
+    no_unfinished
     for s in ureka-ingest-db ureka-chat-ai; do
       k get secret "$s" >/dev/null 2>&1 || { echo "Secret $s가 없습니다(값은 보지 않음)." >&2; exit 1; }
     done
@@ -137,7 +160,9 @@ case "$cmd" in
     fi
     # content_id(UUID, 공백 없음)를 줄 단위로 인자로 넘긴다. render가 UUID 형식을 다시 검사한다.
     # shellcheck disable=SC2086
-    render "$dir/job.yaml" "$job" "$deadline" $ids | k apply -f -
+    # create: 같은 이름의 Job이 이미 있으면(같은 분에 다시 실행) 덮어쓰지 않고 실패한다.
+    render "$dir/job.yaml" "$job" "$deadline" $ids | k create -f - \
+      || { echo "Job $job을 만들지 못했습니다(같은 이름이 있으면 1분 뒤 다시)." >&2; exit 1; }
     echo "만듦: $job (제한 ${deadline}초). 진행: sudo bash scripts/ec2/ingest.sh progress $job"
     ;;
   progress)

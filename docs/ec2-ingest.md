@@ -24,6 +24,13 @@ ureka-ingest `load-initial --with-embeddings`를 EC2 dev k3s에서 사람이 직
 - **Gemini 키 한도**: 작품 1건 = 임베딩 요청 1건(순차)입니다. 전체 약 2.9만 건이면 요청도 약 2.9만 건입니다. 키의 분당·일일 한도가 이보다 작으면 429가 이어져 격리가 늘거나 시간 제한에 걸립니다. 시작 전에 키 등급·한도를 확인합니다.
 - **파일 이름**: ingest가 읽는 이름은 `01_공통_common_staging_v0_0_21.csv`, `02_movie_details_staging_v0_0_21.csv`, `03_tv_series_details_staging_v0_0_21.csv`입니다. 다른 버전 파일이면 ingest 코드가 먼저 바뀌어야 합니다(이름만 바꿔 넣지 않습니다).
 
+## 실행 규칙
+
+- 상태를 바꾸는 명령(`prepare`·`recv`·`store`·`run`·`cleanup`)은 서버 잠금(`/run/lock/ureka-ingest.lock`)으로 한 번에 하나만 돈다. 다른 명령이 돌고 있으면 바로 거절한다.
+- 끝나지 않은 적재 Job(Pending 포함, Complete·Failed 조건이 없는 Job)이 있으면 `recv`·`store`·`run`을 거절한다. 적재 중 CSV가 바뀌거나 적재가 겹치지 않게 한다.
+- `run`은 Job을 `create`로 만든다. 같은 분에 다시 실행해 이름이 겹치면 덮어쓰지 않고 실패한다(1분 뒤 다시).
+- `quarantine`·`report` 출력과 격리 파일·로그에는 오류 문장(DB 오류에 행 값 일부가 섞일 수 있음)이 들어간다. 내부에서만 보고 Git·PR·채팅에 원문을 붙이지 않는다. 공유는 건수·오류 종류로 한다.
+
 ## 1. 준비 (서버)
 
 ```sh
@@ -62,7 +69,7 @@ curl -sS --fail -T 02_movie_details_staging_v0_0_21.csv http://127.0.0.1:18090/m
 curl -sS --fail -T 03_tv_series_details_staging_v0_0_21.csv http://127.0.0.1:18090/tv
 ```
 
-응답의 sha256이 ①과 같아야 합니다. 끝나면 ③ 탭을 닫습니다.
+응답의 sha256이 ①과 같아야 합니다. 끝나면 ③ 탭을 닫습니다. 수신기는 연결이 120초 동안 멈추면 그 요청을 버리고 다음 연결을 받습니다(그 파일만 다시 보내기).
 
 ⑤ **서버: PVC로 옮기고 대조**
 
@@ -71,7 +78,7 @@ sudo bash scripts/ec2/ingest.sh store
 sudo bash scripts/ec2/ingest.sh stat
 ```
 
-`store`는 서버 사본과 PVC 파일의 sha256이 셋 다 같을 때만 서버 사본을 지웁니다. `stat`의 sha256·행 수가 ①과 같은지 봅니다.
+`store`는 서버 사본과 PVC 파일의 sha256이 셋 다 같을 때만 그 세 파일을 지웁니다(업로드 폴더의 다른 파일은 건드리지 않음). `stat`의 sha256·행 수가 ①과 같은지 봅니다.
 
 > S3를 거치는 방법은 버킷과 EC2 역할 권한(AWS 변경)이 필요합니다. 쓰려면 보안/교차 검토와 CN 담당 승인을 먼저 받습니다. 이 절차는 쓰지 않습니다.
 
@@ -117,7 +124,7 @@ sudo bash scripts/ec2/ingest.sh quarantine <Job 이름>
 sudo bash scripts/ec2/ingest.sh report
 ```
 
-`report`가 보여 주는 것: 작품 수(media_type·content_type별), 검색문서 상태별 수, 활성 임베딩 수/작품 수(임베딩 비율), OTT 현재 제공 작품 수, 검색 가능 작품 수, 최근 실행 기록 10건(상태·건수·실패 이유).
+`report`가 보여 주는 것(실행 기록의 실패 이유 앞 100자 포함, 내부에서만 볼 것): 작품 수(media_type·content_type별), 검색문서 상태별 수, 활성 임베딩 수/작품 수(임베딩 비율), OTT 현재 제공 작품 수, 검색 가능 작품 수, 최근 실행 기록 10건(상태·건수·실패 이유).
 
 - Job이 `Failed`여도 격리 때문일 수 있습니다(격리가 있으면 ingest가 종료 코드 1). 로그 마지막 줄과 `quarantine`으로 판단합니다.
 - OTT 실행 기록이 `failed`면 현재 OTT가 반영되지 않은 상태입니다(위 "시작 전 확인").
@@ -133,4 +140,4 @@ PVC(원본 CSV·격리 결과)는 남깁니다. 지울 때는 `sudo k3s kubectl 
 
 ## 검증
 
-`bash scripts/test-ec2-ingest.sh`(CI Helm 워크플로): 가짜 kubectl로 prepare·store(sha256 대조·사본 삭제)·run sample/full 렌더링·실행 중 거절·Job 이름 검사·report·격리 요약·임시 수신기(경로 고정, 0700/0600)를 봅니다. 실제 클러스터·RDS·Gemini 호출은 하지 않습니다.
+`bash scripts/test-ec2-ingest.sh`(CI Helm 워크플로): 가짜 kubectl·flock으로 prepare·store(sha256 대조·세 파일만 삭제)·run sample/full 렌더링·잠금·끝나지 않은 Job(Pending·SuccessCriteriaMet만) 때 recv·store·run 거절·같은 이름 Job 거절·Job 이름 검사·report·격리 요약·임시 수신기(경로 고정, 0700/0600, 멈춘 연결 시간 초과)를 봅니다. 실제 클러스터·RDS·Gemini 호출은 하지 않습니다.

@@ -26,13 +26,16 @@ cat >"$t/bin/kubectl" <<SH
 echo "\$*" >>"$t/kubectl.log"
 args=" \$* "
 case "\$args" in
+  *" create -f - "*)
+    [ -z "\${FAKE_CREATE_EXISTS:-}" ] || { echo 'Error from server (AlreadyExists)' >&2; exit 1; }
+    n=\$(ls "$t/applied" | wc -l | tr -d ' '); cat >"$t/applied/\$n.yaml"; echo created ;;
   *" apply -f - "*) n=\$(ls "$t/applied" | wc -l | tr -d ' '); cat >"$t/applied/\$n.yaml"; echo applied ;;
   *" create configmap "*) echo "kind: ConfigMap" ;;
   *" get pod ingest-files -o jsonpath="*) echo Running ;;
   *" get pod ingest-report -o jsonpath="*) echo "\${FAKE_REPORT_PHASE:-Succeeded}" ;;
   *" logs ingest-report"*) echo "[검색 가능 작품]" ;;
   *" get pod ingest-files "*) exit 1 ;; # 아직 없음(prepare가 새로 만든다)
-  *" get jobs "*"status.active"*) printf '%s' "\${FAKE_ACTIVE:-}" ;;
+  *" get jobs "*"conditions"*) printf '%b' "\${FAKE_JOBS:-}" ;; # "이름 조건," 줄(조건 없으면 끝나지 않음)
   *" get jobs "*) echo ingest-load-sample-20261118-1200 ;;
   *" get secret "*) exit 0 ;;
   *" exec "*"/tools/csvtool.py"*)
@@ -41,8 +44,13 @@ case "\$args" in
   *) exit 0 ;;
 esac
 SH
-chmod +x "$t/bin/id" "$t/bin/kubectl"
-export PATH="$t/bin:$PATH" UREKA_ETC_DIR="$t/etc" UREKA_INGEST_UPLOAD_DIR="$t/upload"
+# 가짜 flock(macOS에는 없다): FAKE_LOCK_BUSY면 잠금 실패
+cat >"$t/bin/flock" <<'SH'
+#!/usr/bin/env bash
+[ -z "${FAKE_LOCK_BUSY:-}" ]
+SH
+chmod +x "$t/bin/id" "$t/bin/kubectl" "$t/bin/flock"
+export PATH="$t/bin:$PATH" UREKA_ETC_DIR="$t/etc" UREKA_INGEST_UPLOAD_DIR="$t/upload" UREKA_LOCK_FILE="$t/lock/ingest.lock"
 run() { bash "$root/scripts/ec2/ingest.sh" "$@"; }
 
 # 시험용 CSV: 공통 6행(movie 3·tv 3, 칸 안 줄바꿈 포함), 상세는 movie 2·tv 3(movie 하나는 상세 없음).
@@ -73,9 +81,15 @@ check "파일 Pod에 레지스트리가 들어감" 'grep -q "image: 123456789012
 check "파일 Pod에 남은 자리 없음" '! grep -v "^ *#" "$files_pod" | grep -q "__"'
 
 # store: 세 파일 PVC로(가짜: $t/input), sha256 같으면 서버 사본 삭제
-out="$(run store 2>&1)"
+echo keep >"$t/upload/other.csv"
+out="$(FAKE_JOBS='ingest-load-full-20261118-1100 \n' run store 2>&1 || true)"
+check "적재 Job이 안 끝났으면 store 거절" '[[ "$out" == *"끝나지 않은 적재 Job"* ]] && [ -f "$t/upload/01_공통_common_staging_v0_0_21.csv" ]'
+out="$(FAKE_LOCK_BUSY=1 run store 2>&1 || true)"
+check "다른 명령 실행 중이면 거절(잠금)" '[[ "$out" == *"다른 ingest.sh 명령이 실행 중"* ]]'
+out="$(FAKE_JOBS='ingest-load-sample-20261118-1000 Complete,\ningest-load-sample-20261118-1001 Failed,\n' run store 2>&1)"
 check "store sha256 일치" '[ "$(grep -c "^같음" <<<"$out")" = 3 ]'
-check "store 뒤 서버 사본 삭제" '[ -z "$(ls "$t/upload")" ]'
+check "store 뒤 대조한 세 파일만 삭제" '[ "$(ls "$t/upload")" = other.csv ]'
+rm -f "$t/upload/other.csv"
 check "PVC 파일이 원본과 같음" 'cmp -s "$t/01_공통_common_staging_v0_0_21.csv" "$t/input/01_공통_common_staging_v0_0_21.csv"'
 check "임시 .part 없음" '[ -z "$(ls -A "$t/input" | grep part || true)" ]'
 
@@ -121,8 +135,14 @@ check "full 제한 50400초" 'grep -q "activeDeadlineSeconds: 50400" "$job_file"
 check "full 인자 load-initial --with-embeddings" 'grep -A3 "^          args:" "$job_file" | grep -q -- "- --with-embeddings"'
 
 # 실행 중 Job이 있으면 거절
-out="$(FAKE_ACTIVE=ingest-load-full-20261118-1200 run run full 2>&1 || true)"
-check "실행 중이면 run 거절" '[[ "$out" == *"이미 실행 중"* ]]'
+out="$(FAKE_JOBS='ingest-load-full-20261118-1200 \n' run run full 2>&1 || true)"
+check "Pending(조건 없음) Job이 있으면 run 거절" '[[ "$out" == *"끝나지 않은 적재 Job"* ]]'
+out="$(FAKE_JOBS='ingest-load-full-20261118-1200 SuccessCriteriaMet,\n' run run full 2>&1 || true)"
+check "Complete 전(SuccessCriteriaMet만)이면 run 거절" '[[ "$out" == *"끝나지 않은 적재 Job"* ]]'
+out="$(FAKE_CREATE_EXISTS=1 run run full 2>&1 || true)"
+check "같은 이름 Job이 있으면 덮어쓰지 않고 실패" '[[ "$out" == *"만들지 못했습니다"* ]]'
+out="$(echo | FAKE_JOBS='ingest-load-full-20261118-1200 \n' run recv 2>&1 || true)"
+check "적재 Job이 안 끝났으면 recv 거절" '[[ "$out" == *"끝나지 않은 적재 Job"* ]]'
 check "잘못된 모드 거절" '! run run everything >/dev/null 2>&1'
 
 # Job 이름 검사(파일 Pod sh -c에 들어가므로)
@@ -153,16 +173,24 @@ check "429 묶음 2건" '[[ "$out" == *"http_error HTTP 429 시도 3"*": 2"* ]]'
 
 # recv.py: 127.0.0.1에서 세 파일 받고 끝남, 다른 경로 거절
 port=$((20000 + RANDOM % 20000))
-python3 -I "$root/scripts/ec2/ingest/recv.py" "$t/recv" "$port" >"$t/recv.log" 2>&1 &
+INGEST_RECV_TIMEOUT_SECONDS=1 python3 -I "$root/scripts/ec2/ingest/recv.py" "$t/recv" "$port" >"$t/recv.log" 2>&1 &
 rp=$!
 for _ in $(seq 50); do curl -s "http://127.0.0.1:$port/" >/dev/null 2>&1 && break || sleep 0.1; done
 code="$(curl -s -o /dev/null -w '%{http_code}' -T "$t/02_movie_details_staging_v0_0_21.csv" "http://127.0.0.1:$port/../etc")"
 check "recv 다른 경로 404" '[ "$code" = 404 ]'
+# 멈춘 연결(길이 100이라 해 놓고 10바이트만 보내고 붙잡음)이 다음 업로드를 막지 않는다.
+python3 -I -c 'import socket,sys,time; s=socket.create_connection(("127.0.0.1",int(sys.argv[1]))); s.sendall(b"PUT /common HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n0123456789"); time.sleep(4)' "$port" &
+stall=$!
+sleep 0.3
 for kind in common movie tv; do
   case $kind in common) f=01_공통_common_staging_v0_0_21.csv ;; movie) f=02_movie_details_staging_v0_0_21.csv ;; tv) f=03_tv_series_details_staging_v0_0_21.csv ;; esac
   curl -s -T "$t/$f" "http://127.0.0.1:$port/$kind" >"$t/recv-$kind.out"
 done
 wait "$rp" || true
+kill "$stall" 2>/dev/null || true
+wait "$stall" 2>/dev/null || true
+check "recv 멈춘 연결은 시간 초과로 버림" 'grep -q "시간 초과 또는 끊김" "$t/recv.log"'
+check "recv 멈춘 연결의 임시 파일 없음" '[ -z "$(ls -A "$t/recv" | grep part || true)" ]'
 check "recv 세 파일 받고 종료" 'grep -q "받은 파일: common, movie, tv" "$t/recv.log"'
 check "recv 내용 같음" 'cmp -s "$t/03_tv_series_details_staging_v0_0_21.csv" "$t/recv/03_tv_series_details_staging_v0_0_21.csv"'
 check "recv sha256 응답" 'grep -q "sha256 $(shasum -a 256 "$t/01_공통_common_staging_v0_0_21.csv" | cut -d" " -f1)" "$t/recv-common.out"'

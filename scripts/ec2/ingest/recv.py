@@ -26,6 +26,9 @@ received: set[str] = set()
 
 class Handler(http.server.BaseHTTPRequestHandler):
     dest: Path
+    # 연결 소켓 읽기 시간 제한(초). 멈춘 연결이 다음 업로드를 계속 막지 않게 한다.
+    # 넘으면 그 요청은 실패하고 임시 파일을 지운 뒤 다음 연결을 받는다.
+    timeout = float(os.environ.get("INGEST_RECV_TIMEOUT_SECONDS", "120"))
 
     def _reply(self, status: int, text: str) -> None:
         body = (text + "\n").encode()
@@ -76,6 +79,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:  # 요청 줄 대신 위 한 줄만 남긴다
         return
 
+    def log_error(self, format: str, *args: object) -> None:
+        # 읽기 시간 초과 등(http.server가 연결을 닫는다). 요청 내용은 출력하지 않는다.
+        print("연결 하나가 실패했습니다(시간 초과 또는 끊김). 그 파일을 다시 보내세요.", file=sys.stderr, flush=True)
+
+
+class Server(http.server.HTTPServer):
+    def handle_error(self, request: object, client_address: object) -> None:
+        # 시간 초과·끊긴 연결: 그 요청만 버리고 계속 받는다(요청 내용은 출력하지 않음).
+        print("연결 하나가 실패했습니다(시간 초과 또는 끊김). 그 파일을 다시 보내세요.", file=sys.stderr, flush=True)
+
 
 def main() -> None:
     if len(sys.argv) != 3:
@@ -84,7 +97,7 @@ def main() -> None:
     dest.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(dest, 0o700)
     Handler.dest = dest
-    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    server = Server(("127.0.0.1", port), Handler)
     print(f"127.0.0.1:{port}에서 기다립니다. 세 파일을 다 받으면 끝납니다(Ctrl+C로 중단).", flush=True)
     try:
         while received != set(FILES):
