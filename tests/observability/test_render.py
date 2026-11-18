@@ -42,6 +42,17 @@ class ObservabilityRendering(unittest.TestCase):
         graf = next(d for d in objects(self.enabled,'Deployment') if d['metadata']['name']=='obs-grafana')
         self.assertFalse(graf['spec']['template']['spec']['automountServiceAccountToken'])
 
+    def test_kube_state_metrics_args_are_single_flags(self):
+        # 쉼표가 든 값이 YAML 흐름 목록에서 두 인자로 갈라지면 컨테이너가 "unknown command"로 바로 종료된다.
+        for items in (self.disabled, self.enabled):
+            ksm = next(d for d in objects(items, 'Deployment') if d['metadata']['name'] == 'obs-kube-state-metrics')
+            args = ksm['spec']['template']['spec']['containers'][0]['args']
+            self.assertEqual(args, ['--resources=pods,nodes'])
+            for d in objects(items, 'Deployment'):
+                for c in d['spec']['template']['spec']['containers']:
+                    for a in c.get('args', []):
+                        self.assertTrue(a.startswith('--'), f"{d['metadata']['name']}: 플래그가 아닌 인자 {a!r}")
+
     def test_rbac_has_no_secret_write_or_kubelet_proxy(self):
         for d in objects(self.enabled, 'ClusterRole') + objects(self.enabled, 'Role'):
             for rule in d['rules']:
