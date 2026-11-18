@@ -1,0 +1,105 @@
+# ingest 최초 적재 Job(EC2 dev). Argo CD가 관리하지 않는다(자동 sync 없음). 사람이 scripts/ec2/ingest.sh run으로만 만든다.
+# 스크립트가 바꿔 넣는 자리: __ECR_REGISTRY__(/etc/ureka/registry.env), __JOB_NAME__, __DEADLINE__, __EXTRA_ARGS__(시험 run의 --content-id 목록).
+#
+# 이미지: ureka-ingest main b57c76a(ingest#20, 임베딩 실패 원인 기록·429 재시도) CI image-ref.json의 ECR tag·digest.
+# 명령: python -m ingest load-initial --with-embeddings (README). OTT 최종화는 load-initial 안에서 자동으로 한다.
+#   finalize-ott는 자동 최종화 뒤 응답을 확인하지 못했을 때만 따로 실행한다(ingest.sh에는 넣지 않음).
+#
+# 파일 배치: ingest는 DATA_DIR 안의 CSV 3개를 읽고 DATA_DIR/output/quarantine.jsonl을 쓴다.
+#   DATA_DIR=/work(빈 임시 폴더). CSV는 ingest-input PVC(/input, 읽기 전용)를 가리키는 심볼릭 링크,
+#   output은 ingest-output PVC의 /out/<Job 이름>을 가리키는 링크다. 읽기 전용 폴더 안에 쓰기 볼륨을 겹쳐 붙이지 않는다
+#   (docs#86: 읽기 전용 /data 아래 /data/output mount 지점이 없어 시작 실패). Job마다 결과 폴더가 달라 앞 결과를 덮어쓰지 않는다.
+#
+# 비밀: DB 비밀번호는 Secret ureka-ingest-db(content_db_ingest), Gemini 키는 Secret ureka-chat-ai의 AI_API_KEY.
+#   둘 다 환경 변수로만 받는다(명령 인자·로그에 없음). DSN 문자열에는 비밀번호가 없다(libpq가 PGUSER·PGPASSWORD를 읽는다).
+#
+# 종료 코드: 격리가 1건이라도 있으면 ingest가 1로 끝나 Job이 Failed가 된다. 로그 마지막 줄(적재 완료: N건, 격리 M건)과
+#   ingest.sh quarantine으로 무엇이 격리됐는지 본다. backoffLimit 0: 자동으로 다시 돌리지 않는다(재처리는 사람이 판단).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: dev
+  labels:
+    app.kubernetes.io/name: ingest-load
+    app.kubernetes.io/part-of: ureka
+spec:
+  backoffLimit: 0
+  # 429 때 작품당 최대 약 120초까지 기다릴 수 있다. 시험 run 1시간, 전체 run 14시간(스크립트가 정한다).
+  activeDeadlineSeconds: __DEADLINE__
+  # 끝난 뒤 이틀 동안 Pod 로그를 볼 수 있게 남긴다. 격리 결과는 PVC에 계속 남는다.
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ingest-load
+        app.kubernetes.io/part-of: ureka
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: ingest
+          image: __ECR_REGISTRY__/ureka/ingest:sha-b57c76a107e50b30a992686691563c926428c874@sha256:8eda87ab76000605e5c6adb53a265933f13754fdffe9765515688608400ae775
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              mkdir -p "/out/$JOB_NAME"
+              ln -s "/out/$JOB_NAME" /work/output
+              for f in /input/*.csv; do ln -s "$f" /work/; done
+              echo "시작 $(date -u +%FT%TZ) job=$JOB_NAME 인자 $# 개"
+              set +e
+              python -m ingest "$@"
+              rc=$?
+              echo "끝 $(date -u +%FT%TZ) 종료 코드 $rc"
+              exit $rc
+            - ingest
+          args:
+            - load-initial
+            - --with-embeddings
+            - __EXTRA_ARGS__
+          env:
+            - {name: JOB_NAME, value: __JOB_NAME__}
+            - {name: DATA_DIR, value: /work}
+            # RDS는 TLS만 받는다(rds.force_ssl=1). 서버 인증서 확인(verify-full)은 하지 않는다(rds-bootstrap과 같은 기준).
+            - name: CONTENT_DB_DSN
+              value: "host=postgres port=5432 dbname=content_db sslmode=require connect_timeout=10 application_name=ureka-ingest keepalives=1 keepalives_idle=60"
+            - name: PGUSER
+              valueFrom: {secretKeyRef: {name: ureka-ingest-db, key: DB_USERNAME}}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: ureka-ingest-db, key: DB_PASSWORD}}
+            # 팀 Gemini 키(원본 Secrets Manager ureka/dev/chat-ai)를 chat과 같이 쓴다. 한도도 chat과 나눈다.
+            - name: GEMINI_API_KEY
+              valueFrom: {secretKeyRef: {name: ureka-chat-ai, key: AI_API_KEY}}
+            - {name: EMBEDDING_429_INITIAL_DELAY_SECONDS, value: "30"}
+            - {name: EMBEDDING_429_MAX_DELAY_SECONDS, value: "120"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          # 상세 CSV 2개를 메모리 색인으로 읽는다. 노드 limit 합계가 이미 73%라 상한은 1Gi로 두고 시험 run에서 실측한다.
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - {name: work, mountPath: /work}
+            - {name: input, mountPath: /input, readOnly: true}
+            - {name: output, mountPath: /out}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: work
+          emptyDir: {sizeLimit: 16Mi}
+        - name: input
+          persistentVolumeClaim: {claimName: ingest-input, readOnly: true}
+        - name: output
+          persistentVolumeClaim: {claimName: ingest-output}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}

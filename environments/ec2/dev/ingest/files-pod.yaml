@@ -1,0 +1,49 @@
+# 원본 CSV를 ingest-input PVC에 넣고(행 수·sha256 확인), 시험용 content_id를 고르고, 격리 결과를 읽는 Pod(EC2 dev).
+# Argo CD가 관리하지 않는다. scripts/ec2/ingest.sh prepare가 __ECR_REGISTRY__를 /etc/ureka/registry.env 값으로 바꿔 만든다.
+# 적재 Job과 같은 ingest 이미지(파이썬)를 쓰고, 네트워크는 모두 막혀 있다(networkpolicy.yaml ingest-files).
+# 할 일이 끝나면 ingest.sh cleanup으로 지운다(PVC는 남는다).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ingest-files
+  namespace: dev
+  labels:
+    app.kubernetes.io/name: ingest-files
+    app.kubernetes.io/part-of: ureka
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  # 하루가 지나면 스스로 끝난다(지우는 것은 cleanup).
+  activeDeadlineSeconds: 86400
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: files
+      image: __ECR_REGISTRY__/ureka/ingest:sha-b57c76a107e50b30a992686691563c926428c874@sha256:8eda87ab76000605e5c6adb53a265933f13754fdffe9765515688608400ae775
+      imagePullPolicy: IfNotPresent
+      command: ["python", "-c", "import time; time.sleep(86400)"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+      resources:
+        requests: {cpu: 20m, memory: 64Mi}
+        limits: {cpu: 500m, memory: 512Mi}
+      volumeMounts:
+        - {name: input, mountPath: /input}
+        - {name: output, mountPath: /output, readOnly: true}
+        - {name: tools, mountPath: /tools, readOnly: true}
+        - {name: tmp, mountPath: /tmp}
+  volumes:
+    - name: input
+      persistentVolumeClaim: {claimName: ingest-input}
+    - name: output
+      persistentVolumeClaim: {claimName: ingest-output}
+    - name: tools
+      configMap: {name: ingest-tools}
+    - name: tmp
+      emptyDir: {sizeLimit: 64Mi}
