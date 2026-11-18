@@ -1,0 +1,136 @@
+# EC2 dev ingest 최초 적재 (수동 Job)
+
+ureka-ingest `load-initial --with-embeddings`를 EC2 dev k3s에서 사람이 직접 돌리는 절차입니다. Argo CD가 자동으로 만들지 않습니다.
+서버 명령은 EC2 안(SSM 셸, `cd ~/ureka-gitops`)에서 CN 담당이 실행합니다. 원본 CSV와 그 위치·링크는 Git·PR·채팅에 올리지 않습니다.
+
+## 구성
+
+| 것 | 내용 |
+|---|---|
+| 이미지 | ureka-ingest main `b57c76a`(ingest#20) CI `image-ref.json`의 ECR tag·digest. 레지스트리 주소는 `/etc/ureka/registry.env`에서 스크립트가 넣는다 |
+| 입력 | PVC `ingest-input`(local-path 2Gi). 적재 Job은 읽기 전용으로 붙인다. dev는 PSA restricted라 hostPath를 못 쓴다 |
+| 출력 | PVC `ingest-output`(1Gi)의 `<Job 이름>/quarantine.jsonl`. Job마다 폴더가 달라 앞 결과를 덮어쓰지 않는다 |
+| 파일 배치 | `DATA_DIR=/work`(빈 임시 폴더)에 CSV 링크(→ `/input`)와 `output` 링크(→ `/out/<Job>`)를 만든다. 읽기 전용 폴더 안에 쓰기 볼륨을 겹쳐 붙이지 않는다(docs#86 재발 방지) |
+| DB | Service `postgres`(RDS ExternalName), 계정 `content_db_ingest`(Secret `ureka-ingest-db`), `sslmode=require` |
+| Gemini 키 | Secret `ureka-chat-ai`의 `AI_API_KEY`를 `GEMINI_API_KEY`로(팀 키, 원본 Secrets Manager `ureka/dev/chat-ai`). chat과 한도를 나눈다 |
+| 통신 | NetworkPolicy: 적재 Pod는 들어오는 연결 없음, 나가는 연결은 DNS·RDS 5432(사설 서브넷)·외부 443(사설·메타데이터 대역 제외). 파일 Pod는 모두 막음 |
+| 자원 | 적재 Job request 100m/256Mi, limit 1CPU/1Gi. 시험 run에서 실측해 조정 |
+| 시간 제한 | 시험 1시간, 전체 14시간. `backoffLimit: 0`(자동 재실행 없음), 끝난 Job은 이틀 뒤 지워짐(결과 파일은 PVC에 남음) |
+
+## 시작 전 확인
+
+- **content 이미지가 V15 이상**: ingest는 `catalog.countries`에 없는 국가 코드를 가진 작품을 격리합니다. V15(국가 기준정보)가 없는 content(V14)에 적재하면 대부분 격리됩니다.
+- **격리가 1건이라도 있으면 OTT가 반영되지 않습니다**: 작품 단계 격리는 OTT full snapshot을 `failed`로 만들고, 그러면 현재 OTT 상태가 바뀌지 않습니다. 검색 가능 조건에 OTT 제공이 들어 있어 **검색 가능 작품이 0건**으로 남습니다. 임베딩 격리는 OTT 반영을 막지 않지만 그 작품은 검색되지 않습니다. 격리된 작품만 다시 돌리는 run(`--content-id`)은 OTT를 최종화하지 않습니다.
+- **Gemini 키 한도**: 작품 1건 = 임베딩 요청 1건(순차)입니다. 전체 약 2.9만 건이면 요청도 약 2.9만 건입니다. 키의 분당·일일 한도가 이보다 작으면 429가 이어져 격리가 늘거나 시간 제한에 걸립니다. 시작 전에 키 등급·한도를 확인합니다.
+- **파일 이름**: ingest가 읽는 이름은 `01_공통_common_staging_v0_0_21.csv`, `02_movie_details_staging_v0_0_21.csv`, `03_tv_series_details_staging_v0_0_21.csv`입니다. 다른 버전 파일이면 ingest 코드가 먼저 바뀌어야 합니다(이름만 바꿔 넣지 않습니다).
+
+## 1. 준비 (서버)
+
+```sh
+sudo bash scripts/ec2/ingest.sh prepare
+```
+
+PVC 2개, NetworkPolicy 2개, 도구 ConfigMap `ingest-tools`, 파일 Pod `ingest-files`를 만듭니다.
+
+## 2. CSV 옮기기 (SSM만, AWS 변경 없음)
+
+내 PC → (SSM 포트 포워딩) → 서버 `127.0.0.1:18090` 임시 수신기 → 서버 임시 폴더(0700) → PVC → 서버 사본 삭제. 보안 그룹·공인 포트를 열지 않습니다.
+
+① **내 PC: 기준값 기록** (CSV 폴더에서)
+
+```sh
+for f in 01_*.csv 02_*.csv 03_*.csv; do shasum -a 256 "$f"; python3 -c 'import csv,sys; csv.field_size_limit(1<<26); r=csv.reader(open(sys.argv[1],encoding="utf-8-sig",newline="")); next(r,None); print(sys.argv[1], sum(1 for _ in r), "rows")' "$f"; done
+```
+
+② **서버: 수신기 시작** (세 파일을 다 받으면 스스로 끝남)
+
+```sh
+sudo bash scripts/ec2/ingest.sh recv
+```
+
+③ **내 PC 새 탭: 포트 포워딩** (`infra/environments/ec2` 폴더, `AWS_PROFILE` 설정)
+
+```sh
+aws ssm start-session --target "$(terraform output -raw instance_id)" --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["18090"],"localPortNumber":["18090"]}'
+```
+
+④ **내 PC 또 다른 탭: 보내기** (CSV 폴더에서. 경로는 파일 종류만 받는다)
+
+```sh
+curl -sS --fail -T 01_공통_common_staging_v0_0_21.csv http://127.0.0.1:18090/common
+curl -sS --fail -T 02_movie_details_staging_v0_0_21.csv http://127.0.0.1:18090/movie
+curl -sS --fail -T 03_tv_series_details_staging_v0_0_21.csv http://127.0.0.1:18090/tv
+```
+
+응답의 sha256이 ①과 같아야 합니다. 끝나면 ③ 탭을 닫습니다.
+
+⑤ **서버: PVC로 옮기고 대조**
+
+```sh
+sudo bash scripts/ec2/ingest.sh store
+sudo bash scripts/ec2/ingest.sh stat
+```
+
+`store`는 서버 사본과 PVC 파일의 sha256이 셋 다 같을 때만 서버 사본을 지웁니다. `stat`의 sha256·행 수가 ①과 같은지 봅니다.
+
+> S3를 거치는 방법은 버킷과 EC2 역할 권한(AWS 변경)이 필요합니다. 쓰려면 보안/교차 검토와 CN 담당 승인을 먼저 받습니다. 이 절차는 쓰지 않습니다.
+
+## 3. 시험 적재 (기본 100건)
+
+```sh
+sudo bash scripts/ec2/ingest.sh run sample        # 공통 CSV 앞쪽에서 상세 행이 있는 movie 50·tv 50
+sudo bash scripts/ec2/ingest.sh progress          # 몇 분마다
+sudo bash scripts/ec2/ingest.sh quarantine        # 끝난 뒤
+sudo bash scripts/ec2/ingest.sh report
+```
+
+시험 run은 `--content-id`로 고른 작품만 처리합니다. 상세 CSV 전체를 읽으므로 메모리는 전체 run과 비슷하게 잡힙니다. OTT full snapshot이 아니라서 현재 OTT·검색 가능 상태는 바뀌지 않습니다(정상).
+
+기록할 것:
+
+| 항목 | 보는 곳 |
+|---|---|
+| 걸린 시간 | `progress`의 시작·끝(Job startTime·completionTime), 로그 첫·끝 줄 |
+| 적재·격리 건수 | 로그 마지막 줄 `적재 완료: N건, 격리 M건` |
+| 429 | `quarantine`의 `http_error HTTP 429` 건수(재시도 후 최종 실패만). 재시도 중 대기는 기록되지 않으니 건당 평균 시간으로 함께 본다 |
+| 토큰 | ingest가 기록하지 않음. Google AI Studio 사용량 화면에서 키 주인이 확인 |
+| Pod 자원 | `progress`의 `kubectl top`(실행 중일 때). 메모리가 limit 1Gi에 가까우면 전체 run 전에 올린다 |
+| RDS 자원 | AWS 콘솔 RDS CloudWatch(CPU·여유 메모리·연결 수) |
+| 전체 시간 추정 | (시험 시간 / 100) × 전체 행 수. 429가 있었으면 한도로 다시 계산 |
+
+## 4. 전체 적재
+
+시험 결과에 격리가 없고 시간 추정이 14시간 안이면:
+
+```sh
+sudo bash scripts/ec2/ingest.sh run full
+sudo bash scripts/ec2/ingest.sh progress
+```
+
+밤새 볼 것: `progress`의 작품·활성 임베딩 수가 늘어나는지, 격리 줄 수, Pod 메모리, Job이 아직 실행 중인지.
+
+## 5. 끝난 뒤 확인
+
+```sh
+sudo bash scripts/ec2/ingest.sh progress <Job 이름>
+sudo bash scripts/ec2/ingest.sh quarantine <Job 이름>
+sudo bash scripts/ec2/ingest.sh report
+```
+
+`report`가 보여 주는 것: 작품 수(media_type·content_type별), 검색문서 상태별 수, 활성 임베딩 수/작품 수(임베딩 비율), OTT 현재 제공 작품 수, 검색 가능 작품 수, 최근 실행 기록 10건(상태·건수·실패 이유).
+
+- Job이 `Failed`여도 격리 때문일 수 있습니다(격리가 있으면 ingest가 종료 코드 1). 로그 마지막 줄과 `quarantine`으로 판단합니다.
+- OTT 실행 기록이 `failed`면 현재 OTT가 반영되지 않은 상태입니다(위 "시작 전 확인").
+- 자동 최종화 뒤 응답을 확인하지 못했을 때만 `finalize-ott --run-id <RUN_ID>`를 따로 실행합니다(이 스크립트에는 없음).
+
+## 6. 정리
+
+```sh
+sudo bash scripts/ec2/ingest.sh cleanup     # 파일 Pod만 지운다
+```
+
+PVC(원본 CSV·격리 결과)는 남깁니다. 지울 때는 `sudo k3s kubectl -n dev delete pvc ingest-input ingest-output`를 따로 판단해서 실행합니다.
+
+## 검증
+
+`bash scripts/test-ec2-ingest.sh`(CI Helm 워크플로): 가짜 kubectl로 prepare·store(sha256 대조·사본 삭제)·run sample/full 렌더링·실행 중 거절·Job 이름 검사·report·격리 요약·임시 수신기(경로 고정, 0700/0600)를 봅니다. 실제 클러스터·RDS·Gemini 호출은 하지 않습니다.

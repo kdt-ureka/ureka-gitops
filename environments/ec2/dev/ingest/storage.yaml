@@ -1,0 +1,34 @@
+# ingest 수동 적재용 저장소(EC2 dev). Argo CD가 관리하지 않는다. scripts/ec2/ingest.sh prepare만 만든다.
+# dev 네임스페이스는 PSA restricted라 hostPath를 못 쓴다. 원본 CSV와 결과는 각각 local-path PVC에 둔다.
+# - ingest-input : 원본 CSV(Git 금지). 적재 Job은 읽기 전용으로만 붙인다. 파일 넣기·확인은 ingest-files Pod가 한다.
+# - ingest-output: Job마다 <Job 이름>/quarantine.jsonl. Pod가 끝나도 남는다.
+# EC2 stop/start에는 남지만 노드·디스크를 새로 만들면 사라진다(백업 아님). 지우는 것은 사람이 따로 판단한다.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ingest-input
+  namespace: dev
+  labels:
+    app.kubernetes.io/name: ingest-input
+    app.kubernetes.io/part-of: ureka
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ingest-output
+  namespace: dev
+  labels:
+    app.kubernetes.io/name: ingest-output
+    app.kubernetes.io/part-of: ureka
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
