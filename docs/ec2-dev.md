@@ -187,16 +187,24 @@ RDS의 pgvector 버전은 엔진 마이너가 정합니다. 11/17 생성한 18.3
 
 ### 처음 RDS로 옮기기 (한 번)
 
-EC2 안 PostgreSQL에서 RDS로 바꿀 때 한 번만 합니다. 데이터는 옮기지 않습니다(EC2 안 DB는 시험용 데이터). 팀에 알리고 유지보수 시간에 합니다.
+EC2 안 PostgreSQL에서 RDS로 바꿀 때 한 번만 합니다. 데이터는 옮기지 않습니다(EC2 안 DB는 시험용 데이터). 팀에 알리고 유지보수 시간에 합니다. 11/18 이 순서로 전환했습니다(#36).
 
 1. RDS·EC2를 켜고 `rds-bootstrap.sh`로 RDS를 먼저 준비한다(위 확인 줄까지). 이때 앱은 아직 EC2 안 DB를 쓴다.
-2. RDS 전환 PR을 병합한다. Argo CD가 EC2 안 postgres를 내리고 `postgres` Service를 RDS ExternalName으로 바꾼다.
+2. 전환 전 상태를 기준으로 남긴다(앱 9개 Synced/Healthy, `postgres` Service `ClusterIP`). 그다음 RDS 전환 PR을 병합한다. Argo CD가 EC2 안 postgres를 내리고 `postgres` Service를 RDS ExternalName으로 바꾼다. Argo CD는 3분마다 Git을 확인하므로, 바로 반영하려면 data 앱만 다시 읽게 한다.
+
+   ```bash
+   sudo k3s kubectl -n argocd annotate application ureka-dev-data-ec2-dev argocd.argoproj.io/refresh=hard --overwrite
+   sudo k3s kubectl -n dev get svc postgres                                   # TYPE ExternalName, RDS 엔드포인트
+   sudo k3s kubectl -n dev get statefulset,pod -l app.kubernetes.io/name=postgres   # No resources found
+   ```
 3. chat 마이그레이션(Alembic, PreSync)을 RDS에 돌린다.
 
    ```bash
    sudo k3s kubectl -n argocd patch app ureka-chat-ec2-dev --type merge -p '{"operation":{"sync":{}}}'
-   sudo k3s kubectl -n dev get jobs ureka-chat-migrate      # Complete 1/1까지
+   sudo k3s kubectl -n dev get jobs ureka-chat-migrate      # Complete 1/1까지, AGE가 방금 생긴 값
    ```
+
+   이 Job은 로그를 거의 남기지 않는다. 마이그레이션이 됐는지는 `Complete 1/1`과 5단계의 chat 응답으로 본다.
 
 4. 앱을 다시 시작한다(auth·content·ops는 시작할 때 Flyway가 RDS에 스키마를 만든다).
 
@@ -205,8 +213,22 @@ EC2 안 PostgreSQL에서 RDS로 바꿀 때 한 번만 합니다. 데이터는 �
    sudo k3s kubectl -n dev get pods
    ```
 
-5. 화면에서 가입·로그인·채팅을 확인한다.
-6. 확인이 끝난 뒤에만 EC2 안 DB가 쓰던 디스크를 지운다: `sudo k3s kubectl -n dev delete pvc data-postgres-0`
+5. 화면에서 가입·로그인·채팅을 확인한다. RDS는 새 DB라 계정을 새로 만들고, Redis도 재시작돼 로그인 세션이 초기화된다. AI 키(`ureka-chat-ai`)가 없으면 페르소나 만들기(`POST /api/chat/v1/personas`)가 503으로 거절되는 것이 정상이다. 이때 목록 조회(`GET …/personas` 200)로 chat이 RDS를 읽는지 확인한다.
+
+   ```bash
+   sudo k3s kubectl -n dev logs deploy/ureka-frontend --since=15m | grep '/api/chat' | tail
+   ```
+
+6. 확인이 끝난 뒤에만 옛 DB 쪽을 지운다. 지우기 전에 대상을 본다(PVC는 `data-postgres-0` 하나, `Used By: <none>`).
+
+   ```bash
+   sudo k3s kubectl -n dev describe pvc data-postgres-0 | grep -E '^(Name|Status|Capacity|Used By)'
+   # 옛 PostSync Job: Argo CD는 hook Job을 정리하지 않아 끝난 Job·Pod가 남는다. Job을 지우면 Pod도 지워진다.
+   sudo k3s kubectl -n dev delete job db-bootstrap
+   # 옛 DB 디스크(되돌릴 수 없음). k3s local-path는 PV와 실제 폴더도 같이 지운다.
+   sudo k3s kubectl -n dev delete pvc data-postgres-0
+   sudo k3s kubectl -n dev get pvc,job; sudo k3s kubectl get pv            # PVC·PV 없음, Job은 ureka-chat-migrate만
+   ```
 
 ### RDS 지우기·다시 만들기
 
