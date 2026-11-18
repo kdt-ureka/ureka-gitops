@@ -1,4 +1,5 @@
 {{- include "ureka-backend.validate" . -}}
+{{- include "ureka-backend.validateMetrics" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,10 +36,25 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.containerPort }}
+          {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 9091
           {{- end }}
-          {{- with .Values.env }}
+          {{- end }}
+          {{- if or .Values.env .Values.metrics.enabled }}
           env:
+            {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: SPRING_PROFILES_INCLUDE
+              value: observability
+            - name: METRICS_SCRAPE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ printf "%s-metrics" .Values.name | quote }}
+                  key: METRICS_SCRAPE_TOKEN
+            {{- end }}
           {{- end }}
           securityContext:
             {{- include "ureka-backend.containerSecurityContext" . | nindent 12 }}

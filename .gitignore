@@ -70,3 +70,7 @@ kubeconfig*
 .env
 .env.*
 !.env.example
+
+# Python validation cache
+__pycache__/
+*.py[cod]

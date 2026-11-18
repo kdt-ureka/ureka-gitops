@@ -1,0 +1,5 @@
+apiVersion: v2
+name: ureka-observability
+description: Minimal EC2 k3s Prometheus, Grafana and kube-state-metrics
+version: 0.1.0
+type: application

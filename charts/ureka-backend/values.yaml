@@ -80,3 +80,7 @@ migration:
   activeDeadlineSeconds: 600
   # 비워 두면 위 resources를 쓴다.
   resources: {}
+
+# EC2 관측: 서비스 승인 이미지 이후 환경에서만 켠다. 업무 Service는 바꾸지 않음.
+metrics:
+  enabled: false

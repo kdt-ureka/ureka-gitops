@@ -1,0 +1,54 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+rule_files: [/etc/prometheus/rules.yml]
+scrape_configs:
+  - job_name: prometheus
+    static_configs: [{targets: ['localhost:9090']}]
+  - job_name: kube-state-metrics
+    static_configs: [{targets: ['obs-kube-state-metrics:8080']}]
+  - job_name: kubelet-cadvisor
+    scheme: https
+    metrics_path: /metrics/cadvisor
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    kubernetes_sd_configs: [{role: node}]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'container_cpu_usage_seconds_total|container_memory_working_set_bytes'
+        action: keep
+{{- if .Values.appMetrics.enabled }}
+{{- $services := list "auth" "content" }}
+{{- if .Values.appMetrics.chatEnabled }}
+{{- $services = append $services "chat" }}
+{{- end }}
+{{- range $name := $services }}
+  - job_name: ureka-{{ $name }}
+    metrics_path: {{ if eq $name "chat" }}/internal/v1/metrics{{ else }}/actuator/prometheus{{ end }}
+    http_headers:
+      X-Internal-Token:
+        files: ['/etc/metrics-tokens/{{ $name }}']
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces: {names: [{{ $.Values.appNamespace }}]}
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=ureka-{{ $name }}
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: {{ if eq $name "chat" }}http{{ else }}metrics{{ end }}
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+{{- end }}
+{{- end }}

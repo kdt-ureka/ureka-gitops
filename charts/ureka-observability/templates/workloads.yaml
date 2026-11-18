@@ -1,0 +1,143 @@
+{{- range $name, $cfg := .Values.components }}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" $cfg.digest) }}
+{{- fail (printf "components.%s.digest requires an approved sha256 digest" $name) }}
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: obs-{{ $name }}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obs-{{ $name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app.kubernetes.io/name: 'obs-{{ $name }}'}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ printf "%s%s" (($.Files.Glob "files/*").AsConfig) (toJson $.Values) | sha256sum }}
+      labels: {app.kubernetes.io/name: 'obs-{{ $name }}'}
+    spec:
+      serviceAccountName: obs-{{ $name }}
+      automountServiceAccountToken: {{ ne $name "grafana" }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $cfg.uid }}
+        fsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: {{ $name }}
+          image: '{{ $cfg.repository }}:{{ $cfg.tag }}@{{ $cfg.digest }}'
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          ports:
+            - {name: http, containerPort: {{ $cfg.port }}}
+          resources:
+            {{- toYaml $cfg.resources | nindent 12 }}
+          {{- if eq $name "prometheus" }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/data
+            - --storage.tsdb.retention.time=3d
+            - --storage.tsdb.retention.size=2GB
+          startupProbe: {httpGet: {path: /-/ready, port: http}, periodSeconds: 5, failureThreshold: 60}
+          readinessProbe: {httpGet: {path: /-/ready, port: http}}
+          livenessProbe: {httpGet: {path: /-/healthy, port: http}, failureThreshold: 6}
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus, readOnly: true}
+            - {name: data, mountPath: /data}
+            {{- if $.Values.appMetrics.enabled }}
+            - {name: tokens, mountPath: /etc/metrics-tokens, readOnly: true}
+            {{- end }}
+          {{- else if eq $name "grafana" }}
+          env:
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: 'false'}
+            - {name: GF_USERS_ALLOW_SIGN_UP, value: 'false'}
+            - {name: GF_ANALYTICS_REPORTING_ENABLED, value: 'false'}
+            - {name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: 'false'}
+            - {name: GF_PATHS_DATA, value: /data}
+            - {name: GF_PATHS_LOGS, value: /tmp/logs}
+            - {name: GF_PATHS_PLUGINS, value: /data/plugins}
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom: {secretKeyRef: {name: {{ $.Values.grafanaAdminSecret }}, key: admin-user}}
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ $.Values.grafanaAdminSecret }}, key: admin-password}}
+          startupProbe: {httpGet: {path: /api/health, port: http}, periodSeconds: 5, failureThreshold: 60}
+          readinessProbe: {httpGet: {path: /api/health, port: http}}
+          livenessProbe: {httpGet: {path: /api/health, port: http}, failureThreshold: 6}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+            - {name: config, mountPath: /etc/grafana/provisioning/datasources, readOnly: true}
+            - {name: providers, mountPath: /etc/grafana/provisioning/dashboards, readOnly: true}
+            - {name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true}
+          {{- else }}
+          args: [--resources=pods,nodes]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, failureThreshold: 6}
+          {{- end }}
+      {{- if ne $name "kube-state-metrics" }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: 'obs-{{ $name }}'}
+        - name: config
+          configMap: {name: 'obs-{{ $name }}'}
+        {{- if eq $name "prometheus" }}
+        {{- if $.Values.appMetrics.enabled }}
+        - name: tokens
+          secret:
+            secretName: {{ $.Values.appMetrics.tokenSecret }}
+            defaultMode: 0440
+            items:
+              - {key: auth, path: auth}
+              - {key: content, path: content}
+              {{- if $.Values.appMetrics.chatEnabled }}
+              - {key: chat, path: chat}
+              {{- end }}
+        {{- end }}
+        {{- else }}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        - name: providers
+          configMap: {name: obs-grafana-providers}
+        - name: dashboards
+          configMap: {name: obs-dashboards}
+        {{- end }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: obs-{{ $name }}
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: 'obs-{{ $name }}'}
+  ports:
+    - {name: http, port: {{ $cfg.port }}, targetPort: http}
+{{- if ne $name "kube-state-metrics" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: obs-{{ $name }}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false,Prune=false
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ $.Values.storageClassName | quote }}
+  resources:
+    requests:
+      storage: {{ if eq $name "prometheus" }}5Gi{{ else }}1Gi{{ end }}
+{{- end }}
+{{- end }}

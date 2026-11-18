@@ -22,6 +22,10 @@ spec:
         parameters:
           - name: image.registry
             value: {{ $registry | quote }}
+          {{- if or (eq . "auth") (eq . "content") }}
+          - name: metrics.enabled
+            value: {{ $.Values.jvmMetricsEnabled | quote }}
+          {{- end }}
     {{- end }}
   destination:
     server: https://kubernetes.default.svc
