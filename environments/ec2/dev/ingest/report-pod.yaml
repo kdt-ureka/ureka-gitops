@@ -1,0 +1,45 @@
+# 적재 결과 확인 Pod(EC2 dev). Argo CD가 관리하지 않는다. scripts/ec2/ingest.sh report가 만들고, 결과를 보여 준 뒤 지운다.
+# 적재 Job과 같은 이미지·DB 계정(content_db_ingest, SELECT 권한 범위)·통신 정책(ingest-load 이름표)으로 건수만 센다.
+# Gemini 키는 받지 않는다. 출력은 건수·상태와 실행 기록의 실패 이유 앞 100자다(비밀값 없음, DB 오류 문장이 섞일 수 있어 내부에서만 본다).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ingest-report
+  namespace: dev
+  labels:
+    app.kubernetes.io/name: ingest-load
+    app.kubernetes.io/component: report
+    app.kubernetes.io/part-of: ureka
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  activeDeadlineSeconds: 300
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: report
+      image: __ECR_REGISTRY__/ureka/ingest:sha-b57c76a107e50b30a992686691563c926428c874@sha256:8eda87ab76000605e5c6adb53a265933f13754fdffe9765515688608400ae775
+      imagePullPolicy: IfNotPresent
+      command: ["python", "/tools/csvtool.py", "report"]
+      env:
+        - name: CONTENT_DB_DSN
+          value: "host=postgres port=5432 dbname=content_db sslmode=require connect_timeout=10 application_name=ureka-ingest-report"
+        - name: PGUSER
+          valueFrom: {secretKeyRef: {name: ureka-ingest-db, key: DB_USERNAME}}
+        - name: PGPASSWORD
+          valueFrom: {secretKeyRef: {name: ureka-ingest-db, key: DB_PASSWORD}}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+      resources:
+        requests: {cpu: 20m, memory: 64Mi}
+        limits: {cpu: 200m, memory: 256Mi}
+      volumeMounts:
+        - {name: tools, mountPath: /tools, readOnly: true}
+  volumes:
+    - name: tools
+      configMap: {name: ingest-tools}

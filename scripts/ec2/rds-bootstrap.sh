@@ -33,7 +33,7 @@ case ":$PATH:" in *:/usr/local/bin:*) ;; *) export PATH="$PATH:/usr/local/bin" ;
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 k() { kubectl --context default -n "$ns" "${req[@]}" "$@"; }
 for c in kubectl aws python3 flock; do
-  command -v "$c" >/dev/null || { echo "$c가 필요합니다(AL2023: sudo dnf install -y awscli-2 util-linux)" >&2; exit 1; }
+  command -v "$c" >/dev/null || { echo "${c}가 필요합니다(AL2023: sudo dnf install -y awscli-2 util-linux)" >&2; exit 1; }
 done
 
 # 한 번에 하나만 실행한다(두 실행이 서로의 Secret·Job을 지우지 않게).

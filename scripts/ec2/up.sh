@@ -22,7 +22,7 @@ export PATH="/usr/local/bin:$PATH"
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 k() { kubectl --context default "$@"; }
 for c in kubectl curl sha256sum python3 openssl; do
-  command -v "$c" >/dev/null || { echo "$c가 필요합니다" >&2; exit 1; }
+  command -v "$c" >/dev/null || { echo "${c}가 필요합니다" >&2; exit 1; }
 done
 if [ $# -eq 1 ] && [ "$1" = --chat-ai ]; then
   exec env UREKA_TARGET=ec2 KUBE_CONTEXT=default bash "$root/scripts/kind/create-secrets.sh" --chat-ai
