@@ -149,7 +149,7 @@ case "$cmd" in
     need_pod
     no_unfinished
     for s in ureka-ingest-db ureka-chat-ai; do
-      k get secret "$s" >/dev/null 2>&1 || { echo "Secret $s가 없습니다(값은 보지 않음)." >&2; exit 1; }
+      k get secret "$s" >/dev/null 2>&1 || { echo "Secret ${s}가 없습니다(값은 보지 않음)." >&2; exit 1; }
     done
     tool stat >/dev/null || { echo "PVC에 CSV 3개가 없습니다. store를 먼저 하세요." >&2; exit 1; }
     job="ingest-load-$mode-$(date -u +%Y%m%d-%H%M)"
@@ -162,7 +162,7 @@ case "$cmd" in
     # shellcheck disable=SC2086
     # create: 같은 이름의 Job이 이미 있으면(같은 분에 다시 실행) 덮어쓰지 않고 실패한다.
     render "$dir/job.yaml" "$job" "$deadline" $ids | k create -f - \
-      || { echo "Job $job을 만들지 못했습니다(같은 이름이 있으면 1분 뒤 다시)." >&2; exit 1; }
+      || { echo "Job ${job}을 만들지 못했습니다(같은 이름이 있으면 1분 뒤 다시)." >&2; exit 1; }
     echo "만듦: $job (제한 ${deadline}초). 진행: sudo bash scripts/ec2/ingest.sh progress $job"
     ;;
   progress)

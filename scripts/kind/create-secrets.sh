@@ -108,7 +108,7 @@ exists() { # kubectl get 인자...
 }
 
 exists namespace "$ns" ||
-  { echo "네임스페이스 $ns가 없습니다. ${ns_hint} 후 다시 실행하세요" >&2; exit 1; }
+  { echo "네임스페이스 ${ns}가 없습니다. ${ns_hint} 후 다시 실행하세요" >&2; exit 1; }
 
 umask 077
 work="$(mktemp -d)"
