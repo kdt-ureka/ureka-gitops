@@ -82,7 +82,9 @@ spec:
             - {name: providers, mountPath: /etc/grafana/provisioning/dashboards, readOnly: true}
             - {name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true}
           {{- else }}
-          args: [--resources=pods,nodes]
+          # 흐름 목록([a,b])에서는 쉼표가 항목을 나눈다. 값 하나로 넘기려고 블록 목록과 따옴표를 쓴다.
+          args:
+            - '--resources=pods,nodes'
           readinessProbe: {httpGet: {path: /healthz, port: http}}
           livenessProbe: {httpGet: {path: /healthz, port: http}, failureThreshold: 6}
           {{- end }}
