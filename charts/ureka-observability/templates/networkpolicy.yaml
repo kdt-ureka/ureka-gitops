@@ -28,10 +28,17 @@ spec:
         - podSelector: {matchLabels: {app.kubernetes.io/name: obs-prometheus}}
       ports: [{protocol: TCP, port: 8080}]
 {{- if .Values.appMetrics.enabled }}
-{{- range $name := list "auth" "content" }}
+{{- $targets := list (list "auth" 9091) (list "content" 9091) }}
+{{- if .Values.appMetrics.chatEnabled }}
+{{- /* chat은 관리 포트가 없어 업무 포트 8080의 /internal/v1/metrics를 수집 전용 토큰으로 긁는다. */ -}}
+{{- $targets = append $targets (list "chat" 8080) }}
+{{- end }}
+{{- range $t := $targets }}
+{{- $name := index $t 0 }}
 ---
-# 기존 dev 내부 업무 API 8080은 유지, 9091은 Prometheus 한 주체만 허용.
-# 정책은 합집합이다. 다른 정책이 9091을 넓게 허용하지 않는지 규진님과 시험한다.
+# 지표 포트는 Prometheus 한 주체(observability namespace AND obs-prometheus Pod)만 허용한다.
+# dev 업무 연결(8080)은 dev 정책(environments/ec2/dev/networkpolicy, #39·#40)이 서비스별로 연다. 여기서 dev 전체에 8080을 열지 않는다.
+# 정책은 합집합이다. 다른 정책이 지표 포트를 넓게 허용하지 않는지 배포·신뢰성 담당이 차단 시험(#41)으로 확인한다.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -43,13 +50,9 @@ spec:
   ingress:
     - from:
         - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: {{ $.Values.appNamespace }}}
-      ports: [{protocol: TCP, port: 8080}]
-    - from:
-        - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ $.Release.Namespace }}}
           podSelector:
             matchLabels: {app.kubernetes.io/name: obs-prometheus}
-      ports: [{protocol: TCP, port: 9091}]
+      ports: [{protocol: TCP, port: {{ index $t 1 }}}]
 {{- end }}
 {{- end }}

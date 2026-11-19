@@ -1,0 +1,23 @@
+# dev 들어오는 연결 정책(#39 기본 거부 + #40 서비스별 허용). 서비스(wave 0)보다 먼저(wave -1, 데이터 계층과 같은 차례).
+# 기본 거부와 허용이 한 Application이라 항상 함께 동기화된다.
+# finalizer: 이 Application이 root 앱에서 빠지면(이 파일을 되돌리면) 만든 NetworkPolicy도 같이 지운다(정책만 남아 서비스가 끊기는 일 방지).
+# 급할 때 되돌리는 방법은 docs/ec2-networkpolicy.md "되돌리기".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-dev-networkpolicy-{{ .Values.suffix }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.repoURL }}
+    targetRevision: {{ .Values.targetRevision }}
+    path: environments/{{ .Values.valuesDir }}/networkpolicy
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Values.namespace }}
+  {{- include "ec2apps.syncPolicy" . | nindent 2 }}

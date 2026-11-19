@@ -1,0 +1,189 @@
+# (#40) dev 기본 거부(default-deny-ingress.yaml) 위에 실제로 필요한 연결만 연다. 받는 쪽 Pod마다 정책 하나.
+# 연결 표·근거(코드·values 위치)·시험 방법·되돌리는 방법은 docs/ec2-networkpolicy.md.
+#
+# 규칙
+# - 포트는 Service 포트(80)가 아니라 컨테이너 포트다(NetworkPolicy는 Pod 단위로 본다): 백엔드·프론트 8080, recommend 8000.
+# - 보내는 쪽은 Pod 이름표 app.kubernetes.io/name으로 고른다(차트 selectorLabels). 다른 네임스페이스는 namespace AND Pod를 한 항목에 같이 쓴다.
+# - 지표 수집(Prometheus → auth·content 9091, chat 8080)은 여기 두지 않는다. 관측 차트(charts/ureka-observability)가
+#   appMetrics 설정에 맞춰 함께 만든다(관측을 켤 때만 열린다).
+# - 서비스·호출을 추가하면 이 파일과 tests/networkpolicy/expected.json(허용·차단 표)을 같이 고친다.
+#
+# 이름표만으로 막는 것의 한계: dev에 Pod를 만들 수 있는 사람은 이름표를 흉내 낼 수 있다. 그래서 내부 API는 내부 토큰도 계속 확인한다(RBAC·PSA와 함께 쓰는 한 겹).
+
+# 프론트(nginx): 입구 Traefik(k3s 기본, kube-system)에서만 받는다. 사용자는 SSM 터널 → Traefik → 이 Pod로 들어온다.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-from-traefik
+  namespace: dev
+  labels:
+    app.kubernetes.io/part-of: ureka
+    app.kubernetes.io/component: networkpolicy
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ureka-frontend}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: traefik}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+# auth: 프론트 nginx(/api/auth/)만. 다른 서비스는 auth를 부르지 않는다(JWT는 공개키로 각자 검증).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-auth
+  namespace: dev
+  labels:
+    app.kubernetes.io/part-of: ureka
+    app.kubernetes.io/component: networkpolicy
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ureka-auth}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-frontend}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+# chat: 프론트 nginx(/api/chat/, SSE 포함), auth(탈퇴 정리 PUT /internal/v1/subject-cleanups, CHAT_SERVICE_URL).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-chat
+  namespace: dev
+  labels:
+    app.kubernetes.io/part-of: ureka
+    app.kubernetes.io/component: networkpolicy
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ureka-chat}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-frontend}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-auth}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+# content: 프론트 nginx(/api/content/), auth(탈퇴 정리, CONTENT_SERVICE_URL),
+# chat api·worker(작품 정보, CONTENT_BASE_URL), recommend(실제 모드의 GET /api/content/v1/catalogs, #68. 모의 모드에서는 호출 없음).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-content
+  namespace: dev
+  labels:
+    app.kubernetes.io/part-of: ureka
+    app.kubernetes.io/component: networkpolicy
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ureka-content}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-frontend}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-auth}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-chat}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-chat-worker}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-recommend}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+# ops(관리 API): 프론트 nginx(/api/admin/)만.
+# auth 탈퇴 정리 대상에 ops를 넣으려면(auth OPS_SERVICE_URL, 지금 비어 있음) 여기에 ureka-auth를 추가한다.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ops
+  namespace: dev
+  labels:
+    app.kubernetes.io/part-of: ureka
+    app.kubernetes.io/component: networkpolicy
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ureka-ops}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-frontend}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+# recommend(내부 전용, Ingress 없음): chat api·worker(RECOMMEND_BASE_URL)만. 컨테이너 포트 8000.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-recommend
+  namespace: dev
+  labels:
+    app.kubernetes.io/part-of: ureka
+    app.kubernetes.io/component: networkpolicy
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ureka-recommend}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-chat}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-chat-worker}
+      ports:
+        - {protocol: TCP, port: 8000}
+---
+# Redis(리프레시 토큰·토큰 계열): auth(쓰기)와 content(폐기 확인, ureka-common TokenRevocationChecker)만.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis
+  namespace: dev
+  labels:
+    app.kubernetes.io/part-of: ureka
+    app.kubernetes.io/component: networkpolicy
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: redis}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-auth}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-content}
+      ports:
+        - {protocol: TCP, port: 6379}
+---
+# Mailpit(dev 메일 받기): auth의 SMTP 1025만. 받은 메일 화면(8025)은 kubectl port-forward로만 본다(정책 영향 없음).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mailpit
+  namespace: dev
+  labels:
+    app.kubernetes.io/part-of: ureka
+    app.kubernetes.io/component: networkpolicy
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: mailpit}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ureka-auth}
+      ports:
+        - {protocol: TCP, port: 1025}

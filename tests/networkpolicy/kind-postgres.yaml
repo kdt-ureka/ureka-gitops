@@ -1,0 +1,26 @@
+# kind 시험 전용. kind는 PostgreSQL이 클러스터 안 Pod(postgres)라서 EC2 정책만 넣으면 DB 연결이 막힌다.
+# EC2는 RDS(Service postgres = ExternalName, 클러스터 밖)라 이 정책이 필요 없고 배포하지 않는다(Argo CD 경로 밖).
+# docs/ec2-networkpolicy.md "kind 시험"에서 EC2 정책과 같이 적용하고, 시험 뒤 같이 지운다.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kind-allow-postgres
+  namespace: dev
+  labels:
+    app.kubernetes.io/part-of: ureka
+    app.kubernetes.io/component: networkpolicy
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: postgres}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: ureka-auth}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: ureka-chat}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: ureka-chat-worker}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: ureka-chat-migrate}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: ureka-content}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: ureka-ops}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: db-bootstrap}}
+      ports:
+        - {protocol: TCP, port: 5432}

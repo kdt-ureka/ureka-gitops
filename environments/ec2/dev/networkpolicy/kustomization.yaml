@@ -1,0 +1,8 @@
+# EC2 dev 들어오는 연결 정책(#39 기본 거부 + #40 서비스별 허용). Argo CD Application ureka-dev-networkpolicy-<suffix>가 배포한다.
+# 두 파일은 반드시 같이 배포한다(기본 거부만 있으면 서비스가 모두 끊긴다).
+# 설명·연결 표·시험·되돌리기: docs/ec2-networkpolicy.md
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - default-deny-ingress.yaml
+  - allow-ingress.yaml
