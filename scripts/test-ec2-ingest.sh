@@ -102,6 +102,51 @@ check "movie 행 수 2" 'grep -q "\"rows\": 2" <<<"$(grep 02_ <<<"$out")"'
 out="$(run store 2>&1 || true)"
 check "받은 파일 없으면 store 실패" '[[ "$out" == *"없음: 01_"* ]]'
 
+# fetch: S3에서 받기(가짜 aws). 버킷 이름은 ingest.env에서만 읽고 화면에 내지 않는다.
+mkdir -p "$t/s3/ingest-csv"
+cp "$t/"0[123]_*.csv "$t/s3/ingest-csv/"
+cat >"$t/bin/aws" <<SH
+#!/usr/bin/env bash
+# 가짜 aws: "s3 cp ... s3://<버킷>/<키> <대상>"만 흉내 낸다(키가 없으면 버킷 이름이 든 오류).
+echo "\$*" >>"$t/aws.log"
+[ "\$1 \$2" = "s3 cp" ] || exit 2
+src="\${@: -2:1}"; dst="\${@: -1}"
+key="\${src#s3://*/}"
+[ -f "$t/s3/\$key" ] || { echo "fatal error: An error occurred (404) when calling the HeadObject operation: \$src does not exist" >&2; exit 1; }
+cp "$t/s3/\$key" "\$dst"
+SH
+chmod +x "$t/bin/aws"
+out="$(run fetch 2>&1 || true)"
+check "ingest.env 없으면 fetch 거절" '[[ "$out" == *"ingest.env이 없습니다"* ]]'
+printf 'INGEST_BUCKET=Bad_Bucket\n' >"$t/etc/ingest.env"
+out="$(run fetch 2>&1 || true)"
+check "버킷 이름 형식 아니면 거절(값 안 냄)" '[[ "$out" == *"INGEST_BUCKET 형식이 아닙니다"* && "$out" != *Bad_Bucket* ]]'
+printf 'INGEST_BUCKET=test-ingest-bucket-1\n' >"$t/etc/ingest.env"
+out="$(FAKE_JOBS='ingest-load-full-20261118-1100 \n' run fetch 2>&1 || true)"
+check "적재 Job이 안 끝났으면 fetch 거절" '[[ "$out" == *"끝나지 않은 적재 Job"* ]] && [ ! -f "$t/aws.log" ]'
+out="$(FAKE_LOCK_BUSY=1 run fetch 2>&1 || true)"
+check "fetch도 잠금" '[[ "$out" == *"다른 ingest.sh 명령이 실행 중"* ]]'
+out="$(run fetch 2>&1)"
+check "fetch 세 파일 받음" '[ "$(grep -c "^받음" <<<"$out")" = 3 ]'
+check "fetch 출력에 버킷 이름 없음" '[[ "$out" != *test-ingest-bucket-1* ]]'
+check "fetch 내용 같음" 'cmp -s "$t/02_movie_details_staging_v0_0_21.csv" "$t/upload/02_movie_details_staging_v0_0_21.csv"'
+check "fetch sha256 출력" 'grep -q "$(shasum -a 256 "$t/03_tv_series_details_staging_v0_0_21.csv" | cut -d" " -f1)" <<<"$out"'
+check "fetch 기본 prefix·리전" 'grep -q "s3 cp --only-show-errors --region ap-northeast-2 s3://test-ingest-bucket-1/ingest-csv/01_공통_common_staging_v0_0_21.csv" "$t/aws.log"'
+check "fetch는 읽기(cp 내려받기)만" '! grep -v "^s3 cp .* s3://[^ ]* $t/upload/\.[^ ]*\.part$" "$t/aws.log" | grep -q .'
+check "fetch 파일 0600" '[ "$(stat -c %a "$t/upload/01_공통_common_staging_v0_0_21.csv" 2>/dev/null || stat -f %Lp "$t/upload/01_공통_common_staging_v0_0_21.csv")" = 600 ]'
+check "fetch 임시 .part 없음" '[ -z "$(ls -A "$t/upload" | grep part || true)" ]'
+out="$(run store 2>&1)"
+check "fetch 뒤 store sha256 일치" '[ "$(grep -c "^같음" <<<"$out")" = 3 ] && [ -z "$(ls -A "$t/upload")" ]'
+rm "$t/s3/ingest-csv/03_tv_series_details_staging_v0_0_21.csv"
+out="$(run fetch 2>&1 || true)"
+check "S3에 파일 없으면 fetch 실패" '[[ "$out" == *"받기 실패: 03_"* ]]'
+check "실패 오류에도 버킷 이름 가림" '[[ "$out" != *test-ingest-bucket-1* && "$out" == *"<버킷>"* ]]'
+check "실패한 파일의 .part 없음" '[ -z "$(ls -A "$t/upload" | grep part || true)" ]'
+printf 'INGEST_BUCKET=test-ingest-bucket-1\nINGEST_PREFIX=../\n' >"$t/etc/ingest.env"
+out="$(run fetch 2>&1 || true)"
+check "INGEST_PREFIX 형식 검사" '[[ "$out" == *"INGEST_PREFIX는"* ]]'
+rm -f "$t/upload/"*.csv
+
 # pick: 상세 행이 있는 것만, movie·tv 반씩
 out="$(INGEST_INPUT_DIR="$t/input" python3 -I "$root/scripts/ec2/ingest/csvtool.py" pick 4)"
 check "pick 4 = movie 1·5, tv 2·4" '[ "$out" = "$(u 1)

@@ -8,6 +8,7 @@ ureka-ingest `load-initial --with-embeddings`를 EC2 dev k3s에서 사람이 직
 | 것 | 내용 |
 |---|---|
 | 이미지 | ureka-ingest main `b57c76a`(ingest#20) CI `image-ref.json`의 ECR tag·digest. 레지스트리 주소는 `/etc/ureka/registry.env`에서 스크립트가 넣는다 |
+| 원본 보관 | S3 적재 CSV 버킷(`infra/environments/ec2/ingest_bucket.tf`). 공개 차단·SSE-S3·버전 관리(이전 버전 30일 뒤 삭제). 올리기는 CN 담당 SSO만, EC2 호스트 역할은 `ingest-csv/` 읽기만. 버킷 이름은 Git에 없고 서버 `/etc/ureka/ingest.env`에만 둔다 |
 | 입력 | PVC `ingest-input`(local-path 2Gi). 적재 Job은 읽기 전용으로 붙인다. dev는 PSA restricted라 hostPath를 못 쓴다 |
 | 출력 | PVC `ingest-output`(1Gi)의 `<Job 이름>/quarantine.jsonl`. Job마다 폴더가 달라 앞 결과를 덮어쓰지 않는다 |
 | 파일 배치 | `DATA_DIR=/work`(빈 임시 폴더)에 CSV 링크(→ `/input`)와 `output` 링크(→ `/out/<Job>`)를 만든다. 읽기 전용 폴더 안에 쓰기 볼륨을 겹쳐 붙이지 않는다(docs#86 재발 방지) |
@@ -26,8 +27,8 @@ ureka-ingest `load-initial --with-embeddings`를 EC2 dev k3s에서 사람이 직
 
 ## 실행 규칙
 
-- 상태를 바꾸는 명령(`prepare`·`recv`·`store`·`run`·`cleanup`)은 서버 잠금(`/run/lock/ureka-ingest.lock`)으로 한 번에 하나만 돈다. 다른 명령이 돌고 있으면 바로 거절한다.
-- 끝나지 않은 적재 Job(Pending 포함, Complete·Failed 조건이 없는 Job)이 있으면 `recv`·`store`·`run`을 거절한다. 적재 중 CSV가 바뀌거나 적재가 겹치지 않게 한다.
+- 상태를 바꾸는 명령(`prepare`·`fetch`·`recv`·`store`·`run`·`cleanup`)은 서버 잠금(`/run/lock/ureka-ingest.lock`)으로 한 번에 하나만 돈다. 다른 명령이 돌고 있으면 바로 거절한다.
+- 끝나지 않은 적재 Job(Pending 포함, Complete·Failed 조건이 없는 Job)이 있으면 `fetch`·`recv`·`store`·`run`을 거절한다. 적재 중 CSV가 바뀌거나 적재가 겹치지 않게 한다.
 - `run`은 Job을 `create`로 만든다. 같은 분에 다시 실행해 이름이 겹치면 덮어쓰지 않고 실패한다(1분 뒤 다시).
 - `quarantine`·`report` 출력과 격리 파일·로그에는 오류 문장(DB 오류에 행 값 일부가 섞일 수 있음)이 들어간다. 내부에서만 보고 Git·PR·채팅에 원문을 붙이지 않는다. 공유는 건수·오류 종류로 한다.
 
@@ -39,29 +40,73 @@ sudo bash scripts/ec2/ingest.sh prepare
 
 PVC 2개, NetworkPolicy 2개, 도구 ConfigMap `ingest-tools`, 파일 Pod `ingest-files`를 만듭니다.
 
-## 2. CSV 옮기기 (SSM만, AWS 변경 없음)
+## 2. CSV 옮기기
 
-내 PC → (SSM 포트 포워딩) → 서버 `127.0.0.1:18090` 임시 수신기 → 서버 임시 폴더(0700) → PVC → 서버 사본 삭제. 보안 그룹·공인 포트를 열지 않습니다.
+기본은 S3(2-A)입니다. S3를 못 쓸 때만 SSM 포트 포워딩(2-B)을 씁니다. 둘 다 서버 업로드 폴더(0700)에 받은 뒤 `store`로 PVC에 옮기고 sha256을 대조합니다.
 
-① **내 PC: 기준값 기록** (CSV 폴더에서)
+### 2-0. 기준값
+
+**내 PC: 기준값 기록** (CSV 폴더에서)
 
 ```sh
 for f in 01_*.csv 02_*.csv 03_*.csv; do shasum -a 256 "$f"; python3 -c 'import csv,sys; csv.field_size_limit(1<<26); r=csv.reader(open(sys.argv[1],encoding="utf-8-sig",newline="")); next(r,None); print(sys.argv[1], sum(1 for _ in r), "rows")' "$f"; done
 ```
 
-② **서버: 수신기 시작** (세 파일을 다 받으면 스스로 끝남)
+### 2-A. S3 (기본)
+
+내 PC →(CN 담당 SSO) S3 `ingest-csv/` → 서버가 호스트 역할로 받기(읽기만) → 서버 업로드 폴더(0700) → PVC → 서버 사본 삭제. 적재 Pod는 IMDS가 막혀 S3에 접근하지 못하므로 받기는 서버(호스트)에서 합니다.
+
+⓪ **처음 한 번: 버킷 만들기** (CN 담당이 `infra/environments/ec2`에서 `terraform plan` → 확인 → `terraform apply`). plan은 **추가 8(버킷과 설정 7 + 호스트 역할 읽기 정책 1), 변경 0, 삭제 0**이어야 합니다. 서버(EC2)는 바뀌지 않습니다.
+
+① **처음 한 번: 서버에 버킷 이름 넣기** (`terraform apply` 뒤. 이름은 Git·PR·채팅에 쓰지 않습니다)
+
+내 PC(`infra/environments/ec2` 폴더)에서 이름을 클립보드로 복사합니다.
+
+```sh
+terraform output -raw ingest_bucket_name | pbcopy
+```
+
+서버 셸에서 붙여 넣습니다(화면에 다시 출력하지 않음).
+
+```sh
+read -rp '버킷 이름: ' b && printf 'INGEST_BUCKET=%s\n' "$b" | sudo tee /etc/ureka/ingest.env >/dev/null && unset b && sudo chmod 0644 /etc/ureka/ingest.env
+```
+
+② **내 PC: 올리기** (`AWS_PROFILE=ureka-admin`. 먼저 `infra/environments/ec2`에서 `b="$(terraform output -raw ingest_bucket_name)"`, 그다음 CSV 폴더로 이동)
+
+```sh
+for f in 01_*.csv 02_*.csv 03_*.csv; do aws s3 cp "$f" "s3://$b/ingest-csv/$f" --checksum-algorithm SHA256 --only-show-errors; done
+```
+
+같은 이름으로 다시 올리면 이전 파일은 이전 버전으로 30일 남습니다.
+
+③ **서버: 받기 → PVC로 옮기고 대조**
+
+```sh
+sudo bash scripts/ec2/ingest.sh fetch
+sudo bash scripts/ec2/ingest.sh store
+sudo bash scripts/ec2/ingest.sh stat
+```
+
+`fetch`가 보여 주는 sha256과 `stat`의 sha256·행 수가 2-0과 같은지 봅니다. 오류 문장의 버킷 이름은 `<버킷>`으로 가려집니다.
+
+### 2-B. SSM 포트 포워딩 (예비, AWS 변경 없음)
+
+내 PC → (SSM 포트 포워딩) → 서버 `127.0.0.1:18090` 임시 수신기 → 서버 임시 폴더(0700) → PVC → 서버 사본 삭제. 보안 그룹·공인 포트를 열지 않습니다.
+
+① **서버: 수신기 시작** (세 파일을 다 받으면 스스로 끝남)
 
 ```sh
 sudo bash scripts/ec2/ingest.sh recv
 ```
 
-③ **내 PC 새 탭: 포트 포워딩** (`infra/environments/ec2` 폴더, `AWS_PROFILE` 설정)
+② **내 PC 새 탭: 포트 포워딩** (`infra/environments/ec2` 폴더, `AWS_PROFILE` 설정)
 
 ```sh
 aws ssm start-session --target "$(terraform output -raw instance_id)" --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["18090"],"localPortNumber":["18090"]}'
 ```
 
-④ **내 PC 또 다른 탭: 보내기** (CSV 폴더에서. 경로는 파일 종류만 받는다)
+③ **내 PC 또 다른 탭: 보내기** (CSV 폴더에서. 경로는 파일 종류만 받는다)
 
 ```sh
 curl -sS --fail -T 01_공통_common_staging_v0_0_21.csv http://127.0.0.1:18090/common
@@ -69,18 +114,16 @@ curl -sS --fail -T 02_movie_details_staging_v0_0_21.csv http://127.0.0.1:18090/m
 curl -sS --fail -T 03_tv_series_details_staging_v0_0_21.csv http://127.0.0.1:18090/tv
 ```
 
-응답의 sha256이 ①과 같아야 합니다. 끝나면 ③ 탭을 닫습니다. 수신기는 연결이 120초 동안 멈추면 그 요청을 버리고 다음 연결을 받습니다(그 파일만 다시 보내기).
+응답의 sha256이 2-0과 같아야 합니다. 끝나면 ② 탭을 닫습니다. 수신기는 연결이 120초 동안 멈추면 그 요청을 버리고 다음 연결을 받습니다(그 파일만 다시 보내기).
 
-⑤ **서버: PVC로 옮기고 대조**
+④ **서버: PVC로 옮기고 대조**
 
 ```sh
 sudo bash scripts/ec2/ingest.sh store
 sudo bash scripts/ec2/ingest.sh stat
 ```
 
-`store`는 서버 사본과 PVC 파일의 sha256이 셋 다 같을 때만 그 세 파일을 지웁니다(업로드 폴더의 다른 파일은 건드리지 않음). `stat`의 sha256·행 수가 ①과 같은지 봅니다.
-
-> S3를 거치는 방법은 버킷과 EC2 역할 권한(AWS 변경)이 필요합니다. 쓰려면 보안/교차 검토와 CN 담당 승인을 먼저 받습니다. 이 절차는 쓰지 않습니다.
+`store`는 서버 사본과 PVC 파일의 sha256이 셋 다 같을 때만 그 세 파일을 지웁니다(업로드 폴더의 다른 파일은 건드리지 않음). `stat`의 sha256·행 수가 2-0과 같은지 봅니다.
 
 ## 3. 시험 적재 (기본 100건)
 
@@ -140,4 +183,4 @@ PVC(원본 CSV·격리 결과)는 남깁니다. 지울 때는 `sudo k3s kubectl 
 
 ## 검증
 
-`bash scripts/test-ec2-ingest.sh`(CI Helm 워크플로): 가짜 kubectl·flock으로 prepare·store(sha256 대조·세 파일만 삭제)·run sample/full 렌더링·잠금·끝나지 않은 Job(Pending·SuccessCriteriaMet만) 때 recv·store·run 거절·같은 이름 Job 거절·Job 이름 검사·report·격리 요약·임시 수신기(경로 고정, 0700/0600, 멈춘 연결 시간 초과)를 봅니다. 실제 클러스터·RDS·Gemini 호출은 하지 않습니다.
+`bash scripts/test-ec2-ingest.sh`(CI Helm 워크플로): 가짜 kubectl·flock·aws로 prepare·fetch(버킷 이름 형식·출력에서 가림·0600·실패 시 .part 없음)·store(sha256 대조·세 파일만 삭제)·run sample/full 렌더링·잠금·끝나지 않은 Job(Pending·SuccessCriteriaMet만) 때 recv·store·run 거절·같은 이름 Job 거절·Job 이름 검사·report·격리 요약·임시 수신기(경로 고정, 0700/0600, 멈춘 연결 시간 초과)를 봅니다. 실제 클러스터·RDS·S3·Gemini 호출은 하지 않습니다. 버킷·역할 권한은 `infra/environments/ec2/tests/plan.tftest.hcl`(mock provider)이 봅니다.
