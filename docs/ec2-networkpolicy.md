@@ -46,11 +46,20 @@ dev 네임스페이스의 Pod는 **기본으로 아무 연결도 받지 않고**
 
 전에는 `obs-auth-metrics`·`obs-content-metrics`가 auth·content의 8080을 **dev 네임스페이스 전체**에 열었습니다(그때는 dev에 다른 정책이 없어 업무 연결을 지키려던 것). 정책은 합집합이라 이 규칙이 남으면 #40 허용 표가 무너집니다(예: recommend → auth 8080이 열림). 이제 업무 8080은 dev 정책이 서비스별로 열고, 관측 정책은 지표 포트만 Prometheus에 엽니다. chat 지표(`chatEnabled`)는 업무 포트 8080의 `/internal/v1/metrics`를 수집 전용 토큰으로 긁으므로 Prometheus → chat 8080 정책을 같이 만듭니다.
 
-그래서 **관측을 켤 때(`appMetrics.enabled: true`) dev 정책이 먼저 있어야 합니다.** 이 PR이 병합되면 dev 정책은 자동 동기화로 들어가고, 관측 앱은 수동 Sync라 순서가 지켜집니다.
+그래서 **관측을 켤 때(`appMetrics.enabled: true`) dev 정책이 먼저 실제로 들어가 있어야 합니다.** dev 정책은 자동 동기화, 관측 앱은 수동 Sync지만 이것만으로 순서가 보장되지는 않습니다(dev 정책 Application이 만들어지기만 하고 Sync가 실패한 상태에서 관측을 먼저 Sync할 수 있음). 관측 앱을 Sync하기 전에 아래를 모두 확인합니다.
+
+```bash
+sudo k3s kubectl -n argocd get application ureka-dev-networkpolicy-ec2-dev   # Synced / Healthy
+sudo k3s kubectl -n dev get networkpolicy dev-default-deny-ingress allow-auth allow-content allow-chat   # 모두 있음
+sudo bash scripts/netpol/probe.sh                                              # 표와 다름 0개
+BASE_URL=http://127.0.0.1 MAILPIT_URL=http://127.0.0.1:8025 python3 scripts/netpol/flow.py   # 모두 PASS
+```
+
+관측을 켠 상태에서는 dev 정책을 되돌리는 방법이 달라집니다(아래 "되돌리기").
 
 ### 이름표로 막는 것의 한계
 
-NetworkPolicy는 Pod 이름표(`app.kubernetes.io/name`)로 보내는 쪽을 구분합니다. dev에 Pod를 만들 수 있는 사람은 이름표를 흉내 낼 수 있으므로, 내부 API는 내부 토큰 확인을 계속합니다(PSA restricted, RBAC와 함께 쓰는 한 겹). 다른 네임스페이스는 네임스페이스 AND Pod 이름표를 한 항목에 같이 써서, 다른 네임스페이스에서 이름표만 흉내 낸 Pod는 막힙니다(시험 표의 `default/traefik-흉내`·`default/obs-prometheus-흉내`).
+NetworkPolicy는 Pod 이름표(`app.kubernetes.io/name`)로 보내는 쪽을 구분합니다. 인증 주체를 증명하는 것이 아닙니다. dev에 Pod를 만들 수 있는 사람은 이름표를 흉내 낼 수 있고, 같은 네임스페이스의 Secret을 Pod에 붙여 내부 토큰도 얻을 수 있습니다(PSA restricted는 권한 상승·호스트 접근을 막지만 정상적인 Secret 사용은 막지 않음). 그래서 내부 토큰도 그런 사람까지 막지는 못합니다. 전제는 **dev에서 Pod 생성·exec·Secret 읽기 권한을 믿을 수 있는 운영자(CN)로만 한정하는 RBAC**입니다. NetworkPolicy와 내부 토큰은 그 위에서 앱 하나가 뚫렸을 때 옆으로 번지는 것을 줄이는 겹입니다. 다른 네임스페이스는 네임스페이스 AND Pod 이름표를 한 항목에 같이 써서, 다른 네임스페이스에서 이름표만 흉내 낸 Pod는 막힙니다(시험 표의 `default/traefik-흉내`·`default/obs-prometheus-흉내`).
 
 ## 시험
 
@@ -79,7 +88,7 @@ BASE_URL=http://127.0.0.1:18080 MAILPIT_URL=http://127.0.0.1:18025 python3 scrip
 kubectl --context kind-ureka -n dev delete networkpolicy -l app.kubernetes.io/component=networkpolicy
 ```
 
-`probe.sh`는 `expected.json`의 보내는 쪽마다 같은 이름표를 단 시험 Pod를 그 네임스페이스에 띄우고(PSA restricted를 지킴), dev의 실제 Pod IP:포트로 TCP 연결을 시도해 표와 비교합니다. 리스너가 있는 포트만 봅니다(나머지는 정적 시험).
+`probe.sh`는 받는 쪽 Pod 없음·시험 Pod 실행 실패·결과 행 빠짐/중복/모르는 행·표와 다름 중 하나라도 있으면 실패합니다. 대상 포트마다 허용 출발지가 하나 이상 있어야 해서, 서비스가 죽어 생긴 '차단'을 성공으로 읽지 않습니다. `expected.json`의 보내는 쪽마다 같은 이름표를 단 시험 Pod를 그 네임스페이스에 띄우고(PSA restricted를 지킴), dev의 실제 Pod IP:포트로 TCP 연결을 시도해 표와 비교합니다. 리스너가 있는 포트만 봅니다(나머지는 정적 시험).
 
 | 시점 | 결과 |
 |---|---|
@@ -131,14 +140,17 @@ EC2 셸(SSM)에서 저장소(`~/ureka-gitops`)를 받아 둔 상태를 기준으
 
 ## 되돌리기
 
+관측 지표(`appMetrics.enabled`)를 켰는지에 따라 다릅니다. 켠 상태에서는 관측 정책(`obs-auth-metrics` 등)이 auth·content(·chat)를 지표 포트만 받게 격리하므로, dev 정책만 되돌리면 그 서비스의 업무 8080이 계속 닫힙니다(관측 앱은 수동 Sync라 같이 바뀌지 않음).
+
 | 상황 | 방법 | 걸리는 시간 |
 |---|---|---|
-| 급함(서비스가 끊김) | 아래 "전부 허용" 정책을 손으로 넣는다. NetworkPolicy는 합집합이라 바로 다 열린다. Argo CD는 자기가 만들지 않은 이 정책을 지우지 않는다 | 몇 초 |
-| 보통 | 이 PR을 되돌리는 PR → 병합. root 앱이 Application을 지우고, finalizer가 정책도 같이 지운다 | 병합 + 3분 안쪽 |
+| 급함(서비스가 끊김) | 아래 "전부 허용" 임시 정책을 손으로 넣는다. 합집합이라 바로 다 열린다. Argo CD는 자기가 만들지 않은 이 정책을 지우지 않는다. **지표 포트(9091)와 ingest Pod 수신까지 dev 전체가 열리므로** 원인을 고치면 바로 지운다 | 몇 초 |
+| 보통, 관측 꺼짐 | 이 PR을 되돌리는 PR → 병합. root 앱이 Application을 지우고 finalizer가 dev 정책도 지운다 | 병합 + 3분 안쪽 |
+| 보통, 관측 켬 | ① 임시 전부 허용을 넣는다 ② 관측도 되돌린다: `appMetrics.enabled: false`(또는 관측 정책을 이 PR 이전 형태로) PR을 병합하고 관측 앱을 수동 Sync → `sudo k3s kubectl -n dev get networkpolicy`에 `obs-*-metrics`가 없거나 이전 형태인지 확인 ③ 이 PR을 되돌리는 PR 병합 → dev 정책 사라짐 확인 ④ `flow.py` 모두 PASS 확인 ⑤ 임시 전부 허용 삭제 → `flow.py` 다시 PASS | 병합 2번 + 확인 |
 | 한 연결만 빠짐 | `allow-ingress.yaml`과 `expected.json`에 그 연결을 더하는 PR | 병합 + 3분 안쪽 |
 
 ```bash
-# 급할 때: 전부 허용(임시). 원인을 고친 PR이 들어가면 반드시 지운다.
+# 임시 전부 허용. 원인을 고친 뒤 반드시 지운다.
 cat <<'EOF' | sudo k3s kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -151,4 +163,4 @@ EOF
 sudo k3s kubectl -n dev delete networkpolicy temp-allow-all-ingress   # 고친 뒤
 ```
 
-dev 정책을 `kubectl delete`로 지우거나 고치면 selfHeal이 Git 상태로 바로 되돌립니다. 그래서 급할 때는 지우지 말고 위처럼 더합니다.
+dev 정책을 `kubectl delete`로 지우거나 고치면 selfHeal이 Git 상태로 바로 되돌립니다. 자식 Application의 자동 동기화를 손으로 꺼도 root 앱 selfHeal이 다시 켭니다. 그래서 급할 때는 지우지 말고 위처럼 더합니다.

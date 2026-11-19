@@ -38,6 +38,7 @@ chat은 전용 수집 자격 지원을 확인하기 전 `appMetrics.chatEnabled=
 
 활성화도 **Git 변경 PR**로 진행하고 순서를 지킨다.
 
+0. dev 들어오는 연결 정책(#39·#40)이 들어가 있는지 확인한다: 정책 Application Synced/Healthy, `scripts/netpol/probe.sh` 표와 다름 0개, `scripts/netpol/flow.py` 모두 PASS([ec2-networkpolicy.md](ec2-networkpolicy.md) "관측 차트에서 바꾼 것"). 하나라도 아니면 관측 앱을 Sync하지 않는다.
 1. 승인된 서비스 이미지 digest가 배포됐지만 `jvmMetricsEnabled: false`인 상태에서 관측 `appMetrics.enabled: true`를 먼저 반영한다. Secret을 준비한 뒤 관측 앱을 수동 Sync해 9091 제한 정책부터 적용한다. 이때 앱 scrape의 일시적인 up=0은 포트 미활성 상태다.
 2. 배포·신뢰성 담당과 정책 선택자·다른 허용 정책·기존 업무 통신을 확인한다. 그 다음 별도 Git 변경에서 `jvmMetricsEnabled: true`를 켜 JVM 관리 포트를 활성화한다. 초기 포트가 보호 없이 열리는 순서를 만들지 않는다.
 3. Prometheus 수집 성공·잘못된 토큰 거부·업무 토큰의 지표 조회 거부·수집 토큰의 내부 업무 호출 거부·다른 Pod의 9091 연결 차단을 확인한다.
@@ -54,7 +55,7 @@ kubectl --context default apply -f argocd/ec2/observability-app.yaml
 
 - kubelet HTTPS 10250 `/metrics/cadvisor`: Prometheus SA의 노드 목록 조회와 `nodes/metrics` GET, CA 검증. **nodes/proxy·cluster-admin·TLS 검증 끄기 없음**. 실제 k3s kubelet 인증서·webhook 인가를 확인한다. 401/403/CA 오류면 원인을 해결하고 진행한다.
 - auth/content 9091: observability namespace **AND** obs-prometheus Pod만 허용. namespace와 Pod selector를 별도 from 항목(OR)으로 나누지 않는다.
-- 이 정책은 지표 포트만 연다(auth·content 9091, `chatEnabled`면 chat 8080 — chat은 업무 포트의 `/internal/v1/metrics`). dev 업무 연결(8080)은 dev 정책(`environments/ec2/dev/networkpolicy`, #39·#40, [ec2-networkpolicy.md](ec2-networkpolicy.md))이 서비스별로 연다. 그래서 관측을 켜기 전에 dev 정책이 동기화돼 있어야 한다(없으면 auth·content가 지표 포트만 받게 되어 업무 호출이 끊긴다). 기존 API 호출·probe·가입/검색도 다시 확인한다.
+- 이 정책은 지표 포트만 연다(auth·content 9091, `chatEnabled`면 chat 8080 — chat은 업무 포트의 `/internal/v1/metrics`). dev 업무 연결(8080)은 dev 정책(`environments/ec2/dev/networkpolicy`, #39·#40, [ec2-networkpolicy.md](ec2-networkpolicy.md))이 서비스별로 연다. 그래서 관측을 켜기 전에 dev 정책이 실제로 들어가 있는지 확인한다(없으면 auth·content가 지표 포트만 받게 되어 업무 호출이 끊긴다). 확인 명령과, 관측을 켠 뒤 dev 정책을 되돌리는 순서는 [ec2-networkpolicy.md](ec2-networkpolicy.md). 기존 API 호출·probe·가입/검색도 다시 확인한다.
 - 정책들은 합집합이다. 다른 넓은 ingress 허용이 9091을 다시 열지 않는지 배포·신뢰성 담당이 확인한다(#41, `scripts/netpol/probe.sh`에 9091 대상을 더해 본다). Prometheus 쪽 egress 차단이 있다면 DNS·API server·kubelet·9091·chat8080·kube-state-metrics를 허용 목록과 함께 맞춘다.
 - Prometheus/Grafana/상태 수집기는 ClusterIP만 제공한다. 관측 namespace에는 ingress 기본 차단, Grafana→Prometheus, Prometheus→상태 수집만 허용한다. 관리자 port-forward는 CN이 별도로 연다.
 

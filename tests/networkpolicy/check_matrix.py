@@ -7,15 +7,21 @@ NetworkPolicy 의미(ingress만):
 - 어떤 정책도 고르지 않은 Pod는 모두 받는다. 하나라도 고르면 그 정책들의 ingress 규칙 합집합만 받는다.
 - 규칙 하나는 from(여러 항목 중 하나라도 맞으면) AND ports(비면 모든 포트).
 - from 항목에 namespaceSelector·podSelector가 같이 있으면 AND. podSelector만 있으면 정책과 같은 네임스페이스.
-지원하지 않는 형식(matchExpressions, ipBlock, 이름 포트, endPort)은 잘못 계산하지 않게 실패로 처리한다.
+- from을 빼거나 빈 목록이면 모든 출발지, ports를 빼거나 빈 목록이면 모든 포트.
+- podSelector {}는 그 네임스페이스의 모든 Pod, namespaceSelector {}는 모든 네임스페이스.
+지원하지 않는 형식(matchExpressions, ipBlock, 이름 포트, endPort, 빈 peer {})은 잘못 계산하지 않게
+비교 전에 정책 전체를 검사해 실패로 처리한다(빈 peer는 API 서버도 거절한다: "must specify a peer").
 """
 import json
 import sys
 
 
+class Unsupported(Exception):
+    pass
+
+
 def fail(msg):
-    print(f"::error::{msg}")
-    sys.exit(1)
+    raise Unsupported(msg)
 
 
 def match_labels(selector, labels, what):
@@ -26,9 +32,27 @@ def match_labels(selector, labels, what):
     return all(labels.get(k) == v for k, v in (selector.get("matchLabels") or {}).items())
 
 
+def validate(policies):
+    """비교 전에 모든 정책의 모든 분기를 검사한다(선택되지 않는 분기도 빠뜨리지 않게)."""
+    for pol in policies:
+        name = pol["metadata"]["name"]
+        spec = pol["spec"]
+        match_labels(spec.get("podSelector", {}), {}, name)
+        for rule in spec.get("ingress") or []:
+            for peer in rule.get("from") or []:
+                if not peer:
+                    fail(f"{name}: 빈 peer {{}}는 지원하지 않는다(API도 거절)")
+                if set(peer) - {"namespaceSelector", "podSelector"}:
+                    fail(f"{name}: 지원하지 않는 from 항목(ipBlock 등): {peer}")
+                for key in ("namespaceSelector", "podSelector"):
+                    if key in peer:
+                        match_labels(peer[key], {}, name)
+            for p in rule.get("ports") or []:
+                if "endPort" in p or not isinstance(p.get("port"), int):
+                    fail(f"{name}: 숫자 포트만 지원한다: {p}")
+
+
 def peer_matches(peer, src, policy_ns, name):
-    if set(peer) - {"namespaceSelector", "podSelector"}:
-        fail(f"{name}: 지원하지 않는 from 항목(ipBlock 등): {peer}")
     ns_sel = peer.get("namespaceSelector")
     pod_sel = peer.get("podSelector")
     ns_labels = {"kubernetes.io/metadata.name": src["namespace"]}
@@ -75,7 +99,8 @@ def main():
     exp = json.load(open(expected_path, encoding="utf-8"))
     scenarios = list(exp["allow"])
     if scenario not in scenarios:
-        fail(f"시나리오가 없다: {scenario} (있는 것: {scenarios})")
+        print(f"::error::시나리오가 없다: {scenario} (있는 것: {scenarios})")
+        sys.exit(1)
     allow = set()
     for s in scenarios[: scenarios.index(scenario) + 1]:
         allow |= {tuple(x) for x in exp["allow"][s]}
@@ -87,9 +112,15 @@ def main():
                 doc = json.loads(line)
                 if doc and doc.get("kind") == "NetworkPolicy":
                     policies.append(doc)
+    try:
+        validate(policies)
+    except Unsupported as e:
+        print(f"::error::{e}")
+        sys.exit(1)
     for a in allow:
         if a[0] not in exp["sources"] or a[1] not in exp["targets"] or a[2] not in exp["targets"][a[1]]:
-            fail(f"허용 표 항목이 sources·targets에 없다: {a}")
+            print(f"::error::허용 표 항목이 sources·targets에 없다: {a}")
+            sys.exit(1)
 
     errors, checked = [], 0
     for src_name, src in exp["sources"].items():

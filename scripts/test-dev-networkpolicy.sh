@@ -5,6 +5,7 @@
 # 2) 형식: dev 네임스페이스, Ingress만(egress는 이번 범위 밖), 기본 거부가 있고 허용과 같은 kustomization에 있다.
 # 3) root 앱이 정책 Application을 만들고(경로·wave·finalizer), 경로가 kustomization을 가리킨다.
 # 4) 시험이 헛돌지 않는지: 허용 파일을 빼거나(=#39만 병합) 넓은 허용을 넣으면 실패해야 한다.
+# 5) 계산기(check_matrix)·실측 결과 비교기(probe_compare) 단위 시험.
 # 실제 차단 여부(CNI)는 이 시험이 대신하지 않는다: docs/ec2-networkpolicy.md의 kind·EC2 시험을 본다.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -23,6 +24,9 @@ to_json < environments/ec2/dev/ingest/networkpolicy.yaml > "$work/ingest.json"
 obs=(helm template obs charts/ureka-observability -n observability -f environments/ec2/observability/values.yaml)
 "${obs[@]}" | to_json > "$work/obs-off.json"
 "${obs[@]}" --set appMetrics.enabled=true --set appMetrics.chatEnabled=true | to_json > "$work/obs-on.json"
+
+echo "== 계산기·실측 비교기 단위 시험(NetworkPolicy 의미, 누락·중복·실행 실패는 실패)"
+python3 -m unittest discover -s tests/networkpolicy -p 'test_*.py' || status=1
 
 echo "== 허용 표와 계산 결과 비교"
 python3 tests/networkpolicy/check_matrix.py "$expected" "기본(관측 꺼짐)" "$work/dev.json" "$work/ingest.json" "$work/obs-off.json" || status=1

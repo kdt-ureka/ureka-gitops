@@ -109,8 +109,10 @@ rec = (body.get("data") or {}).get("recommendation") or {}
 check("장르 추천 (chat → recommend → content)", status == 201,
       f"{status} items={len(rec.get('items', []))} shortage={rec.get('shortage')}")
 
-# 5) 프론트 → ops: 관리 API까지 닿는지(관리자 토큰이 없어 401·403이 정상. 502·504면 연결이 막힌 것)
-status, _ = call("GET", "/api/admin/v1/incidents", token=token)
-check("관리 API 도달 (프론트 → ops)", status not in (502, 503, 504), f"{status}")
+# 5) 프론트 → ops: 관리 API까지 닿는지. 일반 회원 토큰이라 ops가 403으로 거절해야 정상이다
+#    (502·504 = 연결이 막힘, 404 = 경로가 틀림, 500 = ops 오류 → 모두 실패로 본다).
+status, body = call("GET", "/api/admin/v1/incidents", token=token)
+code = (body.get("error") or {}).get("code", "") if isinstance(body, dict) else ""
+check("관리 API 도달 (프론트 → ops, 일반 회원 403)", status == 403, f"{status} {code}".strip())
 
 print("\n결과: 모두 PASS")

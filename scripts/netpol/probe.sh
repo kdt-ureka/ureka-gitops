@@ -3,6 +3,8 @@
 # 허용 표(tests/networkpolicy/expected.json)의 "보내는 쪽"마다 같은 이름표를 단 시험 Pod를 그 네임스페이스에 띄우고,
 # dev의 실제 Pod IP:포트로 TCP 연결을 시도해 표와 비교한다(허용 = 연결 성공, 차단 = 실패).
 # 리스너가 있는 포트만 본다(리스너가 없으면 허용이어도 실패하므로 구분이 안 된다). 나머지 조합은 정적 시험이 본다.
+# 실패로 끝나는 경우: 받는 쪽 Pod 없음, 시험 Pod exec 실패, 결과 행 빠짐·중복·모르는 행, 표와 다름(tests/networkpolicy/probe_compare.py).
+# 출발지 해석 주의: ingest-load 흉내 Pod는 EC2에서 ingest egress 정책도 같이 받아 '차단'이 ingress만의 증거는 아니다.
 #
 # 사용: scripts/netpol/probe.sh [--context <kubectl 컨텍스트>] [--scenario <expected.json allow 키>] [--keep]
 #   --keep: 시험 Pod를 지우지 않는다(손으로 더 볼 때). 지울 때: 아래 cleanup과 같은 명령.
@@ -76,7 +78,8 @@ pairs=()
 for t in $targets; do
   name="${t%%:*}"; port="${t##*:}"
   ip="$(k -n dev get pod -l "app.kubernetes.io/name=${name},!ureka-netpol-probe" --field-selector=status.phase=Running -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)"
-  [ -n "$ip" ] || { echo "건너뜀: ${name} Pod 없음"; continue; }
+  # 없으면 이 받는 쪽의 결과 행이 생기지 않아 비교에서 "결과 없음"으로 실패한다.
+  [ -n "$ip" ] || { echo "::error::받는 쪽 ${name} Pod 없음(Running)" >&2; continue; }
   pairs+=("${name}:${port}:${ip}")
 done
 
@@ -98,31 +101,20 @@ def one(p):
     return f"{n}:{port} 차단 {err}"
 with f.ThreadPoolExecutor(16) as ex:
     for r in ex.map(one,sys.argv[1:]): print(r)'
+pids=()
 while read -r ns pod src; do
-  k -n "$ns" exec "$pod" -- python -c "$checker" "${pairs[@]}" | sed "s#^#${src} #" >> "$results" &
+  ( set -o pipefail; k -n "$ns" exec "$pod" -- python -c "$checker" ${pairs[@]+"${pairs[@]}"} | sed "s#^#${src} #" > "${results}.${pod}.${ns}" ) &
+  pids+=("$!")
 done < <(for ns in $(python3 -c 'import json,sys;print(" ".join(sorted({s["namespace"] for s in json.load(open(sys.argv[1]))["sources"].values()})))' "$expected"); do
   k -n "$ns" get pod -l ureka-netpol-probe=true -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.metadata.annotations.ureka/netpol-source}{"\n"}{end}'
 done)
-wait
+# 인자 없는 wait는 실패를 넘기지 않는다. 작업마다 종료 코드를 모은다.
+exec_failures=0
+for pid in ${pids[@]+"${pids[@]}"}; do wait "$pid" || exec_failures=$((exec_failures + 1)); done
+cat "${results}".*.* > "$results" 2>/dev/null || true
+rm -f "${results}".*.*
 
-python3 - "$expected" "$scenario" "$results" <<'PY'
-import json, sys
-exp = json.load(open(sys.argv[1], encoding="utf-8")); scenario = sys.argv[2]
-keys = list(exp["allow"]); allow = set()
-for s in keys[: keys.index(scenario) + 1]:
-    allow |= {tuple(x) for x in exp["allow"][s]}
-rows, bad = [], 0
-for line in open(sys.argv[3], encoding="utf-8"):
-    src, target, got, *why = line.split()
-    name, port = target.split(":")
-    want = "허용" if (src, name, int(port)) in allow else "차단"
-    ok = got == want
-    bad += not ok
-    rows.append((src, target, want, got, "" if ok else "  ← 다름", " ".join(why)))
-rows.sort()
-print(f"| 보내는 쪽 | 받는 쪽:포트 | 표 | 실제 |\n|---|---|---|---|")
-for src, target, want, got, mark, why in rows:
-    print(f"| {src} | {target} | {want} | {got}{(' (' + why + ')') if why else ''}{mark} |")
-print(f"\n조합 {len(rows)}개, 표와 다름 {bad}개 (시나리오: {scenario})")
-sys.exit(1 if bad else 0)
-PY
+status=0
+python3 tests/networkpolicy/probe_compare.py "$expected" "$scenario" "$targets" "$results" "$exec_failures" || status=$?
+rm -f "$results"
+exit "$status"
