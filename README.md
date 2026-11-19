@@ -16,6 +16,7 @@ Ureka AWS·EKS 인프라 및 Argo CD 배포 설정
 | `environments/kind/data/` | kind dev PostgreSQL(pgvector)·Redis·DB 계정 생성 Job (kustomize) |
 | `argocd/ec2/`, `environments/{base,ec2}/`, `scripts/ec2/` | EC2 dev(k3s) root 앱·values 두 겹·첫 설치. 순서와 접속은 [docs/ec2-dev.md](docs/ec2-dev.md) |
 | `tests/db/` | DB 권한 시험(P11 검색 함수 역할) |
+| `docs/ec2-networkpolicy.md` | EC2 dev 들어오는 연결 정책(기본 거부 + 서비스별 허용): 연결 표·시험·되돌리기 |
 | `docs/kind-deploy-rollback.md` | 배포·롤백 절차 |
 | `docs/kind-db-secrets.md` | kind DB·비밀값 방식, DB 계정 구조, P11 기록 |
 

@@ -66,17 +66,24 @@ class ObservabilityRendering(unittest.TestCase):
         cfg = next(d for d in objects(self.disabled,'ConfigMap') if d['metadata']['name']=='obs-prometheus')
         self.assertEqual({j['job_name'] for j in yaml.safe_load(cfg['data']['prometheus.yml'])['scrape_configs']}, {'prometheus','kube-state-metrics','kubelet-cadvisor'})
 
-    def test_jvm_policy_requires_both_namespace_and_pod_and_preserves_business(self):
-        policies = [d for d in objects(self.enabled,'NetworkPolicy') if d['metadata'].get('namespace')=='dev']
-        self.assertEqual(len(policies),2)
-        for d in policies:
-            rules=d['spec']['ingress']
-            self.assertEqual(rules[0]['ports'][0]['port'],8080)
-            self.assertEqual(rules[1]['ports'][0]['port'],9091)
-            self.assertEqual(len(rules[1]['from']),1)
-            peer=rules[1]['from'][0]
-            self.assertEqual(peer['namespaceSelector']['matchLabels']['kubernetes.io/metadata.name'],'observability')
-            self.assertEqual(peer['podSelector']['matchLabels']['app.kubernetes.io/name'],'obs-prometheus')
+    def test_metrics_policy_allows_only_prometheus_on_metrics_port(self):
+        # dev 업무 연결(8080)은 dev 정책(environments/ec2/dev/networkpolicy)이 연다. 관측 정책이 dev 전체에 8080을 열면 #40 허용 표가 무너진다.
+        cases = [
+            (self.enabled, {'obs-auth-metrics': 9091, 'obs-content-metrics': 9091}),
+            (render(('--set', 'appMetrics.enabled=true', '--set', 'appMetrics.chatEnabled=true')),
+             {'obs-auth-metrics': 9091, 'obs-content-metrics': 9091, 'obs-chat-metrics': 8080}),
+        ]
+        for items, expected in cases:
+            policies = {d['metadata']['name']: d for d in objects(items,'NetworkPolicy') if d['metadata'].get('namespace')=='dev'}
+            self.assertEqual(set(policies), set(expected))
+            for name, port in expected.items():
+                rules = policies[name]['spec']['ingress']
+                self.assertEqual(len(rules), 1, name)
+                self.assertEqual(rules[0]['ports'], [{'protocol': 'TCP', 'port': port}], name)
+                self.assertEqual(len(rules[0]['from']), 1, name)
+                peer = rules[0]['from'][0]
+                self.assertEqual(peer['namespaceSelector']['matchLabels']['kubernetes.io/metadata.name'],'observability')
+                self.assertEqual(peer['podSelector']['matchLabels']['app.kubernetes.io/name'],'obs-prometheus')
 
     def test_scrape_tls_secret_files_labels_and_rules(self):
         cm=next(d for d in objects(self.enabled,'ConfigMap') if d['metadata']['name']=='obs-prometheus')

@@ -1,0 +1,61 @@
+{
+  "_설명": "EC2 dev 들어오는 연결 허용 표(#40). 여기 없는 (보내는 쪽, 받는 쪽, 포트) 조합은 모두 막혀야 한다. scripts/test-dev-networkpolicy.sh가 정책을 계산해 이 표와 정확히 같은지 본다.",
+  "sources": {
+    "dev/ureka-frontend": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "ureka-frontend"}},
+    "dev/ureka-auth": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "ureka-auth"}},
+    "dev/ureka-chat": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "ureka-chat"}},
+    "dev/ureka-chat-worker": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "ureka-chat-worker"}},
+    "dev/ureka-chat-migrate": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "ureka-chat-migrate"}},
+    "dev/ureka-content": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "ureka-content"}},
+    "dev/ureka-ops": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "ureka-ops"}},
+    "dev/ureka-recommend": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "ureka-recommend"}},
+    "dev/redis": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "redis"}},
+    "dev/mailpit": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "mailpit"}},
+    "dev/ingest-load": {"namespace": "dev", "labels": {"app.kubernetes.io/name": "ingest-load"}},
+    "dev/이름표없는-Pod": {"namespace": "dev", "labels": {}},
+    "kube-system/traefik": {"namespace": "kube-system", "labels": {"app.kubernetes.io/name": "traefik"}},
+    "kube-system/coredns": {"namespace": "kube-system", "labels": {"k8s-app": "kube-dns"}},
+    "observability/obs-prometheus": {"namespace": "observability", "labels": {"app.kubernetes.io/name": "obs-prometheus"}},
+    "observability/obs-grafana": {"namespace": "observability", "labels": {"app.kubernetes.io/name": "obs-grafana"}},
+    "argocd/argocd-server": {"namespace": "argocd", "labels": {"app.kubernetes.io/name": "argocd-server"}},
+    "default/traefik-흉내": {"namespace": "default", "labels": {"app.kubernetes.io/name": "traefik"}},
+    "default/obs-prometheus-흉내": {"namespace": "default", "labels": {"app.kubernetes.io/name": "obs-prometheus"}}
+  },
+  "targets": {
+    "ureka-frontend": [8080],
+    "ureka-auth": [8080, 9091],
+    "ureka-chat": [8080],
+    "ureka-chat-worker": [8080],
+    "ureka-content": [8080, 9091],
+    "ureka-ops": [8080],
+    "ureka-recommend": [8000],
+    "redis": [6379],
+    "mailpit": [1025, 8025],
+    "ingest-load": [8080],
+    "ingest-files": [8080]
+  },
+  "allow": {
+    "기본(관측 꺼짐)": [
+      ["kube-system/traefik", "ureka-frontend", 8080],
+      ["dev/ureka-frontend", "ureka-auth", 8080],
+      ["dev/ureka-frontend", "ureka-chat", 8080],
+      ["dev/ureka-auth", "ureka-chat", 8080],
+      ["dev/ureka-frontend", "ureka-content", 8080],
+      ["dev/ureka-auth", "ureka-content", 8080],
+      ["dev/ureka-chat", "ureka-content", 8080],
+      ["dev/ureka-chat-worker", "ureka-content", 8080],
+      ["dev/ureka-recommend", "ureka-content", 8080],
+      ["dev/ureka-frontend", "ureka-ops", 8080],
+      ["dev/ureka-chat", "ureka-recommend", 8000],
+      ["dev/ureka-chat-worker", "ureka-recommend", 8000],
+      ["dev/ureka-auth", "redis", 6379],
+      ["dev/ureka-content", "redis", 6379],
+      ["dev/ureka-auth", "mailpit", 1025]
+    ],
+    "관측 켬(appMetrics.enabled·chatEnabled) 때 추가": [
+      ["observability/obs-prometheus", "ureka-auth", 9091],
+      ["observability/obs-prometheus", "ureka-content", 9091],
+      ["observability/obs-prometheus", "ureka-chat", 8080]
+    ]
+  }
+}
