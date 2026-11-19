@@ -146,7 +146,7 @@ EC2 셸(SSM)에서 저장소(`~/ureka-gitops`)를 받아 둔 상태를 기준으
 |---|---|---|
 | 급함(서비스가 끊김) | 아래 "전부 허용" 임시 정책을 손으로 넣는다. 합집합이라 바로 다 열린다. Argo CD는 자기가 만들지 않은 이 정책을 지우지 않는다. **지표 포트(9091)와 ingest Pod 수신까지 dev 전체가 열리므로** 원인을 고치면 바로 지운다 | 몇 초 |
 | 보통, 관측 꺼짐 | 이 PR을 되돌리는 PR → 병합. root 앱이 Application을 지우고 finalizer가 dev 정책도 지운다 | 병합 + 3분 안쪽 |
-| 보통, 관측 켬 | ① 임시 전부 허용을 넣는다 ② 관측도 되돌린다: `appMetrics.enabled: false`(또는 관측 정책을 이 PR 이전 형태로) PR을 병합하고 관측 앱을 수동 Sync → `sudo k3s kubectl -n dev get networkpolicy`에 `obs-*-metrics`가 없거나 이전 형태인지 확인 ③ 이 PR을 되돌리는 PR 병합 → dev 정책 사라짐 확인 ④ `flow.py` 모두 PASS 확인 ⑤ 임시 전부 허용 삭제 → `flow.py` 다시 PASS | 병합 2번 + 확인 |
+| 보통, 관측 켬 | ① 임시 전부 허용을 넣는다 ② 관측도 되돌린다: `appMetrics.enabled: false`(또는 관측 정책을 이 PR 이전 형태로) PR을 병합하고 관측 앱을 **Prune을 켜고** 수동 Sync(관측 앱은 자동 prune이 없어 그냥 Sync하면 옛 정책이 남는다) → `sudo k3s kubectl -n dev get networkpolicy`에 `obs-*-metrics`가 없거나 이전 형태인지 확인 ③ 이 PR을 되돌리는 PR 병합 → dev 정책 사라짐 확인 ④ `flow.py` 모두 PASS 확인 ⑤ 임시 전부 허용 삭제 → `flow.py` 다시 PASS | 병합 2번 + 확인 |
 | 한 연결만 빠짐 | `allow-ingress.yaml`과 `expected.json`에 그 연결을 더하는 PR | 병합 + 3분 안쪽 |
 
 ```bash
