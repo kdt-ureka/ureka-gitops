@@ -2,7 +2,8 @@
 # ingest 최초 적재를 EC2 dev에서 사람이 직접 돌린다(Argo CD 자동 sync 아님). EC2 서버 안(SSM 셸)에서 root로 실행한다.
 #
 #   sudo bash scripts/ec2/ingest.sh prepare          PVC 2개·NetworkPolicy·도구 ConfigMap·파일 Pod(ingest-files) 만들기
-#   sudo bash scripts/ec2/ingest.sh recv             내 PC → EC2 원본 CSV 받기(127.0.0.1:18090, SSM 포트 포워딩으로만). 세 파일 받으면 끝
+#   sudo bash scripts/ec2/ingest.sh fetch            S3(적재 CSV 버킷)에서 원본 CSV 3개 받기(호스트 역할, 읽기만). 기본 경로
+#   sudo bash scripts/ec2/ingest.sh recv             (예비) 내 PC → EC2 원본 CSV 받기(127.0.0.1:18090, SSM 포트 포워딩으로만). 세 파일 받으면 끝
 #   sudo bash scripts/ec2/ingest.sh store            받은 CSV를 ingest-input PVC로 옮기고 sha256 대조, 같으면 서버 사본 삭제
 #   sudo bash scripts/ec2/ingest.sh stat             PVC의 CSV 3개 바이트·sha256·행 수
 #   sudo bash scripts/ec2/ingest.sh run sample [N]   시험 적재: 공통 CSV 앞쪽 movie N/2·tv N/2개 content_id만(기본 100, 1시간 제한)
@@ -21,6 +22,7 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 dir="$root/environments/ec2/dev/ingest"
 tools="$root/scripts/ec2/ingest"
 registry_env="${UREKA_ETC_DIR:-/etc/ureka}/registry.env"
+ingest_env="${UREKA_ETC_DIR:-/etc/ureka}/ingest.env" # INGEST_BUCKET=<버킷 이름>(terraform output ingest_bucket_name). Git에 넣지 않는다
 upload_dir="${UREKA_INGEST_UPLOAD_DIR:-/var/lib/ureka-ingest-upload}"
 lock_file="${UREKA_LOCK_FILE:-/run/lock/ureka-ingest.lock}"
 port=18090
@@ -70,7 +72,7 @@ need_pod() {
 }
 tool() { kx exec -i "$pod" -- python /tools/csvtool.py "$@"; }
 
-# 상태를 바꾸는 명령(prepare·recv·store·run·cleanup)은 한 번에 하나만 실행한다(두 운영자·두 터미널이 겹치지 않게).
+# 상태를 바꾸는 명령(prepare·fetch·recv·store·run·cleanup)은 한 번에 하나만 실행한다(두 운영자·두 터미널이 겹치지 않게).
 lock() {
   install -d -m 0755 "$(dirname "$lock_file")"
   exec 9>"$lock_file"
@@ -94,7 +96,7 @@ latest_job() {
 }
 
 cmd="${1:-}"; shift || true
-case "$cmd" in prepare|recv|store|run|cleanup) lock ;; esac
+case "$cmd" in prepare|fetch|recv|store|run|cleanup) lock ;; esac
 case "$cmd" in
   prepare)
     k apply -f "$dir/storage.yaml"
@@ -107,7 +109,32 @@ case "$cmd" in
     fi
     k wait --for=condition=Ready "pod/$pod" --timeout=180s
     k get pvc ingest-input ingest-output
-    echo "준비 완료. 다음: recv(내 PC에서 보내기) → store"
+    echo "준비 완료. 다음: fetch(S3에서 받기) → store. S3를 못 쓰면 recv(내 PC에서 보내기) → store"
+    ;;
+  fetch)
+    command -v aws >/dev/null || { echo "aws CLI가 필요합니다(AL2023 기본 포함)" >&2; exit 1; }
+    [ -f "$ingest_env" ] || { echo "${ingest_env}이 없습니다. docs/ec2-ingest.md의 'S3 버킷 이름 넣기'를 먼저 하세요." >&2; exit 1; }
+    bucket="$(sed -n 's/^INGEST_BUCKET=//p' "$ingest_env" | head -n1)"
+    prefix="$(sed -n 's/^INGEST_PREFIX=//p' "$ingest_env" | head -n1)"; prefix="${prefix:-ingest-csv/}"
+    region=""; [ -f "$registry_env" ] && region="$(sed -n 's/^AWS_REGION=//p' "$registry_env" | head -n1)"; region="${region:-ap-northeast-2}"
+    [[ "$bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { echo "INGEST_BUCKET 형식이 아닙니다(값은 출력하지 않음)." >&2; exit 1; }
+    [[ "$prefix" =~ ^[a-z0-9][a-z0-9-]*/$ ]] || { echo "INGEST_PREFIX는 'ingest-csv/'처럼 한 단계 폴더여야 합니다." >&2; exit 1; }
+    no_unfinished
+    install -d -m 0700 "$upload_dir"
+    # 이전에 받은 세 파일을 먼저 지운다. 중간에 실패해도 새 파일과 이전 파일이 섞인 채 store되지 않는다(빠진 파일로 store 실패).
+    for name in "${names[@]}"; do rm -f -- "${upload_dir:?}/$name" "${upload_dir:?}/.$name.part"; done
+    for name in "${names[@]}"; do
+      part="$upload_dir/.$name.part"
+      rm -f -- "$part"
+      # 오류 문장에 버킷 이름이 섞이지 않게 가린다.
+      if ! err="$( (umask 077; aws s3 cp --only-show-errors --region "$region" "s3://$bucket/$prefix$name" "$part") 2>&1)"; then
+        rm -f -- "$part"
+        echo "받기 실패: $name ${err//"$bucket"/<버킷>}" >&2; exit 1
+      fi
+      mv -f -- "$part" "$upload_dir/$name"
+      echo "받음  $name $(wc -c <"$upload_dir/$name" | tr -d ' ')B sha256 $(sha256sum "$upload_dir/$name" | cut -d' ' -f1)"
+    done
+    echo "세 파일을 받았습니다. 위 sha256을 내 PC 기준값과 비교한 뒤: store → stat"
     ;;
   recv)
     command -v python3 >/dev/null || { echo "python3가 필요합니다" >&2; exit 1; }
@@ -121,7 +148,7 @@ case "$cmd" in
     ok=1
     for i in 0 1 2; do
       f="$upload_dir/${names[$i]}"
-      [ -f "$f" ] || { echo "없음: ${names[$i]} (먼저 recv)" >&2; ok=0; continue; }
+      [ -f "$f" ] || { echo "없음: ${names[$i]} (먼저 fetch 또는 recv)" >&2; ok=0; continue; }
       host_sha="$(sha256sum "$f" | cut -d' ' -f1)"
       info="$(kx exec -i "$pod" -- python /tools/csvtool.py put "${kinds[$i]}" < "$f")"
       pod_sha="$(printf '%s' "$info" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')"

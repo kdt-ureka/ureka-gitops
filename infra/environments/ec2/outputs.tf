@@ -21,3 +21,13 @@ output "connect_hint" {
                  → http://localhost:8080
   EOT
 }
+
+output "ingest_bucket_name" {
+  description = "Ingest CSV bucket. Keep the name out of Git/PRs; the server reads it from /etc/ureka/ingest.env."
+  value       = aws_s3_bucket.ingest.bucket
+}
+
+output "ingest_csv_prefix" {
+  description = "Key prefix the host may read."
+  value       = var.ingest_csv_prefix
+}

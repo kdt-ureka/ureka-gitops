@@ -48,3 +48,25 @@ variable "services" {
     error_message = "services must be lowercase service names."
   }
 }
+
+variable "ingest_csv_prefix" {
+  type        = string
+  description = "S3 key prefix for ingest CSVs. The host role may read only under this prefix."
+  default     = "ingest-csv/"
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]*/$", var.ingest_csv_prefix))
+    error_message = "ingest_csv_prefix must be one lowercase path segment ending with '/'."
+  }
+}
+
+variable "ingest_noncurrent_version_days" {
+  type        = number
+  description = "Days to keep replaced (noncurrent) CSV versions before S3 deletes them."
+  default     = 30
+
+  validation {
+    condition     = var.ingest_noncurrent_version_days >= 1
+    error_message = "ingest_noncurrent_version_days must be at least 1."
+  }
+}
