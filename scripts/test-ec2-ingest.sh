@@ -137,11 +137,18 @@ check "fetch 파일 0600" '[ "$(stat -c %a "$t/upload/01_공통_common_staging_v
 check "fetch 임시 .part 없음" '[ -z "$(ls -A "$t/upload" | grep part || true)" ]'
 out="$(run store 2>&1)"
 check "fetch 뒤 store sha256 일치" '[ "$(grep -c "^같음" <<<"$out")" = 3 ] && [ -z "$(ls -A "$t/upload")" ]'
+echo old >"$t/upload/03_tv_series_details_staging_v0_0_21.csv" # 이전 세트의 파일이 남아 있는 상황
 rm "$t/s3/ingest-csv/03_tv_series_details_staging_v0_0_21.csv"
 out="$(run fetch 2>&1 || true)"
 check "S3에 파일 없으면 fetch 실패" '[[ "$out" == *"받기 실패: 03_"* ]]'
 check "실패 오류에도 버킷 이름 가림" '[[ "$out" != *test-ingest-bucket-1* && "$out" == *"<버킷>"* ]]'
 check "실패한 파일의 .part 없음" '[ -z "$(ls -A "$t/upload" | grep part || true)" ]'
+check "중간 실패 시 이전 세트와 섞이지 않음(store 실패)" '[[ "$(run store 2>&1 || true)" == *"없음: 03_"* ]]'
+mv "$t/etc/registry.env" "$t/etc/registry.env.bak"
+cp "$t/03_tv_series_details_staging_v0_0_21.csv" "$t/s3/ingest-csv/"
+out="$(run fetch 2>&1 || true)"
+check "registry.env 없어도 기본 리전으로 fetch" '[ "$(grep -c "^받음" <<<"$out")" = 3 ] && tail -n1 "$t/aws.log" | grep -q -- "--region ap-northeast-2"'
+mv "$t/etc/registry.env.bak" "$t/etc/registry.env"
 printf 'INGEST_BUCKET=test-ingest-bucket-1\nINGEST_PREFIX=../\n' >"$t/etc/ingest.env"
 out="$(run fetch 2>&1 || true)"
 check "INGEST_PREFIX 형식 검사" '[[ "$out" == *"INGEST_PREFIX는"* ]]'

@@ -29,7 +29,8 @@ resource "aws_s3_bucket_ownership_controls" "ingest" {
   }
 }
 
-# SSE-S3: 공개 차단·IAM 범위가 주된 방어선이고, KMS는 키 비용·권한만 늘린다(state 버킷과 같은 방식).
+# SSE-S3: 공개 차단·IAM 범위가 주된 방어선이고, KMS는 키 비용·권한만 늘린다.
+# bucket key는 SSE-KMS용 기능이라 켜지 않는다.
 resource "aws_s3_bucket_server_side_encryption_configuration" "ingest" {
   bucket = aws_s3_bucket.ingest.id
 
@@ -37,7 +38,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "ingest" {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
-    bucket_key_enabled = true
   }
 }
 
@@ -106,7 +106,7 @@ resource "aws_iam_role_policy" "ingest_csv_read" {
         Resource = "${aws_s3_bucket.ingest.arn}/${var.ingest_csv_prefix}*"
       },
       {
-        # 없는 파일이 403 대신 404로 보이게(원인 파악용). 목록도 prefix 아래만.
+        # 목록 보기도 prefix 아래만. 없는 파일이 404로 보일 수 있게 둔다(403일 수도 있음, 둘 다 실패로 처리).
         Sid       = "ListIngestCsv"
         Effect    = "Allow"
         Action    = ["s3:ListBucket"]

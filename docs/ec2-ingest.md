@@ -66,10 +66,10 @@ for f in 01_*.csv 02_*.csv 03_*.csv; do shasum -a 256 "$f"; python3 -c 'import c
 terraform output -raw ingest_bucket_name | pbcopy
 ```
 
-서버 셸에서 붙여 넣습니다(화면에 다시 출력하지 않음).
+서버 셸에서 붙여 넣습니다(입력이 화면에 보이지 않고 셸 기록에도 남지 않음).
 
 ```sh
-read -rp '버킷 이름: ' b && printf 'INGEST_BUCKET=%s\n' "$b" | sudo tee /etc/ureka/ingest.env >/dev/null && unset b && sudo chmod 0644 /etc/ureka/ingest.env
+read -rsp '버킷 이름: ' b && echo && printf 'INGEST_BUCKET=%s\n' "$b" | sudo tee /etc/ureka/ingest.env >/dev/null && unset b && sudo chmod 0644 /etc/ureka/ingest.env
 ```
 
 ② **내 PC: 올리기** (`AWS_PROFILE=ureka-admin`. 먼저 `infra/environments/ec2`에서 `b="$(terraform output -raw ingest_bucket_name)"`, 그다음 CSV 폴더로 이동)
@@ -78,7 +78,7 @@ read -rp '버킷 이름: ' b && printf 'INGEST_BUCKET=%s\n' "$b" | sudo tee /etc
 for f in 01_*.csv 02_*.csv 03_*.csv; do aws s3 cp "$f" "s3://$b/ingest-csv/$f" --checksum-algorithm SHA256 --only-show-errors; done
 ```
 
-같은 이름으로 다시 올리면 이전 파일은 이전 버전으로 30일 남습니다.
+같은 이름으로 다시 올리면 이전 파일은 이전 버전으로 30일 남습니다. 세 파일이 모두 올라간 뒤에 서버에서 받고, 받는 동안 다시 올리지 않습니다. `ingest-csv/`는 Terraform `ingest_csv_prefix` 기본값입니다(바꾸면 서버 `INGEST_PREFIX`와 이 명령도 같이 바꿉니다).
 
 ③ **서버: 받기 → PVC로 옮기고 대조**
 
@@ -88,7 +88,7 @@ sudo bash scripts/ec2/ingest.sh store
 sudo bash scripts/ec2/ingest.sh stat
 ```
 
-`fetch`가 보여 주는 sha256과 `stat`의 sha256·행 수가 2-0과 같은지 봅니다. 오류 문장의 버킷 이름은 `<버킷>`으로 가려집니다.
+`fetch`가 보여 주는 sha256과 `stat`의 sha256·행 수가 2-0과 **세 파일 모두** 같은지 본 뒤에 `run`합니다. `fetch`는 시작할 때 이전에 받은 세 파일을 지우므로, 중간에 실패하면 `store`가 빠진 파일로 멈춥니다(다시 `fetch`). 오류 문장의 버킷 이름은 `<버킷>`으로 가려지지만 다른 AWS 오류 정보(ARN 등)는 그대로이니 내부에서만 보고 원문을 붙이지 않습니다.
 
 ### 2-B. SSM 포트 포워딩 (예비, AWS 변경 없음)
 

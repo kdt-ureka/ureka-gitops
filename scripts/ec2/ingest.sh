@@ -116,11 +116,13 @@ case "$cmd" in
     [ -f "$ingest_env" ] || { echo "${ingest_env}이 없습니다. docs/ec2-ingest.md의 'S3 버킷 이름 넣기'를 먼저 하세요." >&2; exit 1; }
     bucket="$(sed -n 's/^INGEST_BUCKET=//p' "$ingest_env" | head -n1)"
     prefix="$(sed -n 's/^INGEST_PREFIX=//p' "$ingest_env" | head -n1)"; prefix="${prefix:-ingest-csv/}"
-    region="$(sed -n 's/^AWS_REGION=//p' "$registry_env" 2>/dev/null | head -n1)"; region="${region:-ap-northeast-2}"
+    region=""; [ -f "$registry_env" ] && region="$(sed -n 's/^AWS_REGION=//p' "$registry_env" | head -n1)"; region="${region:-ap-northeast-2}"
     [[ "$bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { echo "INGEST_BUCKET 형식이 아닙니다(값은 출력하지 않음)." >&2; exit 1; }
     [[ "$prefix" =~ ^[a-z0-9][a-z0-9-]*/$ ]] || { echo "INGEST_PREFIX는 'ingest-csv/'처럼 한 단계 폴더여야 합니다." >&2; exit 1; }
     no_unfinished
     install -d -m 0700 "$upload_dir"
+    # 이전에 받은 세 파일을 먼저 지운다. 중간에 실패해도 새 파일과 이전 파일이 섞인 채 store되지 않는다(빠진 파일로 store 실패).
+    for name in "${names[@]}"; do rm -f -- "${upload_dir:?}/$name" "${upload_dir:?}/.$name.part"; done
     for name in "${names[@]}"; do
       part="$upload_dir/.$name.part"
       rm -f -- "$part"
