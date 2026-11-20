@@ -1,6 +1,10 @@
 # EKS 단기 가동 (#42)
 
 이 문서는 CN 담당이 검토 후 실행할 절차다. 초안 작성 시 실제 AWS 조회·plan·apply·부팅 시간 측정은 하지 않았다.
+일상적인 EKS plan·apply·상태·destroy는 저장소의 [공통 운영 도구](../scripts/eks/README.md)를 사용한다.
+아래 Terraform 명령은 내부 동작 설명·문제 진단용이며, 공통 도구의 검토 절차를 생략하는 용도가 아니다.
+network/data의 선후행 작업은 별도다. 운영 도구 추가 전 저장한 plan은 인계 근거로 보존하고,
+도구 추가·리뷰·병합 뒤 새 plan을 만들어 검토한다.
 `infra/environments/eks`는 기존 network를 태그로 찾고 private 노드와 NAT를 함께 생성/삭제한다. 외부 모듈 없이 AWS 리소스를 직접 작성해 IAM·보안 그룹·삭제 순서를 명시했다. provider는 기존 스택과 같은 `~> 6.69.0`, lock `6.69.1`이다.
 
 ## 설계와 비용
@@ -9,6 +13,7 @@
 - private AL2023 x86_64 t3.large on-demand 2대(min 2/max 3). 별도 autoscaler 없음. 3대는 `desired_nodes=3`으로 명시 변경한다. Spot은 재생성·멘토링 안정성을 위해 보류.
 - EC2 단일 8Gi 호스트의 limit 합계 약 73%라는 인수인계 기록을 출발점으로 16Gi 총량을 선택했다. 실측 재확인 전이며 allocatable·DaemonSet 예약·동시 ingest·카나리·AZ별 PVC 배치를 감안해 실제 request/사용량을 확인한다. 2대가 Pod 분산이나 장애 시 용량을 보장하지는 않는다.
 - 노드 공인 IP·SSH·SSM 없음. IMDSv2 필수, hop limit 1. hostNetwork Pod와 특권 Pod까지 IMDS가 차단되는 것은 아니므로 #62 Pod Security도 필요하다.
+  #64 ALB 컨트롤러 설치 시 IMDS 조회 대신 `region`·`vpcId`를 명시한다.
 - 노드 역할은 WorkerNodePolicy와 ECR PullOnly. WorkerNodePolicy에는 Pod Identity 관련 권한이 포함될 수 있지만 agent/association은 설치하지 않는다. CNI·EBS는 별도 IRSA 역할(정확한 SA sub와 STS aud). 앱 IAM·ESO·SQS는 #63에서 부여한다.
 - CNI `enableNetworkPolicy=true`; 정책 자체와 EKS 차단 재시험은 #49. 기본 standard 시작 모드에서는 정책 적용 전 잠깐 허용될 수 있으므로 strict 모드는 DNS 허용 등 부팅 검증 뒤 #49에서 결정한다. 이 옵션만 켠 상태가 default-deny는 아니다.
 - CoreDNS·kube-proxy·EBS CSI. CNI는 노드 전에, 나머지는 노드 후 설치한다. EBS CSI만으로 StorageClass/PVC가 만들어지지 않는다. #43 이후 `gp3` StorageClass(encrypted, WaitForFirstConsumer)와 관측 차트 설정을 별도로 준비한다. EBS는 AZ에 묶이므로 볼륨 복구·배치 시험 필요.

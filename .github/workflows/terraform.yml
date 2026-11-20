@@ -5,11 +5,15 @@ on:
     branches: [main]
     paths:
       - 'infra/**'
+      - 'scripts/eks/**'
+      - 'tests/eks/**'
       - '.github/workflows/terraform.yml'
   push:
     branches: [main]
     paths:
       - 'infra/**'
+      - 'scripts/eks/**'
+      - 'tests/eks/**'
       - '.github/workflows/terraform.yml'
   workflow_dispatch:
 
@@ -21,6 +25,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  operator-tests:
+    name: EKS operator safety tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Test without AWS credentials
+        run: python3 -m unittest discover -s tests/eks -v
   check:
     # AWS 자격 없이 형식·문법·정책 테스트(mock provider)만 한다. plan·apply는 사람이 로컬에서 한다.
     # 폴더(root·module)마다 따로 init·validate·test 한다. 새 폴더를 만들면 matrix에 추가한다.
