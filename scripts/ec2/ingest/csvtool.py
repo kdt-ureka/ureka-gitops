@@ -5,6 +5,7 @@ ConfigMap ingest-tools로 /tools/csvtool.py에 붙는다. scripts/ec2/ingest.sh�
   stat              /input의 CSV 3개 바이트·sha256·행 수
   pick <n>          공통 CSV에서 movie n/2·tv n/2개의 content_id(앞에서부터, 상세 행이 있는 것만)
   quarantine <job>  /output/<job>/quarantine.jsonl 요약(단계·오류 코드·HTTP 상태별 건수, 대표 오류 문장)
+  ids <job>         격리 기록의 UUID만 중복 없이 출력(최대 500건)
   report            DB 건수 확인(ingest-report Pod 안에서만: 작품·검색문서·임베딩·OTT·검색 가능·실행 기록)
 kind: common | movie | tv. 파일 이름은 ingest(load_works.py)가 읽는 이름과 같아야 한다.
 """
@@ -29,7 +30,7 @@ INPUT = Path(os.environ.get("INGEST_INPUT_DIR", "/input"))
 OUTPUT = Path(os.environ.get("INGEST_OUTPUT_DIR", "/output"))
 MAX_BYTES = 1536 * 1024 * 1024
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-JOB_RE = re.compile(r"^ingest-load-(sample|full)-[0-9]{8}-[0-9]{4}$")
+JOB_RE = re.compile(r"^ingest-load-(sample|full|retry)-[0-9]{8}-[0-9]{4}$")
 
 csv.field_size_limit(64 * 1024 * 1024)
 
@@ -114,9 +115,40 @@ def pick(n: int) -> None:
         print(content_id)
 
 
+def ids(job: str) -> None:
+    if not JOB_RE.fullmatch(job):
+        fail("Job 이름 형식이 아닙니다(ingest-load-sample|full|retry-YYYYMMDD-HHMM)")
+    path = OUTPUT / job / "quarantine.jsonl"
+    if not path.is_file():
+        fail("격리 파일이 없습니다")
+    chosen: dict[str, str] = {}
+    skipped = 0
+    with path.open(encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                fail("격리 JSON 형식이 아닙니다(값은 출력하지 않음)")
+            if not isinstance(record, dict):
+                fail("격리 기록 형식이 아닙니다(값은 출력하지 않음)")
+            content_id = record.get("content_id")
+            if record.get("line") == 0 or not isinstance(content_id, str) or not UUID_RE.fullmatch(content_id):
+                skipped += 1
+                continue
+            chosen.setdefault(content_id.lower(), content_id)
+            if len(chosen) > 500:
+                fail("재처리 대상이 500건을 넘습니다")
+    print(f"건너뛴 기록 {skipped}건", file=sys.stderr)
+    if not chosen:
+        fail("재처리할 UUID가 없습니다(0건)")
+    print("\n".join(chosen.values()))
+
+
 def quarantine(job: str) -> None:
     if not JOB_RE.match(job):
-        fail("Job 이름 형식이 아닙니다(ingest-load-sample|full-YYYYMMDD-HHMM)")
+        fail("Job 이름 형식이 아닙니다(ingest-load-sample|full|retry-YYYYMMDD-HHMM)")
     path = OUTPUT / job / "quarantine.jsonl"
     if not path.is_file():
         fail(f"{path}가 없습니다(Job이 아직 시작 전이거나 이름이 다름)")
@@ -183,10 +215,12 @@ def main(argv: list[str]) -> None:
         pick(int(rest[0]))
     elif command == "quarantine" and len(rest) == 1:
         quarantine(rest[0])
+    elif command == "ids" and len(rest) == 1:
+        ids(rest[0])
     elif command == "report" and not rest:
         report()
     else:
-        fail("사용법: put <common|movie|tv> | stat | pick <n> | quarantine <job> | report")
+        fail("사용법: put <common|movie|tv> | stat | pick <n> | quarantine <job> | ids <job> | report")
 
 
 if __name__ == "__main__":

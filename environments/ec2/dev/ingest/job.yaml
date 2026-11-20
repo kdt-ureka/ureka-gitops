@@ -1,3 +1,5 @@
+# run full --no-embeddings: 임베딩 없이 전체 OTT 확정(full 전용).
+# run retry <Job>: 격리 UUID만 임베딩 포함 재처리(3600초).
 # ingest 최초 적재 Job(EC2 dev). Argo CD가 관리하지 않는다(자동 sync 없음). 사람이 scripts/ec2/ingest.sh run으로만 만든다.
 # 스크립트가 바꿔 넣는 자리: __ECR_REGISTRY__(/etc/ureka/registry.env), __JOB_NAME__, __DEADLINE__, __EXTRA_ARGS__(시험 run의 --content-id 목록).
 #
