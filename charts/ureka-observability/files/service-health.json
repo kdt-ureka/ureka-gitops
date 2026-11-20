@@ -81,7 +81,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(kube_pod_status_phase{namespace=\"dev\",phase!~\"Running|Succeeded\"})",
+          "expr": "sum(kube_pod_status_phase{namespace=\"dev\",phase!~\"Running|Succeeded\"} unless on(namespace, pod) kube_pod_owner{owner_kind=\"Job\"})",
           "instant": true,
           "range": false
         }
@@ -142,7 +142,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(kube_pod_status_ready{namespace=\"dev\",condition=\"false\"})",
+          "expr": "sum(kube_pod_status_ready{namespace=\"dev\",condition=\"false\"} unless on(namespace, pod) kube_pod_owner{owner_kind=\"Job\"})",
           "instant": true,
           "range": false
         }
