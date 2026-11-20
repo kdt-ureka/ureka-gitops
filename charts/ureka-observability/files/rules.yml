@@ -5,14 +5,48 @@ groups:
         expr: up == 0
         for: 5m
         labels: {severity: warning}
-        annotations: {summary: '수집 대상에 5분간 접근하지 못함'}
+        annotations:
+          summary: '수집 대상에 5분간 접근하지 못함'
+          runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/1f212322e6f76aecfe9f3cb2078b249e66e882fd/guides/initial-alert-playbooks.md#scrape-target-down'
       - alert: PodRestarted
         expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[15m])) > 0
         for: 2m
         labels: {severity: warning}
-        annotations: {summary: '최근 15분 컨테이너 재시작 발생'}
+        annotations:
+          summary: '최근 15분 컨테이너 재시작 발생'
+          runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/1f212322e6f76aecfe9f3cb2078b249e66e882fd/guides/initial-alert-playbooks.md#pod-crash'
       - alert: PodMemoryNearLimit
         expr: sum by(namespace,pod) (container_memory_working_set_bytes{container!="",container!="POD",image!=""}) / sum by(namespace,pod) (kube_pod_container_resource_limits{resource="memory",unit="byte"}) > 0.85
         for: 10m
         labels: {severity: warning}
-        annotations: {summary: 'Pod working set이 설정된 메모리 한도의 85% 초과'}
+        annotations:
+          summary: 'Pod working set이 설정된 메모리 한도의 85% 초과'
+          runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/1f212322e6f76aecfe9f3cb2078b249e66e882fd/guides/initial-alert-playbooks.md#pod-memory-near-limit'
+      - alert: PodNotReady
+        expr: kube_pod_status_ready{condition="false"} == 1 unless on(namespace, pod) kube_pod_owner{owner_kind="Job"}
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: 'Job이 아닌 Pod가 5분간 준비되지 않음'
+          runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/1f212322e6f76aecfe9f3cb2078b249e66e882fd/guides/initial-alert-playbooks.md#pod-crash'
+      - alert: ContainerStuckWaiting
+        expr: kube_pod_container_status_waiting_reason{reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError"} == 1
+        for: 3m
+        labels: {severity: critical}
+        annotations:
+          summary: '컨테이너가 기동 오류로 3분간 대기 중'
+          runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/1f212322e6f76aecfe9f3cb2078b249e66e882fd/guides/initial-alert-playbooks.md#pod-crash'
+      - alert: NodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: '노드가 5분간 Ready 상태가 아님'
+          runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/1f212322e6f76aecfe9f3cb2078b249e66e882fd/guides/initial-alert-playbooks.md#node-health'
+      - alert: NodeMemoryRequestsHigh
+        expr: sum(kube_pod_container_resource_requests{resource="memory"}) / sum(kube_node_status_allocatable{resource="memory"}) > 0.85
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: '전체 노드 기준 메모리 예약률이 10분간 85% 초과'
+          runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/1f212322e6f76aecfe9f3cb2078b249e66e882fd/guides/initial-alert-playbooks.md#node-health'
