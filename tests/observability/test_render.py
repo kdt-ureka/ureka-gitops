@@ -128,7 +128,8 @@ class ObservabilityRendering(unittest.TestCase):
             cmd=['helm','template',name,'charts/ureka-backend','-f',f'environments/base/ureka-{name}.yaml','-f',f'environments/ec2/dev/ureka-{name}.yaml','--set','image.registry=registry.example.invalid']
             normal=list(yaml.safe_load_all(subprocess.check_output(cmd,cwd=ROOT,text=True)))
             enabled=list(yaml.safe_load_all(subprocess.check_output(cmd+['--set','metrics.enabled=true'],cwd=ROOT,text=True)))
-            get=lambda docs:next(x for x in docs if x and x['kind']=='Deployment')['spec']['template']['spec']['containers'][0]
+            # EC2 auth는 카나리(gitops#47)로 Rollout이다. Pod 템플릿은 Deployment와 같다.
+            get=lambda docs:next(x for x in docs if x and x['kind'] in ('Deployment','Rollout'))['spec']['template']['spec']['containers'][0]
             before,after=get(normal),get(enabled)
             self.assertEqual(before['ports'],[{'name':'http','containerPort':8080}])
             self.assertIn({'name':'metrics','containerPort':9091},after['ports'])
