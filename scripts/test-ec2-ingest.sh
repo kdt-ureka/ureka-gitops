@@ -223,6 +223,58 @@ check "격리 총 3건" '[[ "$out" == *"격리 총 3건"* ]]'
 check "단계별 content 1·embedding 2" '[[ "$out" == *"'"'"'content'"'"': 1"* && "$out" == *"'"'"'embedding'"'"': 2"* ]]'
 check "429 묶음 2건" '[[ "$out" == *"http_error HTTP 429 시도 3"*": 2"* ]]'
 
+# 재처리·임베딩 생략 회귀 시험(실제 데이터 없이 UUID·건수만).
+rm -f "$t/applied/"*
+run run full --no-embeddings >/dev/null 2>&1
+job_file="$t/applied/0.yaml"
+check "임베딩 생략 full 인자" 'grep -q -- "- load-initial" "$job_file" && ! grep -q -- "- --with-embeddings" "$job_file" && ! grep -q -- "- --content-id" "$job_file"'
+for args in 'sample --no-embeddings' 'full --bogus' 'full --no-embeddings extra' 'retry ../bad' 'retry' 'sample 4 extra'; do
+  rm -f "$t/applied/"*
+  # shellcheck disable=SC2086
+  if run run $args >"$t/rejected" 2>&1; then ng "잘못된 인자 거부: $args"; else ok "잘못된 인자 거부: $args"; fi
+  check "잘못된 인자로 Job 생성 안 함: $args" '[ -z "$(ls -A "$t/applied")" ]'
+done
+retry_source=ingest-load-retry-20261120-1200
+mkdir -p "$t/output/$retry_source"
+q="$t/output/$retry_source/quarantine.jsonl"
+cat >"$q" <<JSON
+{"line": 1, "content_id": "$(u 3)", "error": "PRIVATE_SENTINEL"}
+{"line": 2, "content_id": "$(u 1)"}
+{"line": 3, "content_id": "$(u 3)"}
+{"line": 0, "content_id": "$(u 4)"}
+{"line": 4, "content_id": "PRIVATE_SENTINEL"}
+{"line": 5, "error": "PRIVATE_SENTINEL"}
+JSON
+out="$(INGEST_OUTPUT_DIR="$t/output" python3 -I "$root/scripts/ec2/ingest/csvtool.py" ids "$retry_source" 2>"$t/ids.err")"
+check "ids UUID만 순서 유지·중복 제거" '[ "$out" = "$(u 3)
+$(u 1)" ]'
+check "ids 건너뛴 수 stderr" 'grep -q "건너뛴 기록 3건" "$t/ids.err"'
+check "ids 원문 출력 없음" '! grep -q PRIVATE_SENTINEL "$t/ids.err" && [[ "$out" != *PRIVATE_SENTINEL* ]]'
+rm -f "$t/applied/"*
+out="$(run run retry "$retry_source" 2>&1)"
+job_file="$t/applied/0.yaml"
+check "retry 이름·deadline·임베딩" '[[ "$out" == *"만듦: ingest-load-retry-"* ]] && grep -q "activeDeadlineSeconds: 3600" "$job_file" && grep -q -- "- --with-embeddings" "$job_file"'
+check "retry UUID 두 개만 전달" '[ "$(grep -c -- "- --content-id" "$job_file")" = 2 ] && grep -q -- "- $(u 3)" "$job_file" && grep -q -- "- $(u 1)" "$job_file" && ! grep -q PRIVATE_SENTINEL "$job_file"'
+check "retry Job quarantine 허용" 'run quarantine "$retry_source" >/dev/null 2>&1'
+check "retry Job progress 허용" 'run progress "$retry_source" >/dev/null 2>&1'
+for scenario in missing empty over malformed; do
+  case "$scenario" in
+    missing) rm -f "$q" ;;
+    empty) printf '%s\n' '{"line":0}' >"$q" ;;
+    over) python3 -I -c 'import json,sys; from uuid import UUID; print("\n".join(json.dumps({"line": i+1, "content_id": str(UUID(int=i+1))}) for i in range(501)))' >"$q" ;;
+    malformed) printf '%s\n' '{PRIVATE_SENTINEL' >"$q" ;;
+  esac
+  rm -f "$t/applied/"*
+  if run run retry "$retry_source" >"$t/rejected" 2>&1; then ng "retry 실패: $scenario"; else ok "retry 실패: $scenario"; fi
+  check "retry 실패 시 Job 없음: $scenario" '[ -z "$(ls -A "$t/applied")" ]'
+  check "retry 실패 원문 출력 없음: $scenario" '! grep -q PRIVATE_SENTINEL "$t/rejected"'
+done
+# 500건 경계는 허용한다.
+python3 -I -c 'import json; from uuid import UUID; print("\n".join(json.dumps({"line": i+1, "content_id": str(UUID(int=i+1))}) for i in range(500)))' >"$q"
+out="$(INGEST_OUTPUT_DIR="$t/output" python3 -I "$root/scripts/ec2/ingest/csvtool.py" ids "$retry_source" 2>/dev/null)"
+check "ids 500건 허용" '[ "$(printf "%s\n" "$out" | wc -l | tr -d " ")" = 500 ]'
+check "ids 잘못된 Job 거부" '! INGEST_OUTPUT_DIR="$t/output" python3 -I "$root/scripts/ec2/ingest/csvtool.py" ids ../bad >/dev/null 2>&1'
+
 # recv.py: 127.0.0.1에서 세 파일 받고 끝남, 다른 경로 거절
 port=$((20000 + RANDOM % 20000))
 INGEST_RECV_TIMEOUT_SECONDS=1 python3 -I "$root/scripts/ec2/ingest/recv.py" "$t/recv" "$port" >"$t/recv.log" 2>&1 &

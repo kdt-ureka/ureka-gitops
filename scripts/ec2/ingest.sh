@@ -7,7 +7,8 @@
 #   sudo bash scripts/ec2/ingest.sh store            받은 CSV를 ingest-input PVC로 옮기고 sha256 대조, 같으면 서버 사본 삭제
 #   sudo bash scripts/ec2/ingest.sh stat             PVC의 CSV 3개 바이트·sha256·행 수
 #   sudo bash scripts/ec2/ingest.sh run sample [N]   시험 적재: 공통 CSV 앞쪽 movie N/2·tv N/2개 content_id만(기본 100, 1시간 제한)
-#   sudo bash scripts/ec2/ingest.sh run full         전체 적재(14시간 제한). OTT 최종화까지 ingest가 한다
+#   sudo bash scripts/ec2/ingest.sh run full [--no-embeddings] 전체 적재(14시간 제한). OTT 최종화까지 ingest가 한다
+#   sudo bash scripts/ec2/ingest.sh run retry <Job> 격리 작품만 임베딩 포함 재처리(1시간 제한)
 #   sudo bash scripts/ec2/ingest.sh progress [Job]  적재 중 DB 건수·격리 줄 수·Pod 자원(가장 최근 Job 기본)
 #   sudo bash scripts/ec2/ingest.sh quarantine [Job] 격리 요약(단계·오류 코드별)
 #   sudo bash scripts/ec2/ingest.sh report           적재 결과 건수(작품·검색문서·임베딩 비율·OTT·검색 가능·실행 기록). 잠깐 Pod를 띄우고 지운다
@@ -49,13 +50,20 @@ registry() {
 # 템플릿 자리를 바꿔 표준 출력으로 낸다. 레지스트리 주소(계정 ID)는 화면에 내지 않는다(kubectl apply -f -로만 보낸다).
 render() { # render <파일> <JOB_NAME> <DEADLINE> [content_id...]
   local file="$1" job="$2" deadline="$3"; shift 3
-  ECR_REGISTRY="$(registry)" JOB="$job" DEADLINE="$deadline" python3 -I - "$file" "$@" <<'PY'
+  NO_EMBEDDINGS="${no_embeddings:-0}" ECR_REGISTRY="$(registry)" JOB="$job" DEADLINE="$deadline" python3 -I - "$file" "$@" <<'PY'
 import os, re, sys
 path, ids = sys.argv[1], sys.argv[2:]
 uuid = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 if any(not uuid.match(i) for i in ids):
     sys.exit("content_id 형식이 아닌 값이 있습니다")
 src = open(path, encoding="utf-8").read()
+if os.environ["NO_EMBEDDINGS"] == "1":
+    flag = "            - --with-embeddings\n"
+    if src.count(flag) != 1:
+        sys.exit("임베딩 옵션 줄을 찾지 못했습니다")
+    src = src.replace(flag, "")
+    if "            - load-initial\n" not in src:
+        sys.exit("load-initial 인자가 없습니다")
 extra = "".join(f"            - --content-id\n            - {i}\n" for i in ids)
 src = src.replace("            - __EXTRA_ARGS__\n", extra)
 for key, value in (("__ECR_REGISTRY__", os.environ["ECR_REGISTRY"]), ("__JOB_NAME__", os.environ["JOB"]), ("__DEADLINE__", os.environ["DEADLINE"])):
@@ -90,7 +98,7 @@ no_unfinished() { # 적재 중에는 입력을 바꾸거나 다른 적재를 시
   u="$(unfinished_jobs)"
   [ -z "$u" ] || { echo "끝나지 않은 적재 Job이 있습니다: $(tr '\n' ' ' <<<"$u"). 끝난 뒤 다시 실행하세요." >&2; exit 1; }
 }
-check_job() { [[ "$1" =~ ^ingest-load-(sample|full)-[0-9]{8}-[0-9]{4}$ ]] || { echo "Job 이름 형식이 아닙니다: ingest-load-sample|full-YYYYMMDD-HHMM" >&2; exit 2; }; }
+check_job() { [[ "$1" =~ ^ingest-load-(sample|full|retry)-[0-9]{8}-[0-9]{4}$ ]] || { echo "Job 이름 형식이 아닙니다: ingest-load-sample|full|retry-YYYYMMDD-HHMM" >&2; exit 2; }; }
 latest_job() {
   k get jobs -l app.kubernetes.io/name=ingest-load --sort-by=.metadata.creationTimestamp -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | tail -n1
 }
@@ -167,11 +175,20 @@ case "$cmd" in
     need_pod; tool stat
     ;;
   run)
-    mode="${1:-}"; n="${2:-100}"
+    mode="${1:-}"; [ "$#" -eq 0 ] || shift
+    no_embeddings=0
     case "$mode" in
-      sample) deadline=3600 ;;
-      full) deadline=50400 ;;
-      *) echo "사용법: run sample [N] | run full" >&2; exit 2 ;;
+      sample)
+        [ "$#" -le 1 ] && [[ "${1:-100}" =~ ^[0-9]+$ ]] || { echo "사용법: run sample [N]" >&2; exit 2; }
+        n="${1:-100}"; deadline=3600 ;;
+      full)
+        [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = --no-embeddings ]; } || { echo "사용법: run full [--no-embeddings]" >&2; exit 2; }
+        [ "$#" -eq 0 ] || no_embeddings=1
+        deadline=50400 ;;
+      retry)
+        [ "$#" -eq 1 ] || { echo "사용법: run retry <Job>" >&2; exit 2; }
+        retry_job="$1"; check_job "$retry_job"; deadline=3600 ;;
+      *) echo "사용법: run sample [N] | run full [--no-embeddings] | run retry <Job>" >&2; exit 2 ;;
     esac
     need_pod
     no_unfinished
@@ -184,6 +201,9 @@ case "$cmd" in
     if [ "$mode" = sample ]; then
       ids="$(tool pick "$n")"
       echo "시험 대상 $(printf '%s\n' "$ids" | grep -c .)개(movie $((n / 2)), tv $((n / 2)))"
+    fi
+    if [ "$mode" = retry ]; then
+      ids="$(tool ids "$retry_job")"
     fi
     # content_id(UUID, 공백 없음)를 줄 단위로 인자로 넘긴다. render가 UUID 형식을 다시 검사한다.
     # shellcheck disable=SC2086
@@ -243,6 +263,6 @@ with psycopg.connect(os.environ["CONTENT_DB_DSN"]) as c:
     echo "파일 Pod를 지웠습니다. PVC(ingest-input·ingest-output)와 Job 기록은 남아 있습니다."
     ;;
   *)
-    sed -n '2,14p' "$0" >&2; exit 2
+    sed -n '2,16p' "$0" >&2; exit 2
     ;;
 esac

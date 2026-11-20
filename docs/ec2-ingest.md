@@ -184,3 +184,16 @@ PVC(원본 CSV·격리 결과)는 남깁니다. 지울 때는 `sudo k3s kubectl 
 ## 검증
 
 `bash scripts/test-ec2-ingest.sh`(CI Helm 워크플로): 가짜 kubectl·flock·aws로 prepare·fetch(버킷 이름 형식·출력에서 가림·0600·실패 시 .part 없음)·store(sha256 대조·세 파일만 삭제)·run sample/full 렌더링·잠금·끝나지 않은 Job(Pending·SuccessCriteriaMet만) 때 recv·store·run 거절·같은 이름 Job 거절·Job 이름 검사·report·격리 요약·임시 수신기(경로 고정, 0700/0600, 멈춘 연결 시간 초과)를 봅니다. 실제 클러스터·RDS·S3·Gemini 호출은 하지 않습니다. 버킷·역할 권한은 `infra/environments/ec2/tests/plan.tftest.hcl`(mock provider)이 봅니다.
+
+## 격리 재처리·OTT 확정
+
+0. 서버 gitops를 받은 뒤(`git pull --ff-only`) `prepare`로 도구 ConfigMap을 갱신한다. `retry`가 쓰는 `csvtool.py ids`가 여기 들어 있다. 파일 Pod가 하루 지나 끝났으면 아래처럼 `cleanup` 뒤 `prepare`.
+1. 먼저 격리 원인을 정정한다(예: 인물 값 충돌이면 ingest 담당이 승인한 방식으로 CN 담당이 서버에서만 UPDATE). 정정 값은 Git·문서에 남기지 않는다.
+2. `sudo bash scripts/ec2/ingest.sh run retry <격리가 난 Job>`으로 격리 작품만 임베딩 포함 재처리한다(예: `ingest-load-full-20261119-0652`). UUID 중복은 제거하고 최대 500건까지 허용한다.
+3. `sudo bash scripts/ec2/ingest.sh quarantine <새 retry Job>`으로 격리 0건을 확인한다. 임베딩 timeout은 자동 재시도가 없으므로 남으면 그 retry Job을 대상으로 `run retry <Job>`을 한 번 더 실행한다.
+4. `sudo bash scripts/ec2/ingest.sh run full --no-embeddings`로 전체 OTT를 확정한다.
+5. `sudo bash scripts/ec2/ingest.sh report`에서 OTT 현재 제공·검색 가능 작품 수를 확인한다.
+
+`--no-embeddings`는 full 전용이며 새 작품의 임베딩을 만들지 않으므로 retry를 먼저 완료한다. 기존 임베딩은 유지한다. 임베딩 실패 자체는 OTT 확정을 막지 않지만 작품 적재 실패는 막는다. retry는 `--content-id`를 사용하므로 OTT 전체 상태를 확정하지 않는다. 일반 `run full`은 계속 임베딩을 생성한다.
+
+파일 Pod는 `activeDeadlineSeconds: 86400`으로 하루 뒤 종료된다. prepare에서 “이미 있습니다”가 나와도 Ready가 되지 않으면 `sudo bash scripts/ec2/ingest.sh cleanup` 뒤 `sudo bash scripts/ec2/ingest.sh prepare`를 실행한다. PVC와 Job 결과는 유지된다.
