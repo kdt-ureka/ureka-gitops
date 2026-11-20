@@ -32,7 +32,7 @@
 
 ## 사전 검토·plan (CN 실행)
 
-1. `network`와 기존 `data` 적용 상태를 확인한다. network private route table은 `route=[]`를 제거한 이번 코드를 먼저 plan/apply한다. route 속성을 생략하면 EKS가 만든 별도 NAT route를 network가 삭제하지 않는다. network는 NAT를 생성하지 않는다. NAT 기본 경로는 공유 private route table 전체(RDS 서브넷 포함)에 적용되며, RDS SG의 egress=[]와 비공개 설정은 유지한다. 기존 state의 inline 경로가 유지/삭제되는지는 network plan으로 반드시 확인한다.
+1. `network`와 기존 `data` 적용 상태를 확인한다. network private route table은 `route=[]`를 제거한 이번 코드로 먼저 plan한다. 로컬 교차 검토와 plan 검토 후 push·PR·리뷰·병합을 거쳐 CN이 직접 apply한다. EKS apply는 이 network 변경 적용 뒤 진행한다. route 속성을 생략하면 EKS가 만든 별도 NAT route를 network가 삭제하지 않는다. network는 NAT를 생성하지 않는다. NAT 기본 경로는 공유 private route table 전체(RDS 서브넷 포함)에 적용되며, RDS SG의 egress=[]와 비공개 설정은 유지한다. 기존 state의 inline 경로가 유지/삭제되는지는 network plan으로 반드시 확인한다.
 2. 비공개 `backend.hcl`, `terraform.tfvars`를 예제에서 복사하고 로컬에서 실제 값으로 채운다. 다른 스택과 state key를 섞지 않는다. 계정 ID·ARN·IP·버킷 이름·plan·state는 Git/PR에 첨부하지 않는다.
 3. SSO 역할의 **IAM role ARN**(SSO path 포함)을 `admin_role_arn`에 넣는다. STS session ARN은 안 된다. 실제 CN 역할인지 사람이 확인한다. 생성자 자동 관리자 권한은 꺼져 있다. SSO 역할 삭제/재생성 시 access entry도 재생성해야 한다.
 4. CN이 아래 조회로 서울에서 1.37 및 애드온/AMI 호환성을 확인한 뒤 정확한 버전을 tfvars에 고정한다. 예제의 REPLACE 문자열은 고의로 validation에서 거부된다. mock 테스트의 버전은 합성 예제이며 가용성을 증명하지 않는다. CNI는 NetworkPolicy 보안 패치를 포함하는 버전(1.22.3 이상 여부)을 확인한다.
@@ -50,7 +50,7 @@ aws ssm get-parameter --name /aws/service/eks/optimized-ami/1.37/amazon-linux-20
 cd infra/environments/network
 AWS_PROFILE=ureka-admin terraform init -backend-config=backend.hcl
 AWS_PROFILE=ureka-admin terraform plan
-# 검토 후 CN이 network apply (route ownership 변경만 예상)
+# 여기서는 apply하지 않음. plan 검토 → push·PR·리뷰·병합 후 CN이 network apply
 cd ../eks
 AWS_PROFILE=ureka-admin terraform init -backend-config=backend.hcl
 AWS_PROFILE=ureka-admin terraform plan -out=eks.tfplan
@@ -61,7 +61,7 @@ plan 검토: subnet Tier/AZ, private route의 중복 소유권 없음, 관리자
 
 ## 켜기 (검토 후 CN 실행)
 
-1. `eks`에서 검토한 `AWS_PROFILE=ureka-admin terraform apply eks.tfplan`. 완료 시 `terraform output kubeconfig_hint`의 명령으로 kubeconfig 갱신(로컬 비공개 파일).
+1. 교차 검토·실제 plan 검토·PR 리뷰·병합을 마친 뒤 network 변경부터 CN이 직접 적용한다. 병합된 코드와 plan 작성 코드가 다르면 plan을 다시 작성·검토한다. 이어서 `eks`에서 검토한 `AWS_PROFILE=ureka-admin terraform apply eks.tfplan`. 완료 시 `terraform output kubeconfig_hint`의 명령으로 kubeconfig 갱신(로컬 비공개 파일).
 2. 노드 2대 Ready, CNI/CSI/CoreDNS/kube-proxy 정상, private IP만 있는지 확인. 관리 API는 허용 /32 밖에서 차단되는지 확인한다.
 3. `terraform output -raw node_security_group_id`를 **data의 비공개 tfvars** `eks_node_security_group_ids`에 한 개 넣는다. `data`에서 plan/apply한다. RDS SG description은 교체 방지를 위해 기존 문자열을 유지했다. 실제 허용 범위는 inline ingress가 정한다. RDS가 정지 중이면 CN이 별도 운영 절차로 켠다. SG 변경에 DB 교체가 없어야 한다.
 4. 기존 EC2의 5432 규칙은 유지한다. 같은 RDS SG의 inline 규칙은 data가 단독 소유하며 EKS에는 외부 rule 리소스를 만들지 않는다. EKS VPC CNI Pod는 노드 SG를 사용한다. Security Groups for Pods로 전환 시 재검토한다.
