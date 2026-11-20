@@ -1,13 +1,28 @@
 {{- include "ureka-backend.validate" . -}}
 {{- include "ureka-backend.validateMetrics" . -}}
+{{- if and .Values.rollout.enabled (not .Values.rollout.steps) }}
+{{- fail "rollout.enabled=true면 rollout.steps(카나리 단계)가 필요하다" }}
+{{- end }}
+{{- /* rollout.enabled면 Argo Rollouts의 Rollout으로 만든다(gitops#47). 클러스터에 Argo Rollouts가 먼저 설치돼 있어야 한다. 그 밖의 내용은 Deployment와 같다. */}}
+{{- if .Values.rollout.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+{{- else }}
 apiVersion: apps/v1
 kind: Deployment
+{{- end }}
 metadata:
   name: {{ include "ureka-backend.name" . }}
   labels:
     {{- include "ureka-backend.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if .Values.rollout.enabled }}
+  strategy:
+    canary:
+      steps:
+        {{- toYaml .Values.rollout.steps | nindent 8 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "ureka-backend.selectorLabels" . | nindent 6 }}

@@ -1,0 +1,7 @@
+# 차트 선택 칸 시험용(배포에 쓰지 않음): 카나리(Argo Rollouts) 켜기. 다른 값 파일 위에 겹쳐 쓴다.
+replicaCount: 2
+rollout:
+  enabled: true
+  steps:
+    - setWeight: 50
+    - pause: {}

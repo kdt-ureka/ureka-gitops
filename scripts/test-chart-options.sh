@@ -102,4 +102,14 @@ out="$(helm template t "$chart" "${ing[@]}" --set ingress.host=dev.example.com)"
 expect "ingress: host 지정" "$out" 'select(.kind=="Ingress") | .spec.rules[0].host=="dev.example.com"'
 must_render_fail "ingress className 없음" -f environments/kind/ureka-frontend.yaml --set ingress.enabled=true
 must_render_fail "ingress인데 Service 끔" -f tests/chart/worker-no-service.yaml --set ingress.enabled=true --set ingress.className=traefik
+
+# 8) 카나리(Argo Rollouts, gitops#47): 켜면 Deployment 대신 Rollout, 나머지 Pod 내용은 Deployment와 같다
+base="$(render environments/kind/ureka-auth.yaml)"
+out="$(render environments/kind/ureka-auth.yaml -f tests/chart/rollout-canary.yaml)"
+[ "$(kinds "$out")" = "Service,Rollout" ] && ok "rollout: Service+Rollout (Deployment 없음)" || fail "rollout: 종류 $(kinds "$out")"
+expect "rollout: argoproj.io/v1alpha1, replicas 2, 50% → pause" "$out" 'select(.kind=="Rollout") | ((.apiVersion=="argoproj.io/v1alpha1") and (.spec.replicas==2) and (.spec.strategy.canary.steps[0].setWeight==50) and (.spec.strategy.canary.steps[1] | has("pause")))'
+d="$(printf '%s\n' "$base" | yq ea 'select(.kind=="Deployment") | .spec.template' -o json -)"
+r="$(printf '%s\n' "$out" | yq ea 'select(.kind=="Rollout") | .spec.template' -o json -)"
+[ "$d" = "$r" ] && [ "$d" != null ] && ok "rollout: Pod 템플릿이 Deployment와 같음" || fail "rollout: Pod 템플릿이 Deployment와 다름"
+must_render_fail "rollout 켰는데 steps 없음" -f environments/kind/ureka-auth.yaml --set rollout.enabled=true
 exit "$status"
