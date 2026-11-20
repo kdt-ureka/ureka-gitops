@@ -38,17 +38,12 @@ run "vpc_and_subnets" {
   }
 }
 
-run "private_has_no_internet_route" {
+run "route_table_associations" {
   command = plan
 
   assert {
-    condition     = length(aws_route_table.private.route) == 0
-    error_message = "Private route table must not have any route besides local (no NAT, no IGW)."
-  }
-
-  assert {
     condition     = aws_route.public_internet.destination_cidr_block == "0.0.0.0/0"
-    error_message = "Only the public route table gets the default route."
+    error_message = "Network stack owns only the public default route; EKS owns its temporary NAT route."
   }
 
   assert {

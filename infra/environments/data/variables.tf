@@ -75,3 +75,13 @@ variable "deletion_protection" {
   description = "Keep on. Turning it off is a reviewed change before any destroy/replace."
   default     = true
 }
+
+variable "eks_node_security_group_ids" {
+  type        = set(string)
+  default     = []
+  description = "Optional EKS node SGs. Set after EKS apply; clear and apply before EKS destroy. Same VPC only."
+  validation {
+    condition     = length(var.eks_node_security_group_ids) <= 1 && alltrue([for id in var.eks_node_security_group_ids : can(regex("^sg-[0-9a-f]+$", id))])
+    error_message = "Supply zero or one reviewed EKS node security group ID."
+  }
+}

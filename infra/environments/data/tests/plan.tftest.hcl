@@ -165,3 +165,17 @@ run "rejects_bad_account_id" {
 
   expect_failures = [var.allowed_account_ids]
 }
+
+run "optional_eks_access_is_sg_only" {
+  command = apply
+  variables { eks_node_security_group_ids = ["sg-0aaaaaaaaaaaaaaaa"] }
+  assert {
+    condition     = length(aws_security_group.rds.ingress) == 2 && alltrue([for rule in aws_security_group.rds.ingress : rule.from_port == 5432 && rule.to_port == 5432 && rule.protocol == "tcp" && length(rule.cidr_blocks) == 0 && length(rule.ipv6_cidr_blocks) == 0]) && contains(flatten([for rule in aws_security_group.rds.ingress : tolist(rule.security_groups)]), "sg-0aaaaaaaaaaaaaaaa")
+    error_message = "Optional EKS rule must preserve EC2 access and allow only SG-sourced PostgreSQL."
+  }
+}
+run "rejects_eks_cidr_instead_of_sg" {
+  command = plan
+  variables { eks_node_security_group_ids = ["0.0.0.0/0"] }
+  expect_failures = [var.eks_node_security_group_ids]
+}

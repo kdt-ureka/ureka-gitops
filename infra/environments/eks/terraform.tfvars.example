@@ -1,0 +1,14 @@
+# Copy to ignored terraform.tfvars. Never commit real IDs, role ARNs, or public IPs.
+allowed_account_ids = ["123456789012"] # fictitious example
+admin_role_arn = "arn:aws:iam::123456789012:role/REPLACE_WITH_SSO_ROLE_PATH"
+admin_public_access_cidrs = ["192.0.2.1/32"] # documentation address; replace locally
+# Verify region availability and compatibility before plan.
+kubernetes_version = "1.37"
+desired_nodes = 2
+ami_release_version = "REPLACE_WITH_1.37_PATCH_DATE"
+addon_versions = {
+  vpc-cni = "REPLACE_WITH_COMPATIBLE_EKS_BUILD"
+  coredns = "REPLACE_WITH_COMPATIBLE_EKS_BUILD"
+  kube-proxy = "REPLACE_WITH_COMPATIBLE_EKS_BUILD"
+  aws-ebs-csi-driver = "REPLACE_WITH_COMPATIBLE_EKS_BUILD"
+}

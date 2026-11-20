@@ -3,3 +3,6 @@ allowed_account_ids = ["000000000000"]
 
 # 메모리가 부족하면 db.t4g.small (apply_immediately=false라 다음 유지 관리 시간에 바뀐다)
 # instance_class = "db.t4g.small"
+
+# Set locally after EKS apply; clear and apply BEFORE EKS destroy.
+eks_node_security_group_ids = []
