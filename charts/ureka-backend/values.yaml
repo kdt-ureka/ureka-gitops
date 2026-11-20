@@ -5,6 +5,13 @@ name: ""
 
 replicaCount: 1
 
+# 카나리 배포(Argo Rollouts). 기본은 끔: 꺼 두면 지금과 같은 Deployment가 나온다.
+# 켜면 Deployment 대신 Rollout을 만들고 steps대로 단계를 밟는다(예: setWeight 50 → pause {}).
+# 클러스터에 Argo Rollouts(argocd/ec2/argo-rollouts-app.yaml)가 먼저 설치돼 있어야 한다.
+rollout:
+  enabled: false
+  steps: []
+
 image:
   # 레지스트리 주소(host[:port]). 값이 있으면 registry/repository로 받는다.
   # kind는 비워 두고 repository에 로컬 주소(localhost:5001/...)를 통째로 쓴다.
