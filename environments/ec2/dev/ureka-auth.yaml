@@ -13,7 +13,7 @@ image:
 # JVM: limit 768Mi + base의 -Xmx256m. 첫날 x86 측정(kubectl top·cgroup 최대)으로 다시 정한다.
 resources:
   requests:
-    cpu: 100m
+    cpu: 120m # gitops#47 카나리 시험: 파드 설정만 바꿔 새 버전을 만든다
     memory: 512Mi
   limits:
     cpu: "1"
