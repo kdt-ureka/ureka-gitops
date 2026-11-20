@@ -14,7 +14,9 @@ tests:
         alertname: ScrapeTargetDown
         exp_alerts:
           - exp_labels: {job: ureka-auth, instance: test, severity: warning}
-            exp_annotations: {summary: '수집 대상에 5분간 접근하지 못함'}
+            exp_annotations:
+              summary: '수집 대상에 5분간 접근하지 못함'
+              runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/5226db55d03ca26f252ea1007266f0f7a314a41f/guides/initial-alert-playbooks.md#scrape-target-down'
   - interval: 1m
     input_series:
       - series: 'container_memory_working_set_bytes{namespace="dev",pod="auth-test",container="app",image="test"}'
@@ -29,4 +31,25 @@ tests:
         alertname: PodMemoryNearLimit
         exp_alerts:
           - exp_labels: {namespace: dev, pod: auth-test, severity: warning}
-            exp_annotations: {summary: 'Pod working set이 설정된 메모리 한도의 85% 초과'}
+            exp_annotations:
+              summary: 'Pod working set이 설정된 메모리 한도의 85% 초과'
+              runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/5226db55d03ca26f252ea1007266f0f7a314a41f/guides/initial-alert-playbooks.md#pod-memory-near-limit'
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_status_ready{namespace="dev",pod="auth-test",condition="false"}'
+        values: '1x8'
+      - series: 'kube_pod_status_ready{namespace="dev",pod="finished-ingest",condition="false"}'
+        values: '1x8'
+      - series: 'kube_pod_owner{namespace="dev",pod="finished-ingest",owner_kind="Job"}'
+        values: '1x8'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PodNotReady
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: PodNotReady
+        exp_alerts:
+          - exp_labels: {namespace: dev, pod: auth-test, condition: 'false', severity: warning}
+            exp_annotations:
+              summary: 'Job이 아닌 Pod가 5분간 준비되지 않음'
+              runbook_url: 'https://github.com/kdt-ureka/ureka-docs/blob/5226db55d03ca26f252ea1007266f0f7a314a41f/guides/initial-alert-playbooks.md#pod-crash'
