@@ -72,6 +72,11 @@ run "not_public_and_private_subnets_only" {
     condition     = one([for p in aws_db_parameter_group.this.parameter : p.value if p.name == "rds.force_ssl"]) == "1"
     error_message = "TLS must be required (rds.force_ssl = 1)."
   }
+
+  assert {
+    condition     = one([for p in aws_db_parameter_group.this.parameter : p.apply_method if p.name == "rds.force_ssl"]) == "pending-reboot"
+    error_message = "Preserve AWS's existing TLS apply method to avoid method-only drift."
+  }
 }
 
 run "only_ec2_host_on_5432_no_egress" {
