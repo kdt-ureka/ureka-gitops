@@ -109,8 +109,10 @@ resource "aws_db_parameter_group" "this" {
 
   # PostgreSQL 15 이후 기본값도 1이지만, 접속 조건을 코드에 남긴다.
   parameter {
-    name  = "rds.force_ssl"
-    value = "1"
+    # Match the existing AWS apply method; do not reconcile a method-only default drift.
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
   }
 }
 
