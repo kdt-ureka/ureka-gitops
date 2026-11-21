@@ -27,7 +27,9 @@ read -r -s UREKA_EXPECTED_ACCOUNT_ID
 export UREKA_EXPECTED_ACCOUNT_ID
 ```
 
-`TF_VAR_*`, `TF_CLI_ARGS*`는 해제한다. default workspace·서울 리전만 지원한다.
+`TF_VAR_*`, `TF_CLI_ARGS*`, `TF_DATA_DIR`, `TF_PLUGIN_CACHE_DIR`는 해제한다.
+다른 초기화 폴더·provider 캐시를 우회 사용하지 않도록 값이 있으면 실행을 거부한다.
+default workspace·서울 리전만 지원한다.
 정적 AWS 자격 환경 변수는 하위 명령에서 제거하고 명시한 프로필을 사용한다.
 
 ## 생성·변경 계획 (AWS 리소스 변경 없음)
@@ -41,6 +43,7 @@ python3 scripts/eks/operate.py plan \
 계정 조회 → backend 초기화 → validate → 저장 plan → 검사 순서다. 초기화는 S3 상태와
 연결하며 backend 이전·workspace 생성은 하지 않는다. 생성 계획에 삭제·교체가 있으면 중단한다.
 계획은 `.local/eks/review-…/`에 저장되고, 폴더 경로와 확인값이 출력된다.
+`review.json`에는 계정·로그인 주체 ARN(SSO 세션 이름)이 포함되므로 공유하지 않는다.
 그 폴더의 `plan.log`에서 자원별 변경·권한·비용을 직접 검토한다. 숫자 합계만 보고 승인하지 않는다.
 오류는 `.local/eks/last-error.log`에 저장된다. 실패 로그도 비공개다.
 
@@ -60,11 +63,13 @@ python3 scripts/eks/operate.py apply \
 
 코드·비공개 설정·plan 해시·계정·로그인 주체·1시간 유효 시간을 검사한다.
 `--confirm`은 plan 때 출력된 검토 확인값이다. 이 명령이 실제 apply 승인이다.
+확인값은 실수를 막는 장치이며 인증 수단이 아니다. 실제 권한은 AWS SSO·IAM으로 통제한다.
 plan 파일은 Terraform 자체의 상태 잠금·오래된 상태 검사도 거친다.
-실행 결과는 같은 폴더의 `apply.log`에 남고, 성공·실패와 관계없이 같은 plan 재사용을 막는다.
+실행 결과는 같은 폴더의 `apply.log`에 실시간 기록하고, 화면에는 30초마다 진행 중임을 표시한다.
+실패 원본은 같은 폴더의 `apply-error.log`에도 보존한다. 성공·실패와 관계없이 같은 plan 재사용을 막는다.
 `result.json`에는 시작·종료 Unix 시각과 소요 초·Terraform 성공 여부를 기록한다(#67).
-EKS 생성·삭제는 오래 걸릴 수 있다. Terraform 출력은 완료 후 로컬 로그에 저장되므로,
-진행 메시지가 잠시 없더라도 같은 명령을 다시 실행하지 않는다.
+EKS 생성·삭제는 10~20분 이상 걸릴 수 있다. 완료 전에 임의로 중단하거나 같은 명령을
+다시 실행하지 않는다. 상세 출력은 비공개 `apply.log`에서 로컬로 확인한다.
 실패하면 상태·오류 로그를 확인한 후 새 plan을 만든다. 자동 재시도하지 않는다.
 
 EKS 생성 뒤 data의 EKS 노드 SG 참조 추가·plan·apply는 기존 절차대로 별도 수행한다.
@@ -102,6 +107,14 @@ python3 scripts/eks/operate.py destroy-plan \
 삭제 후 NAT·EIP·ENI·LB와 프로젝트 EBS 잔존을 직접 조회한다. 필요한 retained 볼륨을
 무조건 지우지 않는다. Terraform이 소유하지 않는 자원까지 없어졌다고 가정하지 않는다.
 network/data/shared 전체를 destroy하지 않는다. 이 도구는 EC2 켜기·끄기도 수행하지 않는다.
+
+### 부분 적용 복구
+
+outputs가 없거나 적용이 실패했으면 자동 삭제·재시도를 하지 않는다. `status`와 AWS 콘솔에서
+클러스터·노드 그룹·NAT·EIP·SG 등 남은 자원을 확인하고, `terraform state list`로 이 스택이
+관리하는 자원을 대조한다. 콘솔에 있지만 state에 없는 자원은 교차 검토 후 import·정리 방법을
+정한다. 출력이 없다는 이유로 수동 삭제하지 않는다. 담당자와 상태를 확인한 뒤 새 plan을
+검토하며, outputs가 없어 도구의 삭제 검사를 통과할 수 없으면 별도 검토한 수동 복구 절차를 따른다.
 
 ## 안전 시험
 

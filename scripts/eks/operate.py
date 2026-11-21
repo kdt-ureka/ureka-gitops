@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -59,8 +60,9 @@ def summarize(plan, destroy):
 class Operator:
     def __init__(self, args):
         self.args = args
-        if any(k.startswith(("TF_VAR_", "TF_CLI_ARGS")) for k in os.environ):
-            raise SafeError("TF_VAR/TF_CLI_ARGS 환경 변수를 해제하고 파일 설정만 사용해 주세요.")
+        if any(k.startswith(("TF_VAR_", "TF_CLI_ARGS")) or k in ("TF_DATA_DIR", "TF_PLUGIN_CACHE_DIR")
+               for k in os.environ):
+            raise SafeError("TF_VAR/TF_CLI_ARGS/TF_DATA_DIR/TF_PLUGIN_CACHE_DIR 환경 변수를 해제해 주세요.")
         if os.environ.get("TF_WORKSPACE", "default") != "default":
             raise SafeError("default workspace만 지원합니다.")
         self.env = dict(os.environ, AWS_PROFILE=args.profile, AWS_DEFAULT_PROFILE=args.profile,
@@ -96,9 +98,36 @@ class Operator:
             raise SafeError("승인된 AWS 계정과 다릅니다.")
         return identity
 
-    def tf(self, *args):
+    def run_live(self, command, log_path):
+        """Write child output straight to a private file; only heartbeat reaches the console."""
+        print("EKS 생성·삭제는 10~20분 이상 걸릴 수 있습니다. 완료 전 임의로 중단하지 마세요.", flush=True)
+        started = time.monotonic()
+        with log_path.open("wb") as log:
+            os.fchmod(log.fileno(), 0o600)
+            with subprocess.Popen(command, cwd=ROOT, env=self.env, stdout=log,
+                                  stderr=subprocess.STDOUT) as process:
+                while True:
+                    try:
+                        result = process.wait(timeout=30)
+                        break
+                    except subprocess.TimeoutExpired:
+                        print(f"진행 중… {int(time.monotonic() - started)}초 경과. 상세 로그는 로컬 apply.log에 기록 중입니다.", flush=True)
+                    except KeyboardInterrupt:
+                        # The foreground process group already received SIGINT. Do not send a second
+                        # signal: Terraform uses it to force exit rather than shut down gracefully.
+                        print("중단 요청을 받았습니다. Terraform 종료를 확인 중입니다. 추가 중단·재실행은 하지 마세요.", flush=True)
+        if result:
+            for target in (log_path.with_name("apply-error.log"), ARTIFACTS / "last-error.log"):
+                with log_path.open("rb") as source, target.open("wb") as destination:
+                    os.fchmod(destination.fileno(), 0o600)
+                    shutil.copyfileobj(source, destination)
+            raise SafeError("적용 실패. 해당 plan 폴더의 apply.log·apply-error.log를 로컬에서 확인해 주세요.")
+        return ""
+
+    def tf(self, *args, log_path=None):
         print("Terraform 단계:", args[0], flush=True)
-        return self.run(["terraform", "-chdir=" + str(STACK), *args])
+        command = ["terraform", "-chdir=" + str(STACK), *args]
+        return self.run_live(command, log_path) if log_path is not None else self.run(command)
 
     def init(self):
         for name in ("backend.hcl", "terraform.tfvars"):
@@ -111,6 +140,8 @@ class Operator:
 
     def cleanup_gate(self):
         outputs = json.loads(self.tf("output", "-json"))
+        if not all(outputs.get(key, {}).get("value") for key in ("cluster_name", "node_security_group_id")):
+            raise SafeError("EKS outputs가 없습니다. 부분 적용 가능성이 있으므로 status·AWS 콘솔에서 남은 자원을 확인하고 운영 문서의 부분 적용 복구 절차를 따라 주세요.")
         name = outputs["cluster_name"]["value"]
         if self.args.confirm_cleanup != name:
             raise SafeError("앱·LB·PVC 정리 후 --confirm-cleanup에 클러스터 이름을 입력해 주세요.")
@@ -181,14 +212,16 @@ class Operator:
             raise SafeError("커밋하지 않은 변경이 있습니다. 적용할 수 없습니다.")
         if review["destroy"]:
             self.cleanup_gate()
-        with (folder / "attempted").open("x") as marker:
-            marker.write(str(time.time()))
+        try:
+            with (folder / "attempted").open("x") as marker:
+                marker.write(str(time.time()))
+        except FileExistsError:
+            raise SafeError("다른 실행이 이미 적용을 시도한 plan입니다. 완료 상태 확인 후 새 plan을 만들어 주세요.") from None
         started = time.time()
         success = False
         try:
-            log = self.tf("apply", "-input=false", "-lock-timeout=60s", str(folder / "saved.tfplan"))
-            (folder / "apply.log").write_text(log)
-            os.chmod(folder / "apply.log", 0o600)
+            self.tf("apply", "-input=false", "-lock-timeout=60s", str(folder / "saved.tfplan"),
+                    log_path=folder / "apply.log")
             success = True
         finally:
             finished = time.time()
@@ -204,7 +237,7 @@ class Operator:
         self.init()
         outputs = json.loads(self.tf("output", "-json"))
         if "cluster_name" not in outputs:
-            print("EKS 출력이 없습니다. 미생성·삭제 완료·부분 적용 가능성이 있습니다.")
+            print("EKS 출력이 없습니다. 미생성·삭제 완료·부분 적용 가능성이 있습니다. AWS 콘솔에서 남은 자원을 확인한 뒤 운영 문서의 부분 적용 복구 절차를 따라 주세요.")
             return
         name = outputs["cluster_name"]["value"]
         cluster = self.aws("eks", "describe-cluster", "--name", name)["cluster"]

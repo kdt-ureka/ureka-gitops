@@ -1,13 +1,15 @@
 """Safety boundary tests; no AWS/Terraform processes are launched."""
 import argparse
+from contextlib import redirect_stdout
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location("operate", Path(__file__).resolve().parents[2] / "scripts/eks/operate.py")
 op = importlib.util.module_from_spec(spec)
@@ -71,7 +73,7 @@ class SafetyTests(unittest.TestCase):
             init.assert_not_called()
 
     def test_environment_overrides_rejected(self):
-        for key in ("TF_CLI_ARGS_plan", "TF_VAR_admin_role_arn", "TF_WORKSPACE"):
+        for key in ("TF_CLI_ARGS_plan", "TF_VAR_admin_role_arn", "TF_WORKSPACE", "TF_DATA_DIR", "TF_PLUGIN_CACHE_DIR"):
             with patch.dict(os.environ, {key: "unexpected"}), self.assertRaises(op.SafeError):
                 op.Operator(self.args)
 
@@ -95,7 +97,8 @@ class SafetyTests(unittest.TestCase):
 
     def test_destroy_requires_explicit_cleanup_confirmation(self):
         self.args.confirm_cleanup = None
-        self.operator.tf = lambda *args: json.dumps({"cluster_name": {"value": "test-cluster"}})
+        self.operator.tf = lambda *args: json.dumps({"cluster_name": {"value": "test-cluster"},
+                                                     "node_security_group_id": {"value": "node"}})
         with self.assertRaises(op.SafeError):
             self.operator.cleanup_gate()
 
@@ -139,8 +142,11 @@ class SafetyTests(unittest.TestCase):
     def test_valid_apply_uses_saved_plan_and_private_log(self):
         folder, _ = self.review()
         self.apply_mocks()
+        def streamed_tf(*args, log_path):
+            log_path.write_text("synthetic apply log")
+            log_path.chmod(0o600)
         with patch.object(op, "source_digest", return_value="source"), patch.object(op.time, "time", return_value=101), \
-             patch.object(self.operator, "tf", return_value="synthetic apply log") as tf:
+             patch.object(self.operator, "tf", side_effect=streamed_tf) as tf:
             self.operator.apply()
             self.assertEqual(tf.call_args.args[-1], str(folder / "saved.tfplan"))
             self.assertEqual((folder / "apply.log").stat().st_mode & 0o777, 0o600)
@@ -190,6 +196,71 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(json.loads(records[0].read_text())["principal"], "test-role")
         self.assertEqual(records[0].stat().st_mode & 0o777, 0o600)
+
+    def test_missing_outputs_give_recovery_instructions(self):
+        for outputs in ({}, {"cluster_name": {"value": "test-cluster"}}):
+            with patch.object(self.operator, "tf", return_value=json.dumps(outputs)), \
+                 self.assertRaisesRegex(op.SafeError, "부분 적용.*콘솔"):
+                self.operator.cleanup_gate()
+
+    def test_concurrent_apply_marker_reports_attempt_and_does_not_apply(self):
+        self.review()
+        self.apply_mocks()
+        original_open = Path.open
+        def race_open(path, *args, **kwargs):
+            if path.name == "attempted":
+                raise FileExistsError("synthetic concurrent writer")
+            return original_open(path, *args, **kwargs)
+        with patch.object(op, "source_digest", return_value="source"), patch.object(op.time, "time", return_value=101), \
+             patch.object(Path, "open", race_open), patch.object(self.operator, "tf") as tf:
+            with self.assertRaisesRegex(op.SafeError, "다른 실행"):
+                self.operator.apply()
+            tf.assert_not_called()
+
+    def test_streamed_output_is_written_before_exit_and_not_printed(self):
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code):
+                folder = self.root / f"stream-{exit_code}"
+                folder.mkdir()
+                log = folder / "apply.log"
+                process = Mock()
+                reads = []
+                def popen(*args, **kwargs):
+                    kwargs["stdout"].write(b"synthetic private output\n")
+                    kwargs["stdout"].flush()
+                    self.assertEqual(log.read_bytes(), b"synthetic private output\n")
+                    self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+                    reads.append(True)
+                    manager = Mock()
+                    manager.__enter__ = Mock(return_value=process)
+                    manager.__exit__ = Mock(return_value=False)
+                    return manager
+                process.wait.side_effect = [op.subprocess.TimeoutExpired("synthetic", 30), exit_code]
+                output = io.StringIO()
+                with patch.object(op.subprocess, "Popen", side_effect=popen), redirect_stdout(output):
+                    if exit_code:
+                        with self.assertRaises(op.SafeError):
+                            self.operator.run_live(["synthetic"], log)
+                    else:
+                        self.operator.run_live(["synthetic"], log)
+                self.assertEqual(reads, [True])
+                self.assertIn("진행 중", output.getvalue())
+                self.assertNotIn("synthetic private output", output.getvalue())
+                self.assertEqual((folder / "apply-error.log").exists(), bool(exit_code))
+                if exit_code:
+                    self.assertEqual((folder / "apply-error.log").read_bytes(), log.read_bytes())
+                    self.assertEqual((folder / "apply-error.log").stat().st_mode & 0o777, 0o600)
+
+    def test_interrupt_waits_without_second_signal(self):
+        process = Mock()
+        process.wait.side_effect = [KeyboardInterrupt(), 0]
+        manager = Mock()
+        manager.__enter__ = Mock(return_value=process)
+        manager.__exit__ = Mock(return_value=False)
+        with patch.object(op.subprocess, "Popen", return_value=manager), redirect_stdout(io.StringIO()):
+            self.operator.run_live(["synthetic"], self.root / "apply.log")
+        process.send_signal.assert_not_called()
+        self.assertEqual(process.wait.call_count, 2)
 
 
 if __name__ == "__main__":
