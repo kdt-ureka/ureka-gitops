@@ -22,6 +22,10 @@ class BootstrapTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
+        self.base = self.root / "argocd-bootstrap"
+        self.base.mkdir()
+        self.artifacts_patch = patch.object(module, "ARTIFACTS", self.root)
+        self.artifacts_patch.start()
         self.operator = module.Bootstrap.__new__(module.Bootstrap)
         self.operator.args = SimpleNamespace(action="check", cluster_name="ureka-eks", context="ureka-eks",
                                              confirm_cluster=None)
@@ -33,7 +37,14 @@ class BootstrapTests(unittest.TestCase):
                        "clusters": [{"name": "expected", "cluster": {"server": "https://example.invalid"}}]}
 
     def tearDown(self):
+        self.artifacts_patch.stop()
         self.tmp.cleanup()
+
+    def prepared(self):
+        folder = Path(tempfile.mkdtemp(prefix="run-", dir=self.base))
+        path = folder / "rendered.yaml"
+        path.write_text("synthetic complete manifest")
+        return path
 
     def test_context_mismatch_and_wrong_account_rejected(self):
         module.verify_destination(self.cluster, self.config, "000000000000", "ureka-eks")
@@ -86,21 +97,25 @@ class BootstrapTests(unittest.TestCase):
         self.operator.args.action = "install"
         self.operator.args.confirm_cluster = "ureka-eks"
         self.operator.merged_code = Mock()
-        manifest = self.root / "manifest.yaml"
-        self.operator.preflight = Mock(return_value=manifest)
+        self.operator.preflight = Mock(side_effect=self.prepared)
         self.operator.install_step = Mock(side_effect=module.SafeError("synthetic failure"))
         with redirect_stdout(io.StringIO()), self.assertRaises(module.SafeError):
             self.operator.execute()
-        self.assertTrue((self.root / "in-progress").exists())
-        result = next(self.root.glob("run-*/result.json"))
+        self.assertTrue((self.base / "in-progress").exists())
+        result = next(self.base.glob("run-*/result.json"))
         self.assertFalse(json.loads(result.read_text())["success"])
         self.assertEqual(result.stat().st_mode & 0o777, 0o600)
+        # A new run directory must not bypass the single shared install lock.
+        calls = self.operator.install_step.call_count
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(module.SafeError, "실행 기록"):
+            self.operator.execute()
+        self.assertEqual(self.operator.install_step.call_count, calls)
 
     def test_success_installs_no_app_secret_db_or_external_service(self):
         self.operator.args.action = "install"
         self.operator.args.confirm_cluster = "ureka-eks"
         self.operator.merged_code = Mock()
-        self.operator.preflight = Mock(return_value=self.root / "manifest.yaml")
+        self.operator.preflight = Mock(side_effect=self.prepared)
         self.operator.install_step = Mock()
         with patch.object(module, "ROOT", self.root), redirect_stdout(io.StringIO()):
             self.operator.execute()
@@ -108,8 +123,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(len(commands), 5)
         self.assertTrue(all(cmd[:3] == ["kubectl", "--context", "ureka-eks"] for cmd in commands))
         self.assertFalse(any("--force-conflicts" in cmd for cmd in commands))
-        self.assertFalse((self.root / "in-progress").exists())
-        self.assertTrue(json.loads(next(self.root.glob("run-*/result.json")).read_text())["success"])
+        self.assertFalse((self.base / "in-progress").exists())
+        self.assertTrue(json.loads(next(self.base.glob("run-*/result.json")).read_text())["success"])
 
     def test_replicas_are_rendered_into_complete_manifest_before_apply(self):
         path = self.root / "install.yaml"
@@ -128,8 +143,7 @@ class BootstrapTests(unittest.TestCase):
         self.operator.args.action = "install"
         self.operator.args.confirm_cluster = "ureka-eks"
         self.operator.merged_code = Mock()
-        rendered = self.root / "rendered.yaml"
-        self.operator.preflight = Mock(return_value=rendered)
+        self.operator.preflight = Mock(side_effect=self.prepared)
         applied = []
         fail_once = [True]
         def install(command, log):
@@ -145,14 +159,62 @@ class BootstrapTests(unittest.TestCase):
         with patch.object(module, "ROOT", self.root), redirect_stdout(io.StringIO()):
             with self.assertRaises(module.SafeError):
                 self.operator.execute()
-            self.assertTrue((self.root / "in-progress").exists())
+            self.assertTrue((self.base / "in-progress").exists())
             # Simulate deliberate lock removal after the operator inspected the failure.
-            (self.root / "in-progress").unlink()
+            (self.base / "in-progress").unlink()
             self.operator.execute()
-        self.assertEqual(applied[:2], applied[2:])
-        self.assertTrue(all(str(rendered) in command for command in (applied[1], applied[3])))
-        self.assertEqual(len(list(self.root.glob("run-*/result.json"))), 2)
-        self.assertFalse((self.root / "in-progress").exists())
+        self.assertEqual(applied[0], applied[2])
+        self.assertEqual(applied[1][:-1], applied[3][:-1])
+        self.assertNotEqual(applied[1][-1], applied[3][-1])
+        self.assertEqual(Path(applied[1][-1]).read_bytes(), Path(applied[3][-1]).read_bytes())
+        self.assertEqual(len(list(self.base.glob("run-*/result.json"))), 2)
+        self.assertFalse((self.base / "in-progress").exists())
+
+    def test_check_during_install_cannot_overwrite_install_inputs(self):
+        self.operator.args.action = "install"
+        self.operator.args.confirm_cluster = "ureka-eks"
+        self.operator.merged_code = Mock()
+        self.operator.aws = Mock(return_value={"cluster": self.cluster})
+        render_count = [0]
+        def read_only(command):
+            if "config" in command:
+                return json.dumps(self.config)
+            if "nodes" in command:
+                return json.dumps({"items": [{"status": {"conditions": [{"type": "Ready", "status": "True"}]}}] * 2})
+            if "kustomize" in command:
+                render_count[0] += 1
+                return f"synthetic rendered run {render_count[0]}"
+            raise AssertionError("unexpected command")
+        self.operator.run = read_only
+        payload = b"synthetic fixed upstream"
+        response = Mock()
+        response.__enter__ = Mock(return_value=Mock(read=Mock(return_value=payload)))
+        response.__exit__ = Mock(return_value=False)
+        checked_paths = []
+        def installing(command, log):
+            if "apply" not in command or "argocd" not in command:
+                return
+            install_path = Path(command[-1])
+            snapshot = {p.name: p.read_bytes() for p in install_path.parent.iterdir() if p.is_file()}
+            self.assertTrue((self.base / "in-progress").exists())
+            self.operator.args.action = "check"
+            try:
+                self.operator.execute()
+            finally:
+                self.operator.args.action = "install"
+            # Check finishes while install's shared lock is held, but all install inputs stay intact.
+            self.assertEqual(snapshot, {p.name: p.read_bytes() for p in install_path.parent.iterdir() if p.is_file()})
+            other = [p for p in self.base.glob("run-*/rendered.yaml") if p != install_path]
+            self.assertEqual(len(other), 1)
+            self.assertNotEqual(install_path.read_bytes(), other[0].read_bytes())
+            self.assertEqual(install_path.parent.stat().st_mode & 0o777, 0o700)
+            checked_paths.append(install_path)
+        self.operator.install_step = installing
+        with patch.object(module, "ROOT", self.root), patch.object(module, "SHA256", hashlib.sha256(payload).hexdigest()), \
+             patch.object(module.urllib.request, "urlopen", return_value=response), redirect_stdout(io.StringIO()):
+            self.operator.execute()
+        self.assertEqual(len(checked_paths), 1)
+        self.assertEqual(render_count[0], 2)
 
     def test_private_live_log_does_not_echo_output(self):
         process = Mock()

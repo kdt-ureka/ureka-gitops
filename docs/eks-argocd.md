@@ -31,7 +31,10 @@ python3 scripts/eks/bootstrap_argocd.py check \
 확인한다. 조회 결과의 current-context도 지정 이름과 같아야 한다. 공식 설치 파일을
 다운로드해 기존 EC2와 같은 `v3.6.0` 및 SHA-256 고정값을 검증한다.
 kubectl 내장 Kustomize로 dex·notifications의 replicas=0을 전체 manifest에 미리 반영해
-`.local/eks/argocd-bootstrap/rendered.yaml`에 저장한다. 이 렌더링은 로컬 작업이며 클러스터를 변경하지 않는다.
+실행별 `.local/eks/argocd-bootstrap/run-…/rendered.yaml`에 저장한다.
+다운로드 원본·Kustomization·렌더 결과를 매 실행마다 별도 폴더에 보존한다.
+설치 중 check가 실행돼도 설치가 읽는 파일은 덮어쓰지 않는다.
+이 렌더링은 로컬 작업이며 클러스터를 변경하지 않는다.
 
 Argo CD 3.6은 Kubernetes 1.37을 시험한 버전이다.
 [공식 호환 표](https://argo-cd.readthedocs.io/en/stable/operator-manual/tested-kubernetes-versions/).
@@ -97,7 +100,9 @@ server·repo-server·application-controller 준비를 각각 최대 5분 기다�
 
 ## 실패·중복 실행
 
-로컬 `in-progress` 기록으로 같은 PC의 중복 실행을 막는다. 여러 PC 사이의 잠금은
+공통 `.local/eks/argocd-bootstrap/in-progress` 기록으로 같은 PC의 중복 설치를 막는다.
+실행별 파일 분리와 별개로 설치 잠금은 한 곳에서 유지하며, check는 이 잠금을 쓰지 않는다.
+여러 PC 사이의 잠금은
 아니므로 운영자는 동시에 설치하지 않는다. 실패 시 자원·실행 프로세스·단계별 로그를
 확인하고 기존 기록을 보존한다. 이전 프로세스가 끝났고 재실행 계획을 검토한 뒤에만
 `in-progress` 파일을 제거하고 재시도한다. 자동 롤백·삭제·강제 재시도는 없다.

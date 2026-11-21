@@ -48,9 +48,12 @@ class Bootstrap(Operator):
         if len(nodes) < 2 or any(not any(c["type"] == "Ready" and c["status"] == "True"
                                        for c in node["status"]["conditions"]) for node in nodes):
             raise SafeError("Ready 노드가 최소 2대 필요합니다.")
-        folder = ARTIFACTS / "argocd-bootstrap"
-        folder.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(folder, 0o700)
+        base = ARTIFACTS / "argocd-bootstrap"
+        base.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(base, 0o700)
+        # check may run while install is using an earlier manifest. Every invocation
+        # owns its download, Kustomization and rendered file; never rewrite shared inputs.
+        folder = Path(tempfile.mkdtemp(prefix="run-", dir=base))
         path = folder / f"install-{VERSION}.yaml"
         # Public, pinned manifest; never use stable/latest or a user-provided URL.
         with urllib.request.urlopen(URL, timeout=60) as response:
@@ -113,7 +116,7 @@ class Bootstrap(Operator):
         if self.args.action == "check":
             print("확인만 완료. 클러스터 변경 없음.")
             return
-        folder = path.parent
+        folder = ARTIFACTS / "argocd-bootstrap"
         # Prevent overlapping installs on this PC, without deleting failure evidence.
         lock = folder / "in-progress"
         try:
@@ -122,7 +125,7 @@ class Bootstrap(Operator):
             raise SafeError("설치 실행 기록이 남아 있습니다. 실행 중인지 확인하고 복구 절차를 따라 주세요.") from None
         with os.fdopen(fd, "w") as f:
             f.write(str(os.getpid()))
-        run_folder = Path(tempfile.mkdtemp(prefix="run-", dir=folder))
+        run_folder = path.parent
         started = time.time()
         success = False
         try:
