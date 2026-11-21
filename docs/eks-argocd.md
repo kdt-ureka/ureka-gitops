@@ -2,6 +2,7 @@
 
 현재 구현 범위는 **Argo CD 설치 도구**다. 앱 전체 동기화·Git 되돌리기 시험은 후속이며,
 이 문서나 설치 성공만으로 #43 완료 처리하지 않는다.
+이 도구는 첫 설치와 그 부분 실패 복구 전용이다. 버전 업그레이드는 별도 검토·절차로 수행한다.
 
 ## 순서
 
@@ -27,8 +28,10 @@ python3 scripts/eks/bootstrap_argocd.py check \
 ```
 
 로그인 계정·서울의 EKS ACTIVE·kubectl context의 서버 주소·Ready 노드 2대 이상을
-확인한다. 공식 설치 파일을 다운로드해 기존 EC2와 같은 `v3.6.0` 및 SHA-256 고정값을
-검증하고 `.local/eks/argocd-bootstrap`에 저장한다. 클러스터는 변경하지 않는다.
+확인한다. 조회 결과의 current-context도 지정 이름과 같아야 한다. 공식 설치 파일을
+다운로드해 기존 EC2와 같은 `v3.6.0` 및 SHA-256 고정값을 검증한다.
+kubectl 내장 Kustomize로 dex·notifications의 replicas=0을 전체 manifest에 미리 반영해
+`.local/eks/argocd-bootstrap/rendered.yaml`에 저장한다. 이 렌더링은 로컬 작업이며 클러스터를 변경하지 않는다.
 
 Argo CD 3.6은 Kubernetes 1.37을 시험한 버전이다.
 [공식 호환 표](https://argo-cd.readthedocs.io/en/stable/operator-manual/tested-kubernetes-versions/).
@@ -50,7 +53,9 @@ python3 scripts/eks/bootstrap_argocd.py install \
 
 이번 단계의 argocd namespace는 baseline을 강제하고 restricted 경고/감사를 적용한다.
 앱의 dev/prod restricted 정책과 구분한다. upstream 설치 manifest에 대한 제한 강화는 별도 검토한다.
-SSO용 dex·notifications는 사용하지 않아 replicas=0으로 줄인다.
+SSO용 dex·notifications는 사용하지 않아 처음부터 replicas=0으로 적용한다.
+설치 뒤 별도 scale이나 부분 manifest apply를 하지 않고 전체 설정을 같은 field manager로
+관리한다. 중간 실패 뒤 재시도도 같은 설정을 적용하여 replicas 소유권 충돌을 피한다.
 server·repo-server·application-controller 준비를 각각 최대 5분 기다린다.
 화면에는 단계·30초 진행 안내만 표시하며, 원본은 `.local/eks/argocd-bootstrap/run-*/`
 단계별 로그에 실시간 저장한다. 비공개 기록을 공유하지 않는다.
@@ -58,6 +63,37 @@ server·repo-server·application-controller 준비를 각각 최대 5분 기다�
 외부 Ingress·LoadBalancer·도메인은 만들지 않는다. 앱 Application도 만들지 않고,
 서비스 Secret·RDS 사용자/암호·DB 스키마를 읽거나 변경하지 않는다.
 설치 뒤 `kubectl --context ureka-eks -n argocd get pods`로 Ready를 별도 확인한다.
+
+## 초기 관리자 비밀번호 (설치 완료 뒤 담당자 직접)
+
+1. 내 PC에서 로컬 전용 포트 포워딩을 연다. 외부 LB·Ingress는 만들지 않는다.
+
+   ```sh
+   kubectl --context ureka-eks -n argocd port-forward \
+     --address 127.0.0.1 svc/argocd-server 8443:443
+   ```
+
+2. 다른 내 PC 터미널에서 초기 비밀번호를 화면에 출력하지 않고 클립보드로 복사한다(macOS).
+   클립보드 공유/기록 도구는 비활성화하고 채팅·문서에 붙여 넣지 않는다.
+
+   ```sh
+   set -o pipefail
+   kubectl --context ureka-eks -n argocd get secret argocd-initial-admin-secret \
+     -o jsonpath='{.data.password}' | base64 --decode | pbcopy
+   ```
+
+3. `https://localhost:8443`에서 admin으로 로그인한다. 이 연결의 인증서는 기본 자체 서명이다.
+   User Info → Update Password에서 새 비밀번호로 변경하고 새 세션에서 로그인을 확인한다.
+   실제 비밀번호를 명령 인자로 넣지 않고 승인된 비밀번호 관리 도구에만 보관한다.
+4. 변경·재로그인 성공 후 담당자가 초기 Secret만 삭제하고 클립보드를 비운다.
+
+   ```sh
+   kubectl --context ureka-eks -n argocd delete secret argocd-initial-admin-secret
+   printf '' | pbcopy
+   ```
+
+위 삭제는 첫 로그인 전에 실행하지 않는다. 이 과정의 비밀번호·Secret 원문은 시험 증거에 남기지 않는다.
+[Argo CD 공식 초기 비밀번호 안내](https://argo-cd.readthedocs.io/en/stable/getting_started/).
 
 ## 실패·중복 실행
 
@@ -75,5 +111,7 @@ server-side apply가 필요한 이유는 CRD annotation 크기 제한이다.
 - 새 도구로 실제 EKS 설치·Pod Ready·기능 동작
 - 이미지 취약점 재검사·실제 사용량·노드 여유
 - EKS 앱·Secret 연결, 실제 DB 인증/TLS, Git 배포/되돌리기
+- #62에서 EKS dev/prod namespace Pod Security restricted 강제 라벨 적용·거부 시험
+- 설치 후 초기 관리자 비밀번호 변경·초기 Secret 삭제 결과(비밀값 기록 금지)
 
 로컬 시험과 설치 파일 checksum 일치는 위 실환경 확인을 대체하지 않는다.

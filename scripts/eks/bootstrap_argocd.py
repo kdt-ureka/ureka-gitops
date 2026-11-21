@@ -24,9 +24,11 @@ def verify_manifest(data):
         raise SafeError("Argo CD 설치 파일 체크섬이 다릅니다. 설치하지 않습니다.")
 
 
-def verify_destination(cluster, config, account):
+def verify_destination(cluster, config, account, expected_context):
     if cluster["arn"].split(":")[4] != account or cluster["status"] != "ACTIVE":
         raise SafeError("승인 계정의 ACTIVE EKS가 아닙니다.")
+    if config.get("current-context") != expected_context:
+        raise SafeError("조회한 kubectl current-context가 지정한 대상과 다릅니다.")
     context = config["contexts"][0]["context"]["cluster"]
     servers = [c["cluster"]["server"] for c in config["clusters"] if c["name"] == context]
     if servers != [cluster["endpoint"]]:
@@ -41,7 +43,7 @@ class Bootstrap(Operator):
         identity = self.identity()
         cluster = self.aws("eks", "describe-cluster", "--name", self.args.cluster_name)["cluster"]
         config = json.loads(self.run(self.k("config", "view", "--minify", "-o", "json")))
-        verify_destination(cluster, config, identity["Account"])
+        verify_destination(cluster, config, identity["Account"], self.args.context)
         nodes = json.loads(self.run(self.k("get", "nodes", "-o", "json")))["items"]
         if len(nodes) < 2 or any(not any(c["type"] == "Ready" and c["status"] == "True"
                                        for c in node["status"]["conditions"]) for node in nodes):
@@ -56,7 +58,26 @@ class Bootstrap(Operator):
         verify_manifest(data)
         path.write_bytes(data)
         path.chmod(0o600)
-        return path
+        return self.render_manifest(path)
+
+    def render_manifest(self, path):
+        # Patch the complete upstream objects BEFORE SSA. Applying a partial object with
+        # the same manager afterwards would relinquish/delete omitted owned fields.
+        config = {
+            "apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
+            "resources": [path.name],
+            "patches": [{"patch": json.dumps({
+                "apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name},
+                "spec": {"replicas": 0}})}
+                for name in ("argocd-dex-server", "argocd-notifications-controller")],
+        }
+        kustomization = path.parent / "kustomization.yaml"
+        kustomization.write_text(json.dumps(config))
+        kustomization.chmod(0o600)
+        rendered = path.parent / "rendered.yaml"
+        rendered.write_text(self.run(["kubectl", "kustomize", str(path.parent)]))
+        rendered.chmod(0o600)
+        return rendered
 
     def merged_code(self):
         self.run(["git", "fetch", "origin", "main"])
@@ -108,7 +129,6 @@ class Bootstrap(Operator):
             steps = [
                 ("namespace", self.k("apply", "--server-side", "--field-manager=ureka-eks-bootstrap", "-f", str(NAMESPACE))),
                 ("install", self.k("-n", "argocd", "apply", "--server-side", "--field-manager=ureka-eks-bootstrap", "-f", str(path))),
-                ("optional-components", self.k("-n", "argocd", "scale", "deployment", "argocd-dex-server", "argocd-notifications-controller", "--replicas=0")),
             ]
             for target in ("deployment/argocd-server", "deployment/argocd-repo-server", "statefulset/argocd-application-controller"):
                 steps.append((target.split("/")[1], self.k("-n", "argocd", "rollout", "status", target, "--timeout=300s")))

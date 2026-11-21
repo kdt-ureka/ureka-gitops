@@ -29,19 +29,23 @@ class BootstrapTests(unittest.TestCase):
         self.operator.identity = Mock(return_value={"Account": "000000000000"})
         self.cluster = {"arn": "arn:aws:eks:ap-northeast-2:000000000000:cluster/ureka-eks",
                         "status": "ACTIVE", "endpoint": "https://example.invalid"}
-        self.config = {"contexts": [{"context": {"cluster": "expected"}}],
+        self.config = {"current-context": "ureka-eks", "contexts": [{"context": {"cluster": "expected"}}],
                        "clusters": [{"name": "expected", "cluster": {"server": "https://example.invalid"}}]}
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def test_context_mismatch_and_wrong_account_rejected(self):
-        module.verify_destination(self.cluster, self.config, "000000000000")
+        module.verify_destination(self.cluster, self.config, "000000000000", "ureka-eks")
         self.config["clusters"][0]["cluster"]["server"] = "https://wrong.invalid"
         with self.assertRaises(module.SafeError):
-            module.verify_destination(self.cluster, self.config, "000000000000")
+            module.verify_destination(self.cluster, self.config, "000000000000", "ureka-eks")
         with self.assertRaises(module.SafeError):
-            module.verify_destination(self.cluster, self.config, "other")
+            module.verify_destination(self.cluster, self.config, "other", "ureka-eks")
+        self.config["clusters"][0]["cluster"]["server"] = self.cluster["endpoint"]
+        self.config["current-context"] = "unexpected"
+        with self.assertRaisesRegex(module.SafeError, "current-context"):
+            module.verify_destination(self.cluster, self.config, "000000000000", "ureka-eks")
 
     def test_checksum_mismatch_is_fatal(self):
         with self.assertRaises(module.SafeError):
@@ -101,11 +105,54 @@ class BootstrapTests(unittest.TestCase):
         with patch.object(module, "ROOT", self.root), redirect_stdout(io.StringIO()):
             self.operator.execute()
         commands = [call.args[0] for call in self.operator.install_step.call_args_list]
-        self.assertEqual(len(commands), 6)
+        self.assertEqual(len(commands), 5)
         self.assertTrue(all(cmd[:3] == ["kubectl", "--context", "ureka-eks"] for cmd in commands))
         self.assertFalse(any("--force-conflicts" in cmd for cmd in commands))
         self.assertFalse((self.root / "in-progress").exists())
         self.assertTrue(json.loads(next(self.root.glob("run-*/result.json")).read_text())["success"])
+
+    def test_replicas_are_rendered_into_complete_manifest_before_apply(self):
+        path = self.root / "install.yaml"
+        path.write_text("synthetic upstream")
+        self.operator.run = Mock(return_value="synthetic complete rendered resources")
+        rendered = self.operator.render_manifest(path)
+        config = json.loads((self.root / "kustomization.yaml").read_text())
+        patches = [json.loads(item["patch"]) for item in config["patches"]]
+        self.assertEqual(config["resources"], ["install.yaml"])
+        self.assertEqual({p["metadata"]["name"] for p in patches},
+                         {"argocd-dex-server", "argocd-notifications-controller"})
+        self.assertTrue(all(p["spec"] == {"replicas": 0} for p in patches))
+        self.assertEqual(rendered.read_text(), "synthetic complete rendered resources")
+
+    def test_retry_after_partial_install_uses_same_ssa_manager_without_scale(self):
+        self.operator.args.action = "install"
+        self.operator.args.confirm_cluster = "ureka-eks"
+        self.operator.merged_code = Mock()
+        rendered = self.root / "rendered.yaml"
+        self.operator.preflight = Mock(return_value=rendered)
+        applied = []
+        fail_once = [True]
+        def install(command, log):
+            if "rollout" in command and fail_once[0]:
+                fail_once[0] = False
+                raise module.SafeError("synthetic rollout failure")
+            if "apply" in command:
+                self.assertIn("--server-side", command)
+                self.assertIn("--field-manager=ureka-eks-bootstrap", command)
+                self.assertNotIn("scale", command)
+                applied.append(command)
+        self.operator.install_step = install
+        with patch.object(module, "ROOT", self.root), redirect_stdout(io.StringIO()):
+            with self.assertRaises(module.SafeError):
+                self.operator.execute()
+            self.assertTrue((self.root / "in-progress").exists())
+            # Simulate deliberate lock removal after the operator inspected the failure.
+            (self.root / "in-progress").unlink()
+            self.operator.execute()
+        self.assertEqual(applied[:2], applied[2:])
+        self.assertTrue(all(str(rendered) in command for command in (applied[1], applied[3])))
+        self.assertEqual(len(list(self.root.glob("run-*/result.json"))), 2)
+        self.assertFalse((self.root / "in-progress").exists())
 
     def test_private_live_log_does_not_echo_output(self):
         process = Mock()
