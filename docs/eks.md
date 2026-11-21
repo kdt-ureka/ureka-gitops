@@ -2,6 +2,7 @@
 
 이 문서는 CN 담당이 검토 후 실행할 절차다. 초안 작성 시 실제 AWS 조회·plan·apply·부팅 시간 측정은 하지 않았다.
 일상적인 EKS plan·apply·상태·destroy는 저장소의 [공통 운영 도구](../scripts/eks/README.md)를 사용한다.
+클러스터 생성 후 Argo CD는 [EKS 설치·앱 연결 절차](eks-argocd.md)를 따른다.
 아래 Terraform 명령은 내부 동작 설명·문제 진단용이며, 공통 도구의 검토 절차를 생략하는 용도가 아니다.
 network/data의 선후행 작업은 별도다. 운영 도구 추가 전 저장한 plan은 인계 근거로 보존하고,
 도구 추가·리뷰·병합 뒤 새 plan을 만들어 검토한다.
