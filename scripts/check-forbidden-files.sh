@@ -3,7 +3,7 @@
 # .gitignore는 실수로 `git add -f` 하거나 규칙이 빠지면 막지 못하므로 CI에서 다시 확인한다.
 set -euo pipefail
 
-forbidden_paths='(^|/)([^/]*\.tfvars(\.json)?|[^/]*\.tfstate(\.[^/]*)?|[^/]*\.tfplan(\.json)?|tfplan[^/]*|plan\.json|[^/]*\.plan\.json|plan\.out|[^/]*\.plan\.out|backend\.hcl|[^/]*\.backend\.hcl|kubeconfig[^/]*|[^/]*\.kubeconfig|\.env(\.[^/]*)?)$|(^|/)(\.terraform|\.kube)/'
+forbidden_paths='(^|/)([^/]*\.tfvars(\.json)?|[^/]*\.tfstate(\.[^/]*)?|[^/]*\.tfplan(\.json)?|tfplan[^/]*|plan\.json|[^/]*\.plan\.json|plan\.out|[^/]*\.plan\.out|backend\.hcl|[^/]*\.backend\.hcl|kubeconfig[^/]*|[^/]*\.kubeconfig|\.env(\.[^/]*)?)$|(^|/)(\.terraform|\.kube|\.local)/'
 allowed_paths='(\.tfvars\.example|backend\.hcl\.example|\.env\.example)$'
 
 status=0

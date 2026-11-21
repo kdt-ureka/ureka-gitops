@@ -68,6 +68,13 @@ printf '%s,%s\n' "$test_id" "$fake" > "$d/ids.txt"
 git -C "$d" add -A
 expect "script: adjacent IDs fail" fail "$script_mark" bash -c "cd '$d' && bash '$check'"
 
+# Private operator evidence must never become tracked, even after a forced add.
+d="$(new_repo operator-artifacts)"
+mkdir -p "$d/.local/eks"
+printf 'synthetic review\n' > "$d/.local/eks/review.json"
+git -C "$d" add -A
+expect "script: private operator artifacts fail" fail "커밋 금지 파일" bash -c "cd '$d' && bash '$check'"
+
 if [ -n "$gitleaks_bin" ]; then
   cfg="$repo_root/.gitleaks.toml"
   # 탐지 결과를 JSON 보고서로 받아 규칙 ID만 출력한다(값은 --redact로 가려지고 출력하지도 않는다).

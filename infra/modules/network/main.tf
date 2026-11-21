@@ -1,6 +1,6 @@
 # 공유 실행 환경 VPC. EC2(지금)·RDS(S7)·EKS(S8)가 같이 쓴다.
 # - 공개 서브넷 2개: 지금은 EC2, S8에 ALB(서로 다른 AZ 서브넷 2개 필요)·NAT
-# - 사설 서브넷 2개: RDS·EKS 노드. 인터넷으로 나가는 경로가 없다(NAT는 S8에 추가)
+# - 사설 서브넷 2개: RDS·EKS 노드. NAT와 기본 경로는 단기 EKS 스택이 소유
 # 서브넷은 공개 IP를 자동으로 주지 않는다. 공개 IP가 필요한 자원이 직접 요청한다.
 
 locals {
@@ -88,10 +88,11 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# 사설 라우팅 표: VPC 안(local) 경로만. S8에 NAT를 넣을 때 여기에 기본 경로를 추가한다.
+# 사설 라우팅 표의 수명은 network가, 기본 NAT 경로의 수명은 EKS가 관리한다.
+# route=[]를 지정하면 network apply가 EKS의 별도 aws_route를 지우므로 생략한다.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
-  route  = []
+  # Default NAT route is owned exclusively by environments/eks (absent while EKS is off).
 
   tags = {
     Name = "${var.name}-private"

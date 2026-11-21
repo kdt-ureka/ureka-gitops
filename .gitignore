@@ -74,3 +74,6 @@ kubeconfig*
 # Python validation cache
 __pycache__/
 *.py[cod]
+
+# Private EKS plans, review records and execution logs
+.local/

@@ -4,7 +4,7 @@
 #
 # 접근 경계
 # - 인터넷 공개 안 함(publicly_accessible = false), 사설 서브넷 2개(DB 서브넷 그룹 요구 조건)에만 둔다.
-# - 인바운드는 EC2 호스트 보안 그룹에서 오는 TCP 5432 하나뿐. 아웃바운드는 없다.
+# - 인바운드는 EC2 호스트 + 명시한 EKS 노드 SG의 TCP 5432만. 아웃바운드는 없다.
 # - 마스터 비밀번호는 RDS가 Secrets Manager에 만들고 관리한다(Terraform state·Git·사람 손에 원문이 없다).
 #   EC2 호스트 역할은 그 비밀 1개에 GetSecretValue만 받는다(List·다른 비밀 없음).
 #   서버 안 스크립트가 db-bootstrap Job을 돌리는 동안만 클러스터 Secret으로 두고 끝나면 지운다(scripts/ec2/rds-bootstrap.sh).
@@ -78,6 +78,21 @@ resource "aws_security_group" "rds" {
     ipv6_cidr_blocks = []
     prefix_list_ids  = []
     self             = false
+  }
+
+  dynamic "ingress" {
+    for_each = var.eks_node_security_group_ids
+    content {
+      description      = "PostgreSQL from EKS nodes and VPC CNI Pods"
+      protocol         = "tcp"
+      from_port        = 5432
+      to_port          = 5432
+      security_groups  = [ingress.value]
+      cidr_blocks      = []
+      ipv6_cidr_blocks = []
+      prefix_list_ids  = []
+      self             = false
+    }
   }
 
   egress = []

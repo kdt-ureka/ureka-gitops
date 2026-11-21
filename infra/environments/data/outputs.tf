@@ -14,6 +14,6 @@ output "master_secret_arn" {
 }
 
 output "security_group_id" {
-  description = "RDS security group (5432 from the k3s host only)."
+  description = "RDS security group (5432 from the k3s host and optional EKS node SG)."
   value       = aws_security_group.rds.id
 }
