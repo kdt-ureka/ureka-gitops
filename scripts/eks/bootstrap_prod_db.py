@@ -136,6 +136,10 @@ class ProdDbBootstrap(Operator):
 
     # --- 대상·입력 확인 -------------------------------------------------------
     def preflight(self):
+        # AWS CLI history가 켜져 있으면 get-secret-value 응답(비밀번호)이 로컬 기록에 남는다.
+        history = self.quiet(["aws", "configure", "get", "cli_history", "--profile", self.args.profile], check=False)
+        if (history.stdout or "").strip().lower() == "enabled":
+            raise SafeError("AWS CLI history(cli_history=enabled)가 켜져 있어 비밀값이 로컬 기록에 남습니다. 끄고 다시 실행하세요.")
         identity = self.identity()
         cluster = self.aws("eks", "describe-cluster", "--name", self.args.cluster_name)["cluster"]
         config = json.loads(self.run(["kubectl", "--context", self.args.context, "config", "view", "--minify", "-o", "json"]))

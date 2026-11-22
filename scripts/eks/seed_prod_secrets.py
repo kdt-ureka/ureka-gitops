@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 
 REGION = "ap-northeast-2"
 NAME = "ureka/eks/prod/app"
@@ -85,16 +86,29 @@ def check_account(run, profile, expected):
         raise SafeError("승인된 AWS 계정이 아닙니다(값은 출력하지 않음). 프로필·SSO 로그인을 확인하세요.")
 
 
-def remote_state(run, profile):
-    """'absent' | 'present'. 삭제 예약·권한·연결 오류는 '없음'으로 보지 않고 멈춘다."""
+def check_cli_history(run, profile):
+    """AWS CLI history가 켜져 있으면 요청·응답 본문(비밀값)이 로컬 기록에 남는다. 켜져 있으면 멈춘다."""
+    result = run(["aws", "configure", "get", "cli_history", "--profile", profile], check=False)
+    if (result.stdout or "").strip().lower() == "enabled":
+        raise SafeError("AWS CLI history(cli_history=enabled)가 켜져 있어 비밀값이 로컬 기록에 남습니다. 끄고 다시 실행하세요.")
+
+
+def describe(run, profile):
+    """없으면 None, 있으면 VersionIdsToStages. 삭제 예약·권한·연결 오류는 '없음'으로 보지 않고 멈춘다."""
     result = aws(run, profile, "secretsmanager", "describe-secret", "--secret-id", NAME, check=False)
     if result.returncode:
         if "ResourceNotFoundException" in result.stderr:
-            return "absent"
+            return None
         raise SafeError(f"{NAME} 확인 실패{exception_name(result.stderr)}. 권한·SSO 로그인을 확인하세요(없음으로 보지 않음).")
-    if json.loads(result.stdout).get("DeletedDate"):
+    found = json.loads(result.stdout)
+    if found.get("DeletedDate"):
         raise SafeError(f"{NAME}가 삭제 예약 상태입니다. 새로 만들지 않습니다. 복구(restore-secret) 또는 완전 삭제를 먼저 정하세요.")
-    return "present"
+    return found.get("VersionIdsToStages") or {}
+
+
+def remote_state(run, profile):
+    """'absent' | 'present'."""
+    return "absent" if describe(run, profile) is None else "present"
 
 
 def random_password(run, profile):
@@ -139,27 +153,33 @@ def build_values(run, profile, workdir):
 
 
 def create(run, profile, values):
+    """만들면 True. 응답만 잃었지만 이번 실행의 버전(ClientRequestToken = 버전 ID)이 저장된 것을 확인해도 True."""
     payload = json.dumps(values)
+    # 이번 쓰기의 표시(비밀 아님). 응답을 잃었을 때 저장된 버전이 이번 실행의 것인지 가려낸다.
+    token = str(uuid.uuid4())
     try:
         aws(run, profile, "secretsmanager", "create-secret", "--name", NAME, "--description", DESCRIPTION,
-            "--secret-string", "file:///dev/stdin", "--tags", *TAGS, stdin=payload)
+            "--client-request-token", token, "--secret-string", "file:///dev/stdin", "--tags", *TAGS, stdin=payload)
+        return True
     except SafeError as error:
         # 응답만 잃고 실제로는 만들어졌을 수 있다. 다시 확인해 안내를 나눈다(값은 출력하지 않음).
         try:
-            state = remote_state(run, profile)
+            versions = describe(run, profile)
         except SafeError:
-            state = "unknown"
-        if state == "absent":
+            raise SafeError(f"{error} {NAME} 생성 여부를 확인하지 못했습니다. docs/eks-secrets.md 'prod 시드 실패 복구'를 따르세요.") from None
+        if versions is None:
             raise SafeError(f"{error} {NAME}는 만들어지지 않았습니다. 원인을 고친 뒤 그대로 다시 실행하면 됩니다.") from None
-        if state == "present":
-            raise SafeError(f"{error} 그런데 {NAME}가 있습니다(응답 유실이거나 동시에 다른 실행). "
-                            "값은 한 번에 한 JSON으로만 들어가므로 서로 맞습니다. docs/eks-secrets.md 'prod 시드 실패 복구'를 따르세요.") from None
-        raise SafeError(f"{error} {NAME} 생성 여부를 확인하지 못했습니다. docs/eks-secrets.md 'prod 시드 실패 복구'를 따르세요.") from None
+        if list(versions) == [token] and "AWSCURRENT" in versions[token]:
+            print(f"참고: 생성 응답은 잃었지만 이번 실행의 버전이 {NAME}에 저장된 것을 확인했습니다.", file=sys.stderr)
+            return True
+        raise SafeError(f"{error} 그런데 {NAME}가 있고 이번 실행의 버전이 아닙니다(동시에 다른 실행이 만든 것). "
+                        "이번 값은 버렸습니다. docs/eks-secrets.md 'prod 시드 실패 복구'를 따르세요.") from None
     finally:
         payload = None
 
 
 def seed(run, profile, expected_account, action, workdir):
+    check_cli_history(run, profile)
     check_account(run, profile, expected_account)
     if remote_state(run, profile) == "present":
         raise SafeError(f"{NAME}가 이미 있습니다. 아무것도 바꾸지 않았습니다(덮어쓰기·교체는 이 도구가 하지 않음).")

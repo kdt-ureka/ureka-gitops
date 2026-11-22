@@ -38,8 +38,9 @@ def bundle(**over):
 
 
 class FakeCluster:
-    def __init__(self, app=None, job_result="ok", leftovers=(), stuck=(), namespace_labels=None):
+    def __init__(self, app=None, job_result="ok", leftovers=(), stuck=(), namespace_labels=None, history=False):
         self.app = app or bundle()
+        self.history = history
         self.job_result = job_result
         self.objects = {k: {} for k in leftovers}
         self.stuck = set(stuck)  # 지워지지 않는 자원(kind/name)
@@ -58,6 +59,8 @@ class FakeCluster:
         if c[0] == "terraform":
             return 0, json.dumps({"master_secret_arn": {"value": ARN}, "endpoint": {"value": HOST},
                                   "security_group_id": {"value": "sg-0"}}), ""
+        if c[0] == "aws" and c[1] == "configure":
+            return (0, "enabled\n", "") if self.history else (1, "", "")
         if c[0] == "aws":
             if "--cli-input-json" in c:
                 assert json.loads(stdin) == {"SecretId": ARN}
@@ -237,6 +240,12 @@ class BootstrapTests(unittest.TestCase):
             rc, error, _ = self.execute(fake)
             self.assertIsNotNone(error)
             self.assertEqual(fake.created, [])
+
+    def test_cli_history_enabled_stops_before_reading(self):
+        fake = FakeCluster(history=True)
+        rc, error, _ = self.execute(fake)
+        self.assertIn("cli_history", error)
+        self.assertFalse(any(c[:3] == ["aws", "secretsmanager", "get-secret-value"] for c in fake.calls))
 
     def test_namespace_must_be_restricted(self):
         fake = FakeCluster(namespace_labels={})

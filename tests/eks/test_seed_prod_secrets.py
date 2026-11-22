@@ -26,13 +26,15 @@ class FakeRun:
     """aws만 흉내 낸다. openssl은 진짜로 실행한다."""
 
     def __init__(self, remote=None, describe_error=None, create_error=None, created_anyway=False, account=ACCOUNT,
-                 password=None):
+                 password=None, history="", other_created=False):
         self.remote = remote
         self.describe_error = describe_error
         self.create_error = create_error
         self.created_anyway = created_anyway
         self.account = account
         self.password = password
+        self.history = history
+        self.other_created = other_created
         self.calls = []
         self.stdins = []
         self.created = None
@@ -44,6 +46,8 @@ class FakeRun:
         if command[0] == "openssl":
             result = subprocess.run(command, capture_output=True, text=True)
             return self.done(result.returncode, result.stdout, result.stderr, check, command)
+        if command[1:3] == ["configure", "get"]:
+            return self.done(0 if self.history else 1, self.history, "", check, command)
         if command[1:3] == ["sts", "get-caller-identity"]:
             return self.done(0, json.dumps({"Account": self.account, "Arn": ARN_ERROR}), "", check, command)
         sub = command[2]
@@ -59,12 +63,15 @@ class FakeRun:
             return self.done(0, json.dumps({"RandomPassword": value}), "", check, command)
         if sub == "create-secret":
             assert command[command.index("--secret-string") + 1] == "file:///dev/stdin"
+            token = command[command.index("--client-request-token") + 1]
             if self.create_error:
                 if self.created_anyway:
-                    self.remote = {"Name": "ureka/eks/prod/app"}
+                    self.remote = {"Name": "ureka/eks/prod/app", "VersionIdsToStages": {token: ["AWSCURRENT"]}}
+                if self.other_created:
+                    self.remote = {"Name": "ureka/eks/prod/app", "VersionIdsToStages": {"other": ["AWSCURRENT"]}}
                 return self.done(255, "", f"An error occurred ({self.create_error}) {ARN_ERROR}", check, command)
             self.created = json.loads(stdin)
-            self.remote = {"Name": "ureka/eks/prod/app"}
+            self.remote = {"Name": "ureka/eks/prod/app", "VersionIdsToStages": {token: ["AWSCURRENT"]}}
             return self.done(0, json.dumps({"ARN": ARN_ERROR}), "", check, command)
         raise AssertionError(command)
 
@@ -75,7 +82,7 @@ class FakeRun:
         return SimpleNamespace(returncode=code, stdout=out, stderr=err)
 
     def subs(self):
-        return [c[2] for c in self.calls if c[0] == "aws"]
+        return [c[2] for c in self.calls if c[0] == "aws" and c[1] != "configure"]
 
 
 class SeedTests(unittest.TestCase):
@@ -206,10 +213,25 @@ class SeedTests(unittest.TestCase):
         self.assertIn("InternalServiceError", printed)
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl 필요")
-    def test_create_failure_but_present_points_to_recovery(self):
+    def test_lost_response_but_own_version_counts_as_created(self):
         fake = FakeRun(create_error="InternalServiceError", created_anyway=True)
         code, printed = self.run_main(fake)
+        self.assertEqual(code, 0, printed)
+        self.assertIn("이번 실행의 버전", printed)
+
+    def test_cli_history_enabled_stops_first(self):
+        fake = FakeRun(history="enabled\n")
+        code, printed = self.run_main(fake)
         self.assertEqual(code, 1)
+        self.assertIn("cli_history", printed)
+        self.assertEqual(fake.subs(), [])
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl 필요")
+    def test_create_failure_but_other_version_points_to_recovery(self):
+        fake = FakeRun(create_error="InternalServiceError", other_created=True)
+        code, printed = self.run_main(fake)
+        self.assertEqual(code, 1)
+        self.assertIn("이번 실행의 버전이 아닙니다", printed)
         self.assertIn("prod 시드 실패 복구", printed)
         # 값을 담은 표준 입력은 create-secret 한 번에만 갔다.
         sent = [s for s in fake.stdins if s]

@@ -207,9 +207,9 @@ python3 scripts/eks/seed_prod_secrets.py check  --profile ureka-admin
 python3 scripts/eks/seed_prod_secrets.py create --profile ureka-admin --confirm-env prod
 ```
 
-- 승인 계정(STS) 확인 → 이미 있으면(삭제 예약 포함) 멈춤 → 비밀번호 6개·`EMAIL_CODE_SECRET`·`INTERNAL_SERVICE_TOKEN`은
+- AWS CLI history(`cli_history=enabled`)면 멈춤(요청·응답 본문이 로컬 기록에 남는다) → 승인 계정(STS) 확인 → 이미 있으면(삭제 예약 포함) 멈춤 → 비밀번호 6개·`EMAIL_CODE_SECRET`·`INTERNAL_SERVICE_TOKEN`은
   `secretsmanager get-random-password`(영문·숫자 64자), JWT 키 쌍(RSA 2048)은 0700 임시 폴더에서 openssl로 만들고 바로 지움
-  → 묶음 JSON을 aws 표준 입력으로만 `create-secret`. 값은 화면·명령 인자·Git·로그에 없다. 계정 이름 2개는 `content_db_prod_recommend`·`content_db_prod_ingest`.
+  → 묶음 JSON을 aws 표준 입력으로만 `create-secret`(이번 실행 표시로 무작위 `ClientRequestToken`을 붙인다). 값은 화면·명령 인자·Git·로그에 없다. 계정 이름 2개는 `content_db_prod_recommend`·`content_db_prod_ingest`.
 - 확인(값 없이): `aws secretsmanager describe-secret --secret-id ureka/eks/prod/app --profile ureka-admin --query '{Name:Name,Versions:VersionIdsToStages,Deleted:DeletedDate}'`
   → 버전 1개(AWSCURRENT). `get-secret-value`로 열어 보지 않는다.
 - SES·Gemini 값은 이 묶음에 없다(별도 비밀). 덮어쓰기·교체 기능은 없다(아래 'prod 값 교체').
@@ -217,7 +217,9 @@ python3 scripts/eks/seed_prod_secrets.py create --profile ureka-admin --confirm-
 #### prod 시드 실패 복구
 
 - "만들어지지 않았습니다": 아무것도 생기지 않았다. 원인(예외 이름·SSO 만료·권한)을 고친 뒤 그대로 다시 실행한다.
-- "그런데 … 있습니다"(응답 유실): 비밀은 한 번에 한 JSON으로만 들어가므로 있으면 값끼리는 맞다. 위 확인 명령으로 버전 1개면 **그대로 쓴다**.
+- 응답만 잃었는데 저장된 버전 ID가 이번 실행의 토큰이면 도구가 확인하고 성공으로 끝낸다("참고: 생성 응답은 잃었지만 …").
+- "이번 실행의 버전이 아닙니다": 동시에 다른 실행이 만든 것이다. 비밀은 한 번에 한 JSON으로만 들어가므로 값끼리는 맞다.
+  누가 실행했는지 확인하고, 위 확인 명령으로 버전 1개면 **그대로 쓴다**(이번 실행 값은 메모리에서 버렸다).
 - "확인하지 못했습니다": SSO를 다시 로그인하고 위 확인 명령으로 상태를 본 뒤 위 두 경우 중 하나로 처리한다.
 - 시드를 버리고 새로 만들어야 할 때(예: 형식 오류를 발견)는 **2번 DB bootstrap 전에만** 지운다:
   `aws secretsmanager delete-secret --secret-id ureka/eks/prod/app --force-delete-without-recovery --profile ureka-admin` → 다시 1번.
@@ -230,7 +232,7 @@ python3 scripts/eks/bootstrap_prod_db.py check --profile ureka-admin
 python3 scripts/eks/bootstrap_prod_db.py apply --profile ureka-admin --confirm-env prod
 ```
 
-- check: 승인 계정·ACTIVE EKS·kubectl 컨텍스트 `ureka-eks`·prod 네임스페이스 restricted·data output 형식·prod 묶음(속성·계정 이름·비밀번호 겹침) 확인. 마스터 비밀은 읽지 않는다. 변경 없음.
+- check: CLI history 꺼짐·승인 계정·ACTIVE EKS·kubectl 컨텍스트 `ureka-eks`·prod 네임스페이스 restricted·data output 형식·prod 묶음(속성·계정 이름·비밀번호 겹침) 확인. 마스터 비밀은 읽지 않는다. 변경 없음.
 - apply: 이전 실행 잔여물 삭제 확인 → RDS 마스터 비밀 읽기(ARN은 aws 표준 입력으로만) → prod 네임스페이스에 임시
   `db-bootstrap-prod-accounts`(SCRAM 해시 6개)·ConfigMap·`db-bootstrap-prod-master` → Job `db-bootstrap-prod`(`environments/eks/prod/db-bootstrap/job.yaml`,
   restricted 충족, `DB_SUFFIX=_prod`) → 완료 대기(최대 10분) → 로그 요약(확인 줄·오류 줄만, 해시는 가림)
