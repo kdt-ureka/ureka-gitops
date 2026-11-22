@@ -1,0 +1,103 @@
+# AWS Load Balancer Controller (#64). prod 공개 Ingress에서 ALB를 만든다. 설명·순서는 docs/eks-public.md.
+# 직접 kubectl apply 하지 않는다: scripts/eks/register_lbc_app.py가 승인 계정 ID를 IRSA 역할 ARN 자리에 넣어 등록한다.
+# 역할 ARN에는 계정 ID가 있어 이 PUBLIC 저장소에 쓰지 않는다. 자리표시 그대로 등록되면 STS가 거절해 컨트롤러가 아무것도 만들지 못한다(안전 쪽 실패).
+# 이 Application은 Git에서 동기화되지 않는다. 이 파일을 바꾸면 등록 스크립트를 다시 실행한다.
+#
+# 고정값
+# - 차트 eks-charts aws-load-balancer-controller 3.6.3 (appVersion v3.6.3, index digest 5c123ddd…49e76).
+#   IAM 정책 infra/environments/eks/policies/aws-load-balancer-controller-v3.6.3.json과 같이 올린다.
+# - 노드 IMDS hop limit 1이라 Pod가 IMDS로 리전·VPC를 알 수 없다: region·vpcTags를 직접 준다(VPC ID 대신 network 스택 태그).
+# - IngressClassParams가 이 클래스의 모든 Ingress에 강제한다: prod 네임스페이스만, 인터넷용 ALB 하나(group ureka-prod),
+#   대상 ip, TLS 정책, 80→443, WAF(ureka-eks-public, 이름으로 찾는다). Ingress 주석으로 바꿀 수 없다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-load-balancer-controller
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://aws.github.io/eks-charts
+    chart: aws-load-balancer-controller
+    targetRevision: 3.6.3
+    helm:
+      releaseName: aws-load-balancer-controller
+      valuesObject:
+        clusterName: ureka-eks
+        region: ap-northeast-2
+        vpcTags:
+          Project: ureka
+          Stack: network
+        replicaCount: 2
+        serviceAccount:
+          create: true
+          name: aws-load-balancer-controller
+          annotations:
+            eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID_INJECTED_AT_REGISTRATION:role/ureka-eks-aws-load-balancer-controller"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            memory: 256Mi
+        # type=LoadBalancer Service를 쓰지 않는다. 켜 두면 컨트롤러가 멈췄을 때 Service 생성까지 막힌다(failurePolicy Fail).
+        enableServiceMutatorWebhook: false
+        # Shield Advanced 구독 없음, 옛 WAF(Classic) 안 씀. WAFv2만.
+        enableShield: false
+        enableWaf: false
+        enableWafv2: true
+        defaultTargetType: ip
+        createIngressClassResource: true
+        ingressClass: alb
+        ingressClassConfig:
+          default: false
+        ingressClassParams:
+          create: true
+          name: ureka-prod-public
+          spec:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: prod
+            group:
+              name: ureka-prod
+            scheme: internet-facing
+            ipAddressType: ipv4
+            targetType: ip
+            sslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+            sslRedirectPort: "443"
+            wafv2AclName: ureka-eks-public
+            loadBalancerAttributes:
+              # 채팅 답변 SSE가 오래 열려 있다(frontend nginx proxy_read_timeout 120s와 같게).
+              - key: idle_timeout.timeout_seconds
+                value: "120"
+              - key: routing.http.drop_invalid_header_fields.enabled
+                value: "true"
+              - key: deletion_protection.enabled
+                value: "false"
+            tags:
+              Project: ureka
+              Stack: eks-alb
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  # 차트가 렌더링할 때마다 웹훅 인증서를 새로 만든다. 무시하지 않으면 계속 OutOfSync가 되고 동기화마다 인증서가 바뀐다.
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: aws-load-balancer-webhook
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: aws-load-balancer-webhook
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+    - kind: Secret
+      name: aws-load-balancer-tls
+      jsonPointers:
+        - /data
+  syncPolicy:
+    # 플랫폼 구성 요소라 사람이 Sync한다(prod 수동 동기화 원칙과 같게).
+    syncOptions:
+      - RespectIgnoreDifferences=true
+      - ServerSideApply=true

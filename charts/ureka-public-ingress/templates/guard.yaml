@@ -1,0 +1,20 @@
+{{- /* 렌더링 단계 안전장치: 잘못 쓰면 아무것도 만들지 않고 실패한다. */ -}}
+{{- if ne .Release.Namespace "prod" }}
+{{- fail "ureka-public-ingress is prod-only (dev is not public; IngressClassParams also refuses other namespaces)" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9-]+(\\.[a-z0-9-]+)+$" (required "host is required (e.g. magonjal.com)" .Values.host)) }}
+{{- fail "host must be a lowercase apex domain" }}
+{{- end }}
+{{- $paths := list }}
+{{- range .Values.routes }}
+{{- if contains "recommend" .service }}
+{{- fail "recommend is internal only and must not be routed from the public ALB" }}
+{{- end }}
+{{- if not (has .path (list "/" "/api/auth" "/api/chat" "/api/content" "/api/admin")) }}
+{{- fail (printf "unexpected public path %s: only / and the four /api/{auth,chat,content,admin} prefixes are reviewed" .path) }}
+{{- end }}
+{{- $paths = append $paths .path }}
+{{- end }}
+{{- if ne (len $paths) (len (uniq $paths)) }}
+{{- fail "duplicate public paths" }}
+{{- end }}

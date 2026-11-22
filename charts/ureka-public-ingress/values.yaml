@@ -1,0 +1,27 @@
+# prod 공개 입구 기본값. 환경 값은 environments/eks/prod/public-ingress.yaml. 설명은 docs/eks-public.md.
+# 비우면 렌더링이 실패한다(주소 없이 Ingress를 만들지 않는다).
+host: ""
+# www.<host>로 온 요청을 https://<host>로 301 돌려보낸다(인증서에 www도 들어 있다).
+wwwRedirect: true
+# ALB 헬스 체크. 프론트(nginx)와 백엔드 모두 /healthz가 있다(앱 상태만 보는 /readyz는 nginx에 없음).
+healthcheckPath: /healthz
+# 경로 → Service. Service 포트는 차트 기본 80. NetworkPolicy는 Pod 포트(containerPort)를 본다.
+# recommend는 내부 전용이라 넣지 않는다. 넣으면 렌더링이 실패한다.
+routes:
+  - path: /api/auth
+    service: ureka-auth
+  - path: /api/chat
+    service: ureka-chat
+  - path: /api/content
+    service: ureka-content
+  - path: /api/admin
+    service: ureka-ops
+  - path: /
+    service: ureka-frontend
+servicePort: 80
+podPort: 8080
+# ALB(대상 ip 방식)가 Pod로 직접 연결하는 출발지 = 공개 서브넷(ALB 노드가 이 안에 있다).
+# 서브넷 CIDR은 infra/environments/network/main.tf의 cidrsubnet(vpc_cidr, 8, 0..1)과 같다(사설 주소라 공개 저장소에 써도 된다).
+albSourceCidrs:
+  - 10.0.0.0/24
+  - 10.0.1.0/24

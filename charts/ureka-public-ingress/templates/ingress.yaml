@@ -1,0 +1,54 @@
+{{- /*
+prod 공개 Ingress. 클래스 alb의 IngressClassParams(argocd/eks/aws-load-balancer-controller-app.yaml)가
+인터넷용 ALB 하나(group ureka-prod)·대상 ip·TLS 정책·80→443·WAF(ureka-eks-public)를 강제한다. 여기 주석으로 바꿀 수 없다.
+인증서는 ARN을 쓰지 않고 tls.hosts로 ACM에서 찾는다(계정 ID가 Git에 남지 않음).
+관리자 경로 IP 제한·비회원 발급 요청 수 제한은 WAF가 한다(IP 값은 Terraform 비공개 tfvars).
+경로는 ALB가 정의 순서와 관계없이 긴 경로를 먼저 맞추도록 컨트롤러가 정렬한다. "/"는 나머지 전부(화면)다.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ureka-public
+  labels:
+    {{- include "ureka-public-ingress.labels" . | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.healthcheckPath | quote }}
+    alb.ingress.kubernetes.io/success-codes: "200"
+    {{- if .Values.wwwRedirect }}
+    alb.ingress.kubernetes.io/actions.www-to-apex: >-
+      {"type":"redirect","redirectConfig":{"host":{{ .Values.host | quote }},"port":"443","protocol":"HTTPS","statusCode":"HTTP_301"}}
+    {{- end }}
+spec:
+  ingressClassName: alb
+  tls:
+    - hosts:
+        - {{ .Values.host | quote }}
+        {{- if .Values.wwwRedirect }}
+        - {{ printf "www.%s" .Values.host | quote }}
+        {{- end }}
+  rules:
+    - host: {{ .Values.host | quote }}
+      http:
+        paths:
+          {{- range .Values.routes }}
+          - path: {{ .path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .service }}
+                port:
+                  number: {{ $.Values.servicePort }}
+          {{- end }}
+    {{- if .Values.wwwRedirect }}
+    - host: {{ printf "www.%s" .Values.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: www-to-apex
+                port:
+                  name: use-annotation
+    {{- end }}

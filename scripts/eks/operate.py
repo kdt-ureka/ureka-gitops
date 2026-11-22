@@ -152,6 +152,18 @@ class Operator:
                           "Name=ip-permission.group-id,Values=" + node_sg)["SecurityGroups"]
         if any(g["GroupId"] not in (node_sg, cluster_sg) for g in groups):
             raise SafeError("외부 SG의 인바운드 참조가 남았습니다. data 등에서 참조 제거·적용이 먼저입니다.")
+        self.alb_gate(name, cluster["resourcesVpcConfig"]["vpcId"])
+
+    def alb_gate(self, name, vpc_id):
+        # 컨트롤러가 만든 ALB가 남은 채 destroy하면 WAF 삭제에서 멈추고, 클러스터가 먼저 지워지면 관리자 없는 ALB가 과금된다.
+        arns = [lb["LoadBalancerArn"] for lb in self.aws("elbv2", "describe-load-balancers")["LoadBalancers"]
+                if lb.get("VpcId") == vpc_id]
+        for start in range(0, len(arns), 20):
+            described = self.aws("elbv2", "describe-tags", "--resource-arns", *arns[start:start + 20])
+            for item in described["TagDescriptions"]:
+                if any(t["Key"] == "elbv2.k8s.aws/cluster" and t["Value"] == name for t in item.get("Tags", [])):
+                    raise SafeError("이 클러스터 컨트롤러가 만든 ALB가 남아 있습니다. 공개 Ingress Application을 먼저 지우고 "
+                                    "ALB가 사라진 것을 확인해 주세요(docs/eks-public.md 끄기 순서).")
 
     def plan(self, destroy=False):
         identity = self.identity()

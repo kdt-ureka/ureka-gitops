@@ -1,0 +1,30 @@
+{{- /*
+ALB → 공개 경로 Pod만 연다. prod 기본 거부 정책이 있을 때 이 허용이 없으면 ALB 헬스 체크·요청이 막힌다.
+NetworkPolicy는 더하기만 하므로, 다른 정책(서비스 간 호출)과 겹쳐도 이 규칙 밖을 넓히지 않는다.
+recommend 등 공개 경로에 없는 Pod는 고르지 않는다.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-alb
+  labels:
+    {{- include "ureka-public-ingress.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          {{- range .Values.routes }}
+          - {{ .service }}
+          {{- end }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range required "albSourceCidrs is required" .Values.albSourceCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.podPort }}

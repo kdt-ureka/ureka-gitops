@@ -1,0 +1,5 @@
+apiVersion: v2
+name: ureka-public-ingress
+description: prod 공개 입구(ALB Ingress) — 화면 1줄 + API 4줄, recommend 없음 (#64)
+type: application
+version: 0.1.0

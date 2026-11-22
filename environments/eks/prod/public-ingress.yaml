@@ -1,0 +1,4 @@
+# EKS prod 공개 입구 values (#64). chart: charts/ureka-public-ingress. 등록: argocd/eks/prod-public-ingress-app.yaml.
+# 도메인은 공개 정보라 Git에 쓴다. IP·계정 ID·ARN은 쓰지 않는다(관리자 IP는 Terraform 비공개 tfvars의 WAF IP 목록).
+host: magonjal.com
+wwwRedirect: true
