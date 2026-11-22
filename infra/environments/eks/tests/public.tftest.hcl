@@ -119,9 +119,14 @@ run "public_phase_one" {
     )])
     error_message = "Ambiguous path rule rejects with 400 on the URI path."
   }
+  # 배포 문자열 자체: AWS WAF가 거부하는 괄호(캡처·비캡처 그룹)·되돌림 참조·전후방 탐색이 없다.
+  assert {
+    condition     = !strcontains(local.ambiguous_path_regex, "(") && !strcontains(local.ambiguous_path_regex, ")") && one([for r in aws_wafv2_web_acl.public[0].rule : r.statement[0].regex_match_statement[0].regex_string if r.name == "block-ambiguous-path"]) == "//|/\\.\\./|/\\./|/\\.\\.$|/\\.$|%2e|%2f|%5c|%25|%00|\\\\|;"
+    error_message = "WAF regex must not contain parentheses; the deployed string is the reviewed one."
+  }
   # RE2(Terraform)로 같은 정규식 동작 확인. WAF 실제 동작은 제한 단계 시험에서 다시 본다.
   assert {
-    condition     = alltrue([for p in ["/api//admin/v1/x", "//api/admin", "/api/./admin", "/api/x/../admin", "/api/%2e%2e/admin", "/api/%2fadmin", "/api/%252e", "/api\\admin", "/api/admin;x/v1", "/api/%00", "/api/admin/.."] : can(regex(local.ambiguous_path_regex, lower(p)))])
+    condition     = alltrue([for p in ["/api//admin/v1/x", "//api/admin", "/api/./admin", "/api/x/../admin", "/api/%2e%2e/admin", "/api/%2fadmin", "/api/%252e", "/api\\admin", "/api/admin;x/v1", "/api/%00", "/api/admin/..", "/api/admin/.", "/a/./b", "/a/../b"] : can(regex(local.ambiguous_path_regex, lower(p)))])
     error_message = "Ambiguous forms must match."
   }
   assert {
@@ -231,8 +236,8 @@ run "public_open_after_gate" {
     public_access_mode = "open"
   }
   assert {
-    condition     = toset(keys(aws_vpc_security_group_ingress_rule.alb_open)) == toset(["80", "443"]) && alltrue([for r in aws_vpc_security_group_ingress_rule.alb_open : r.cidr_ipv4 == "0.0.0.0/0"]) && length(aws_vpc_security_group_ingress_rule.alb_testers) == 0
-    error_message = "Open mode replaces the tester rules with world 80/443."
+    condition     = toset(keys(aws_vpc_security_group_ingress_rule.alb_open)) == toset(["80", "443"]) && alltrue([for r in aws_vpc_security_group_ingress_rule.alb_open : r.cidr_ipv4 == "0.0.0.0/0"]) && toset(keys(aws_vpc_security_group_ingress_rule.alb_testers)) == toset(["80", "443"])
+    error_message = "Open mode adds world 80/443 and keeps the tester rules (open plan is additions only)."
   }
 }
 

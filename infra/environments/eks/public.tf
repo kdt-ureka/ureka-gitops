@@ -14,7 +14,8 @@ locals {
   # 순서대로 적용: 디코딩 → 경로 정규화(//, /./, /../) → 소문자.
   path_transforms = ["URL_DECODE", "NORMALIZE_PATH", "LOWERCASE"]
   # 소문자로 바꾼 원래 경로에서 찾는다. 정상 화면·API 경로에는 나오지 않는 형식만 넣는다.
-  ambiguous_path_regex = "//|/\\.\\.?(/|$)|%(2e|2f|5c|25|00)|\\\\|;"
+  # AWS WAF 정규식은 캡처 그룹(괄호)을 지원하지 않는다: 괄호 없이 대안(|)만 쓴다(tests/public.tftest.hcl이 괄호 없음을 검사).
+  ambiguous_path_regex = "//|/\\.\\./|/\\./|/\\.\\.$|/\\.$|%2e|%2f|%5c|%25|%00|\\\\|;"
 }
 
 # 도메인 구매 때 Route 53이 만든 공개 호스팅 영역. Terraform이 만들거나 지우지 않는다.
@@ -60,7 +61,7 @@ resource "aws_acm_certificate_validation" "public" {
 # ---------- ALB 입구 보안 그룹 (단계별 공개) ----------
 # ALB 프런트엔드 SG를 Terraform이 소유한다. Ingress가 이름(Name 태그)으로 붙인다(charts/ureka-public-ingress).
 # public_access_mode = "testers"(기본): 80/443을 시험자 /32 목록에서만 받는다. 목록이 비면 아무도 못 들어온다.
-# public_access_mode = "open": 게이트(docs/eks-public.md) 통과·파트장 승인 뒤 별도 apply로 인터넷 전체에 연다.
+# public_access_mode = "open": 게이트(docs/eks-public.md) 통과·파트장 승인 뒤 별도 apply로 인터넷 전체 규칙을 더한다(시험자 규칙은 유지).
 resource "aws_ec2_managed_prefix_list" "alb_testers" {
   count          = local.public_count
   name           = "${local.name}-alb-testers"
@@ -81,7 +82,8 @@ resource "aws_security_group" "alb_public" {
   tags        = { Name = local.alb_security_group }
 }
 resource "aws_vpc_security_group_ingress_rule" "alb_testers" {
-  for_each          = var.public_enabled && var.public_access_mode == "testers" ? toset(["80", "443"]) : toset([])
+  # open 단계에서도 지우지 않는다: open 전환 plan이 생성 2개만 되어 운영 도구 일반 plan(삭제 거부)으로 적용할 수 있다.
+  for_each          = var.public_enabled ? toset(["80", "443"]) : toset([])
   security_group_id = aws_security_group.alb_public[0].id
   prefix_list_id    = aws_ec2_managed_prefix_list.alb_testers[0].id
   ip_protocol       = "tcp"
