@@ -65,7 +65,12 @@ def main():
     if secret_state(a.secret_id, a.profile, a.region) == "exists":
         raise SystemExit("중단: 같은 이름의 비밀이 이미 있습니다. 덮어쓰지 않습니다.")
 
-    key = aws(["iam", "create-access-key", "--user-name", a.user_name], a.profile, a.region)["AccessKey"]
+    try:
+        key = aws(["iam", "create-access-key", "--user-name", a.user_name], a.profile, a.region)["AccessKey"]
+    except SystemExit:
+        print(f"키 생성 응답을 받지 못했습니다. 키가 만들어졌을 수 있으니 {a.user_name}의 접근 키를 "
+              "확인하고(aws iam list-access-keys) 남아 있으면 지운 뒤 다시 실행하세요.", file=sys.stderr)
+        raise
     try:
         value = json.dumps({"MAIL_USERNAME": key["AccessKeyId"],
                             "MAIL_PASSWORD": smtp_password(key["SecretAccessKey"], a.region)})
@@ -79,9 +84,13 @@ def main():
         except SystemExit:
             state = "unknown"
         if state == "absent":
-            aws(["iam", "delete-access-key", "--user-name", a.user_name, "--access-key-id", key["AccessKeyId"]],
-                a.profile, a.region)
-            print("비밀 저장 실패: 방금 만든 접근 키를 지웠습니다.", file=sys.stderr)
+            try:
+                aws(["iam", "delete-access-key", "--user-name", a.user_name, "--access-key-id", key["AccessKeyId"]],
+                    a.profile, a.region)
+                print("비밀 저장 실패: 방금 만든 접근 키를 지웠습니다.", file=sys.stderr)
+            except SystemExit:
+                print(f"비밀 저장 실패, 방금 만든 접근 키 삭제도 실패했습니다. {a.user_name}의 접근 키를 "
+                      "콘솔이나 aws iam list-access-keys로 확인해 직접 지우세요.", file=sys.stderr)
         else:
             print(f"비밀 저장 결과가 불확실합니다(상태: {state}). 키를 지우지 않았습니다. "
                   f"{a.secret_id} 존재와 {a.user_name}의 키 개수를 확인한 뒤 정리하세요.", file=sys.stderr)
