@@ -9,8 +9,8 @@ replicaCount: 1
 
 image:
   repository: localhost:5001/ureka/chat
-  tag: sha-8cffeee34f0f50e18baeeed5523c3822f85c45ed
-  digest: sha256:7ca4f9815798950e2c384dc43b331d97de2c4317d4b0f76dce8e4716689fbfca
+  tag: sha-9e87f390928a186c3fa6911419bf9b4796d180e4
+  digest: sha256:7aeff3ba99cd1636e8842289bb71901173db6040bb2ae898625f24432fdb1c3c
   pullPolicy: IfNotPresent
 
 # api는 이미지 기본 명령(uvicorn app.main:app, 8080)을 쓴다. command를 비운다.
@@ -55,6 +55,9 @@ env:
     value: http://ureka-content
   - name: RECOMMEND_BASE_URL
     value: http://ureka-recommend
+  # dev 임시 수용: 전체 15초 중 마무리 2초. 운영값은 실측 뒤 chat 담당과 확정한다.
+  - name: RECOMMEND_COMPLETION_RESERVE_SECONDS
+    value: "2"
   - name: API_DOCS_ENABLED
     value: "false"
   # AI는 선택. Secret ureka-chat-ai(AI_MODE=gemini, AI_API_KEY)가 있을 때만 켜진다(create-secrets.sh --chat-ai).
