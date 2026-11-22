@@ -1,0 +1,21 @@
+# EKS dev 상한(시험용). t3.large 2대 기준 계산은 docs/eks-namespaces.md.
+# 서비스 7개(auth 2개) 평상시 요청 790m·약 2.4Gi, auth 카나리 파드 1개 + chat 마이그레이션 Job까지 960m·약 3.0Gi.
+# ingest(EC2와 같은 Job·PVC 2개)는 카나리와 동시에 돌리지 않는다(메모리 상한 합이 6Gi를 넘는다).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: dev
+spec:
+  hard:
+    requests.cpu: 1200m
+    requests.memory: 3584Mi
+    limits.cpu: "8"
+    limits.memory: 6Gi
+    pods: "15"
+    # 외부 공개는 #64 ALB Ingress(target-type ip)로만 한다. LB·NodePort Service는 만들 수 없다.
+    services.loadbalancers: "0"
+    services.nodeports: "0"
+    # ingest 원본·결과 PVC(EC2: 2Gi + 1Gi)
+    persistentvolumeclaims: "2"
+    requests.storage: 20Gi

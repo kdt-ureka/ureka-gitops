@@ -1,0 +1,17 @@
+# 임시 kind 시험 전용(scripts/test-eks-namespaces-kind.sh). 실제 Argo Rollouts CRD가 아니다.
+# kubectl auth can-i가 rollouts.argoproj.io와 status 하위 자원을 찾을 수 있게 이름·하위 자원만 맞춘 최소 정의.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rollouts.argoproj.io
+spec:
+  group: argoproj.io
+  names: {kind: Rollout, listKind: RolloutList, plural: rollouts, singular: rollout}
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}

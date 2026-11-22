@@ -1,0 +1,32 @@
+# 그룹 이름은 EKS access entry의 kubernetes_groups와 같아야 한다("system:"으로 시작할 수 없다).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prod-viewers
+  namespace: prod
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prod-viewer
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: ureka-prod-viewers
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: ureka-prod-rollout-operators
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prod-auth-rollout-operators
+  namespace: prod
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prod-auth-rollout-operator
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: ureka-prod-rollout-operators
