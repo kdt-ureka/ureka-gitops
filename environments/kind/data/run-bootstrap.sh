@@ -1,5 +1,6 @@
 #!/bin/sh
-# db-bootstrap Job 본문. 1) verifier 형식 검사 → 2) DB 준비 대기 → 3) db-bootstrap.sql 실행.
+# db-bootstrap Job 본문. 1) verifier 형식·DB_SUFFIX 검사 → 2) DB 준비 대기 → 3) db-bootstrap.sql 실행.
+# DB_SUFFIX(선택): 비면 kind·EC2 dev 이름, _prod면 EKS prod 이름(scripts/eks/bootstrap_prod_db.py가 넣는다).
 # 1)이 모두 통과하기 전에는 pg_isready·psql을 부르지 않는다(잘못 들어간 원문이 서버로 가지 않게).
 # 회귀 시험: scripts/test-run-bootstrap.sh (가짜 pg_isready·psql로 호출 횟수까지 본다).
 set -eu
@@ -40,11 +41,18 @@ for v in AUTH_DB_APP_SCRAM CONTENT_DB_APP_SCRAM CONTENT_DB_RECOMMEND_SCRAM CONTE
   check_verifier "$v"
 done
 
+# 환경 접미사(db-bootstrap.sql 머리 주석): 비었으면 지금 이름(kind·EC2 dev), _prod면 EKS prod 이름. 다른 값은 DB에 닿기 전에 멈춘다.
+db_suffix="${DB_SUFFIX:-}"
+case "$db_suffix" in
+  '' | _prod) ;;
+  *) echo "DB_SUFFIX는 비어 있거나 _prod여야 합니다" >&2; exit 1 ;;
+esac
+
 i=0
 until pg_isready -q; do
   i=$((i + 1))
   [ "$i" -gt 60 ] && { echo "postgres 준비 안 됨"; exit 1; }
   sleep 2
 done
-psql -v ON_ERROR_STOP=1 -X -q -f "$dir/db-bootstrap.sql"
-echo "db-bootstrap 완료"
+psql -v ON_ERROR_STOP=1 -v "db_suffix=$db_suffix" -X -q -f "$dir/db-bootstrap.sql"
+echo "db-bootstrap 완료${db_suffix:+ (${db_suffix})}"

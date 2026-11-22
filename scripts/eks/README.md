@@ -122,6 +122,10 @@ outputs가 없거나 적용이 실패했으면 자동 삭제·재시도를 하�
 `register_secrets_app.py check|apply --env dev|prod`는 승인 계정 ID를 `argocd/eks/secrets-<env>-app.yaml`의 빈칸에
 메모리에서 넣어 kubectl 표준 입력으로만 등록한다. 절차와 선행 조건은 [EKS 비밀값](../../docs/eks-secrets.md).
 
+prod는 등록 전에 두 도구를 순서대로 쓴다(둘 다 `check`는 변경 없음, 실제 실행은 `--confirm-env prod`).
+- `seed_prod_secrets.py check|create`: `ureka/eks/prod/app`을 새 값으로 한 번 만든다. 있으면 멈춘다.
+- `bootstrap_prod_db.py check|apply`: 같은 RDS에 `<db>_prod` DB·계정을 만든다(임시 Secret·Job은 끝나면 지우고 확인).
+
 ## 안전 시험
 
 ```sh

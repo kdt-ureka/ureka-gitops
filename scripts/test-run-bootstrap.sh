@@ -114,6 +114,39 @@ for v in "${vars[@]}"; do
   done
 done
 
+# DB_SUFFIX: 비거나 _prod만 받는다. 다른 값은 DB 호출 0회. 받은 값은 psql 변수 db_suffix로 넘긴다.
+mkdir -p "$work/argbin"
+printf '#!/bin/sh\necho "$0 $*" >>"$FAKE_LOG"\nexit 0\n' >"$work/argbin/psql"
+printf '#!/bin/sh\necho pg_isready >>"$FAKE_LOG"\nexit 0\n' >"$work/argbin/pg_isready"
+chmod +x "$work/argbin/psql" "$work/argbin/pg_isready"
+suffix_run() { # DB_SUFFIX 값(unset이면 넘기지 않음)
+  : >"$work/log"; rc=0
+  local extra=()
+  [ "$1" = unset ] || extra=("DB_SUFFIX=$1")
+  env -i PATH="$work/argbin:/usr/bin:/bin" FAKE_LOG="$work/log" BOOTSTRAP_DIR="$work/bootstrap" \
+    AUTH_DB_APP_SCRAM="$good2" CONTENT_DB_APP_SCRAM="$good2" CONTENT_DB_INGEST_SCRAM="$good2" \
+    CHAT_DB_APP_SCRAM="$good2" OPS_DB_APP_SCRAM="$good2" CONTENT_DB_RECOMMEND_SCRAM="$good" \
+    ${extra[@]+"${extra[@]}"} sh environments/kind/data/run-bootstrap.sh >"$work/out" 2>&1 || rc=$?
+}
+for case_ in "unset:db_suffix= " "_prod:db_suffix=_prod "; do
+  value="${case_%%:*}"; want="${case_#*:}"
+  suffix_run "$value"
+  if [ "$rc" -eq 0 ] && grep -q "psql .*-v ${want}-X" "$work/log"; then
+    echo "ok   DB_SUFFIX ${value}: psql에 ${want% }로 넘김"
+  else
+    echo "FAIL DB_SUFFIX ${value}: 종료 ${rc}"; cat "$work/log"; status=1
+  fi
+done
+for value in _dev prod "_prod;DROP" "_prod "; do
+  suffix_run "$value"
+  calls="$(wc -l <"$work/log" | tr -d ' ')"
+  if [ "$rc" -ne 0 ] && [ "$calls" -eq 0 ]; then
+    echo "ok   DB_SUFFIX '${value}': 종료 ${rc}, DB 호출 0회"
+  else
+    echo "FAIL DB_SUFFIX '${value}': 종료 ${rc}, DB 호출 ${calls}회"; status=1
+  fi
+done
+
 # SQL이 6개 해시를 모두 읽는지(변수 이름 오타로 빈 값이 들어가지 않게)
 for v in "${vars[@]}"; do
   if grep -Eq "^[\\]getenv [a-z_]+ ${v}\$" environments/kind/data/db-bootstrap.sql; then

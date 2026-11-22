@@ -1,6 +1,6 @@
 # EKS 비밀값: Secrets Manager → ESO, 최소 IRSA (#63)
 
-이 문서는 CN 담당이 교차 검토 뒤 실행할 절차다. 초안 작성 때 AWS 조회·apply·클러스터 변경은 하지 않았다.
+이 문서는 CN 담당이 교차 검토 뒤 실행할 절차다. 초안 작성 때 AWS 조회·apply·클러스터 변경은 하지 않았다(prod 시드·bootstrap 도구 포함).
 AWS 변경(Terraform apply, 비밀 생성)은 교차 검토와 파트장 승인 뒤 파트장이 직접 한다.
 
 ## 한눈에
@@ -11,7 +11,7 @@ EC2 dev k3s Secret ──(1회 복사, EC2 서버 안)──▶ Secrets Manager 
                                      IRSA 역할 ureka-eks-eso-dev ◀── dev:ureka-secrets-reader 토큰(ESO만 발급)
                                                    │
                           ESO(external-secrets 네임스페이스, AWS 권한 없음) → dev의 기존 이름 Secret 8개
-prod도 같은 구조(ureka/eks/prod/*, ureka-eks-eso-prod, prod:ureka-secrets-reader). 값은 새로 만든다(후속 PR).
+prod도 같은 구조(ureka/eks/prod/*, ureka-eks-eso-prod, prod:ureka-secrets-reader). 값은 새로 만든다(seed_prod_secrets.py).
 ```
 
 - **dev 원본 = EC2 dev 값의 복사본(방식 A).** EKS dev는 EC2 dev와 같은 RDS dev DB·계정을 쓰므로 DB 비밀번호가 같아야 한다.
@@ -27,10 +27,11 @@ prod도 같은 구조(ureka/eks/prod/*, ureka-eks-eso-prod, prod:ureka-secrets-r
 |---|---|---|
 | `ureka/eks/dev/app` | 아래 12개 | `scripts/ec2/copy_eks_dev_secrets.py`(EC2 값 복사) |
 | `ureka/eks/dev/chat-ai` | `AI_MODE`, `AI_API_KEY` | 같은 스크립트(필수: EC2에 `ureka-chat-ai`가 없으면 복사 전체를 멈춤) |
-| `ureka/eks/prod/app` | 아래 12개(새 값) | 후속 PR 시드 절차 |
+| `ureka/eks/prod/app` | 아래 12개(새 값) | `scripts/eks/seed_prod_secrets.py`(아래 'prod 순서') |
+| `ureka/eks/prod/ses-smtp` | `MAIL_USERNAME`, `MAIL_PASSWORD` → Secret `ureka-auth-mail` | `scripts/ses/create-smtp-secret.py`(gitops#91, `docs/ses.md`). prod만 연결 |
 | `ureka/eks/prod/chat-ai` | 위와 같음 | prod용 키가 정해지면(아직 끔) |
 
-비용: 비밀 4개 × $0.40/월 = 약 $1.6/월, API 호출은 1시간 새로 고침 기준 월 $0.1 미만(가정, 계산기로 재확인).
+비용: 비밀 5개 × $0.40/월 = 약 $2/월, API 호출은 1시간 새로 고침 기준 월 $0.1 미만(가정, 계산기로 재확인).
 Gemini 키는 교체 담당·주기가 달라 따로 둔다. 기존 `ureka/dev/chat-ai`(EC2 원본)는 그대로 둔다.
 
 `app` 묶음 속성 → 만들어지는 Secret(이름·키는 `create-secrets.sh`와 같아 앱 values의 `secretKeyRef`를 바꾸지 않는다):
@@ -50,6 +51,7 @@ Gemini 키는 교체 담당·주기가 달라 따로 둔다. 기존 `ureka/dev/c
 표의 원본은 `charts/ureka-eks-secrets/values.yaml`의 `bundles`다. 복사 스크립트의 표와 같은지 `tests/eks/test_copy_eks_dev_secrets.py`가,
 앱이 읽는 모든 `secretKeyRef`를 만드는지 `scripts/test-eks-secrets.sh`가 확인한다.
 만들지 않는 것: `postgres-admin`(kind 전용), `db-accounts`·`db-accounts-chat-ops`(bootstrap용 해시), `rds-master`.
+prod bootstrap의 임시 Secret(`db-bootstrap-prod-master`·`db-bootstrap-prod-accounts`)은 도구가 만들고 실행 뒤 지운다(ESO와 무관).
 
 ## 권한 경계
 
@@ -162,7 +164,7 @@ DB 비밀번호만 따로 바꾸는 절차는 없다(EC2 `create-secrets.sh`도 
 
    - 앱 서비스계정 토큰으로 역할 맡기 → `AccessDenied`(신뢰 조건 불일치). 방법은 #43 앱 배포 뒤 임시 Pod로 시험하고, 토큰은 출력하지 않는다.
    - dev SecretStore로 `ureka/eks/prod/app`을 가리키는 임시 ExternalSecret → 상태 메시지에 `AccessDenied`, 같은 형식의 dev 경로 ExternalSecret은 Ready(비교). 확인 뒤 둘 다 삭제.
-6. prod는 prod 시드(후속 PR) 뒤 `--env prod`로 같은 순서를 밟는다. 시드 전에는 등록하지 않는다.
+6. prod는 아래 'prod 순서'를 따른다(시드·DB bootstrap 뒤 `--env prod`로 3~5번). 시드 전에는 등록하지 않는다.
    prod Application은 **자동 Sync가 없다.** 등록 뒤에도 main에 병합된 변경(SecretStore·리더 정책·속성 매핑)은 CN이 Argo CD diff를 확인하고 손으로 Sync해야 반영된다.
    dev는 자동 Sync(selfHeal)다. Secrets Manager 값의 1시간 갱신은 ESO 동작이라 Sync와 별개다.
 
@@ -170,9 +172,10 @@ Application은 prune을 끈다. `ExternalSecret`이 지워지면 소유한 Secre
 누가 ExternalSecret을 직접 지우면 Secret도 지워질 수 있다). 묶음을 없애는 변경은 병합 뒤 CN이 해당 자원만 확인하고 지운다.
 원격 비밀이 사라지면 마지막 Secret 값은 남는다(`deletionPolicy: Retain`).
 
-## prod DB·계정 생성 설계 (후속 PR, 실행은 CN이 교차 검토 뒤)
+## prod 순서 (시드 → DB bootstrap → 비밀 앱 → 앱, CN 실행)
 
-같은 RDS 인스턴스 안에 prod 전용 논리 DB와 계정을 만든다. dev와 데이터·계정을 공유하지 않는다. RDS 추가 비용은 없다.
+같은 RDS 인스턴스 안에 prod 전용 논리 DB·계정을 만들고, 그 비밀번호를 prod 전용 비밀 묶음에 둔다. dev와 데이터·계정·값을 공유하지 않는다.
+**prod 비밀·DB가 없으면 prod 앱은 뜨지 않는다**(DB 인증 실패). 아래 순서를 지킨다. 각 단계는 교차 검토·파트장 승인 뒤 파트장이 실행한다.
 
 | 구분 | dev(지금) | prod(새로) |
 |---|---|---|
@@ -180,28 +183,107 @@ Application은 prune을 끈다. `ExternalSecret`이 지워지면 소유한 Secre
 | 로그인 계정 | `<db>_app`, `content_db_recommend`, `content_db_ingest` | `<db>_prod_app`, `content_db_prod_recommend`, `content_db_prod_ingest` |
 | NOLOGIN 역할 | `content_db_recommend_search`, `content_db_ingest_writer`, `content_db_rag_search_definer`(V14) | `content_db_prod_recommend_search`, `content_db_prod_ingest_writer`, `content_db_prod_rag_search_definer`(V14) |
 
-- 이름 규칙은 `<DB 이름>_<용도>`다. content 마이그레이션(V12·V14)이 역할 이름을 `current_database()`로 만들기 때문에
-  DB 이름만 바꾸면 검색 함수 소유·호출 역할도 앱 수정 없이 `content_db_prod_*`로 생긴다. 각 prod DB에서 PUBLIC CONNECT를 회수하고
-  dev 계정은 prod DB에, prod 계정은 dev DB에 CONNECT가 없어야 한다. 후속 검증은 양방향(기존 dev DB 포함) CONNECT 회수·허용과
-  역할 상속(멤버십·INHERIT/SET)을 모두 확인하는 쿼리로 한다.
+- 이름 규칙은 `<DB 이름>_<용도>`다. `environments/kind/data/db-bootstrap.sql`이 psql 변수 `db_suffix`(빈 값 또는 `_prod`)로 이름을 만든다.
+  dev(kind·EC2·EKS dev)는 지금과 같은 이름이고(변수 없이 실행해도 같다), 다른 값은 아무것도 만들지 않고 멈춘다.
+  content 마이그레이션(V12·V14)이 역할 이름을 `current_database()`로 만들어 검색 함수 역할도 앱 수정 없이 `content_db_prod_*`가 된다.
+- 권한 구조는 dev와 같다: 각 prod DB의 PUBLIC CONNECT 회수, 검색·적재 계정은 NOLOGIN 역할 상속(INHERIT, SET 끔)으로만 권한을 받는다.
+  dev 계정은 prod DB에, prod 계정은 dev DB에 접속하지 못하고 dev·prod 역할 사이 멤버십도 없다
+  (`scripts/test-db-bootstrap-sql.sh`가 같은 서버에 두 벌을 만들어 슈퍼유저·RDS 마스터 흉내 두 경우 모두 확인).
 - prod 앱 values(#43)는 DB URL·사용자 이름만 prod 이름으로 덮어쓴다. Secret 이름·키는 dev와 같다.
-- 비밀번호·토큰은 **Secrets Manager `get-random-password`가 만든다.** JWT 키 쌍만 운영 PC의 0700 임시 폴더에서 openssl로 만든다.
-  값은 화면·명령 인자·Git·채팅에 싣지 않고, `ureka/eks/prod/app`이 이미 있으면 멈춘다(덮어쓰기 없음).
-- 계정 생성: 지금 `db-bootstrap.sql`을 DB·역할 이름 매개변수(접미사 `_prod`)를 받게 고치고, kind 시험(`scripts/test-db-bootstrap-sql.sh`)에
-  dev·prod 두 벌을 같은 서버에 만드는 경우와 서로 CONNECT가 없는 경우를 더한다.
-  실행은 `rds-bootstrap.sh`와 같은 흐름이다: 운영 PC가 `ureka/eks/prod/app`의 비밀번호로 **SCRAM 해시만** 계산 → EKS의 임시 bootstrap 네임스페이스에
-  해시 Secret과 RDS 마스터 임시 Secret → Job 실행 → 성공·실패와 관계없이 마스터 Secret·Job을 지우고 사라졌는지 확인.
-  비밀번호 원문은 DB 서버로 보내지 않는다. 마스터 비밀 읽기는 CN SSO에서만, ESO 리더에는 주지 않는다.
 - content prod 데이터는 재적재 또는 dev 복사 중 별도 결정(ingest 담당과). 이 절차는 빈 DB·계정까지만이다.
-- 후속 PR 범위: prod 시드 스크립트·시험, bootstrap SQL 매개변수화·시험, 실행 스크립트·시험, 이 절 갱신.
+
+### 0. 선행
+
+- #62(prod 네임스페이스, Pod Security restricted)·#63(이 문서)·이 PR 병합. SES 비밀(`ureka/eks/prod/ses-smtp`, `docs/ses.md` 3번).
+- 운영 PC: AWS SSO `ureka-admin` 로그인, `UREKA_EXPECTED_ACCOUNT_ID`를 화면에 보이지 않게 읽어 둠(`scripts/eks/README.md` '준비'),
+  `infra/environments/data`를 `backend.hcl`로 init(도구가 `terraform output`으로 마스터 비밀 ARN·엔드포인트를 읽는다).
+- 2번부터: EKS가 켜져 있고(#42), data 스택 RDS SG가 **지금 EKS 노드 SG**에서 5432를 허용(EKS를 새로 만들면 data 재plan에서 SG 규칙만 바뀌는지 확인),
+  RDS `available`. Job 이미지는 Docker Hub에서 NAT로 받는다.
+
+### 1. 시드: `ureka/eks/prod/app` 만들기 (EKS 불필요)
+
+```sh
+python3 scripts/eks/seed_prod_secrets.py check  --profile ureka-admin
+python3 scripts/eks/seed_prod_secrets.py create --profile ureka-admin --confirm-env prod
+```
+
+- 승인 계정(STS) 확인 → 이미 있으면(삭제 예약 포함) 멈춤 → 비밀번호 6개·`EMAIL_CODE_SECRET`·`INTERNAL_SERVICE_TOKEN`은
+  `secretsmanager get-random-password`(영문·숫자 64자), JWT 키 쌍(RSA 2048)은 0700 임시 폴더에서 openssl로 만들고 바로 지움
+  → 묶음 JSON을 aws 표준 입력으로만 `create-secret`. 값은 화면·명령 인자·Git·로그에 없다. 계정 이름 2개는 `content_db_prod_recommend`·`content_db_prod_ingest`.
+- 확인(값 없이): `aws secretsmanager describe-secret --secret-id ureka/eks/prod/app --profile ureka-admin --query '{Name:Name,Versions:VersionIdsToStages,Deleted:DeletedDate}'`
+  → 버전 1개(AWSCURRENT). `get-secret-value`로 열어 보지 않는다.
+- SES·Gemini 값은 이 묶음에 없다(별도 비밀). 덮어쓰기·교체 기능은 없다(아래 'prod 값 교체').
+
+#### prod 시드 실패 복구
+
+- "만들어지지 않았습니다": 아무것도 생기지 않았다. 원인(예외 이름·SSO 만료·권한)을 고친 뒤 그대로 다시 실행한다.
+- "그런데 … 있습니다"(응답 유실): 비밀은 한 번에 한 JSON으로만 들어가므로 있으면 값끼리는 맞다. 위 확인 명령으로 버전 1개면 **그대로 쓴다**.
+- "확인하지 못했습니다": SSO를 다시 로그인하고 위 확인 명령으로 상태를 본 뒤 위 두 경우 중 하나로 처리한다.
+- 시드를 버리고 새로 만들어야 할 때(예: 형식 오류를 발견)는 **2번 DB bootstrap 전에만** 지운다:
+  `aws secretsmanager delete-secret --secret-id ureka/eks/prod/app --force-delete-without-recovery --profile ureka-admin` → 다시 1번.
+  bootstrap 뒤에 지우면 DB 비밀번호와 어긋난다(그때는 2번을 다시 실행해 새 해시를 넣는다. bootstrap은 매번 해시를 다시 넣는다).
+
+### 2. prod DB bootstrap (EKS 켠 뒤)
+
+```sh
+python3 scripts/eks/bootstrap_prod_db.py check --profile ureka-admin
+python3 scripts/eks/bootstrap_prod_db.py apply --profile ureka-admin --confirm-env prod
+```
+
+- check: 승인 계정·ACTIVE EKS·kubectl 컨텍스트 `ureka-eks`·prod 네임스페이스 restricted·data output 형식·prod 묶음(속성·계정 이름·비밀번호 겹침) 확인. 마스터 비밀은 읽지 않는다. 변경 없음.
+- apply: 이전 실행 잔여물 삭제 확인 → RDS 마스터 비밀 읽기(ARN은 aws 표준 입력으로만) → prod 네임스페이스에 임시
+  `db-bootstrap-prod-accounts`(SCRAM 해시 6개)·ConfigMap·`db-bootstrap-prod-master` → Job `db-bootstrap-prod`(`environments/eks/prod/db-bootstrap/job.yaml`,
+  restricted 충족, `DB_SUFFIX=_prod`) → 완료 대기(최대 10분) → 로그 요약(확인 줄·오류 줄만, 해시는 가림)
+  → **성공·실패·Ctrl+C 모두** Job·Pod·Secret 2개·ConfigMap 삭제·없어졌는지 확인. 비밀번호 원문은 DB 서버로 가지 않는다(해시만).
+- 성공 출력: `check environment suffix _prod, content db content_db_prod`, `check vector …`, `정리 확인: … 없음`.
+- 종료 코드 3("경고: 지우지 못한 자원"): 마스터 비밀번호가 클러스터에 남았을 수 있다. 출력된 자원을 바로 지우고
+  `kubectl --context ureka-eks -n prod get job,pod,secret,configmap | grep db-bootstrap-prod`가 비었는지 본다.
+  SIGKILL·PC 종료·클러스터 불통으로 도구가 정리하지 못했을 때도 같은 명령으로 확인한다(다음 apply도 시작할 때 먼저 지운다).
+- 여러 번 실행해도 같은 상태가 된다(비밀번호 해시는 매번 다시 넣는다). dev DB·계정은 건드리지 않는다(postgres·template1 CONNECT 회수는 공통).
+- 마스터 비밀은 이 도구를 실행하는 CN SSO만 읽는다. ESO 리더 역할(`ureka/eks/prod/*`)에는 RDS 관리 비밀(`rds!…`)이 들어가지 않는다.
+
+### 3. prod 비밀 앱 등록·수동 Sync
+
+위 'EKS 연결 순서' 3번을 `--env prod`로 한다(`check` → `apply --confirm-env prod`). prod는 자동 Sync가 없으므로 등록 뒤 Argo CD에서 **diff를 보고 손으로 Sync**한다.
+
+수동 Sync 전 확인 포인트(`ureka-eks-secrets-prod` diff):
+- 자원은 16개뿐: ServiceAccount `ureka-secrets-reader`, SecretStore `ureka-aws-secrets`, Role·RoleBinding `ureka-secrets-reader-token`,
+  ValidatingAdmissionPolicy·Binding 각 2개(`…-pods-prod`, `…-token-prod`), ExternalSecret 8개(서비스 7개 + `ureka-auth-mail`).
+- ExternalSecret의 원격 키는 모두 `ureka/eks/prod/app` 또는 `ureka/eks/prod/ses-smtp`다(`ureka/eks/dev/` 없음).
+- 리더 ServiceAccount의 역할 ARN 끝이 `role/ureka-eks-eso-prod`다. 삭제(prune) 표시가 없다(prune 꺼짐).
+- 처음이 아닌 Sync(main 변경 반영)는 바뀐 항목이 그 PR의 의도와 같은지 본다. 속성 매핑이 바뀌면 앱 재시작이 필요할 수 있다.
+
+Sync 뒤(값 없이): `kubectl --context ureka-eks -n prod get secretstore,externalsecret`에서 SecretStore `Valid`, ExternalSecret 8개 `SecretSynced`,
+`get secret`에 같은 이름 8개. `ureka-auth-mail`만 실패하면 SES 비밀이 아직 없는 것이다(앱 기동에는 영향 없음, 만든 뒤 1시간 안에 다시 읽거나 ExternalSecret 새로 고침).
+권한 시험은 위 5번을 prod로 한다(정책 이름 `…-prod`).
+
+### 4. prod 앱 Sync (#43)
+
+비밀 8개가 생긴 뒤 prod 업무 앱을 수동 Sync한다. auth·content·ops는 기동할 때 Flyway가 스키마를 만들고, chat은 마이그레이션 Job이 만든다.
+DB 인증 실패(`password authentication failed for user "…_prod_app"`)면 2번을 다시 실행한다(같은 묶음 값으로 해시를 다시 넣음).
+
+### prod 메일(SES)
+
+ExternalSecret `ureka-auth-mail`(키 `MAIL_USERNAME`·`MAIL_PASSWORD`)은 prod만 만든다. **auth가 이 Secret을 읽으려면 #43 쪽 values 변경이 더 필요하다**:
+`MAIL_USERNAME`·`MAIL_PASSWORD`(이 Secret 참조)·`MAIL_FROM`은 base env에 없어 지금 차트의 `envOverrides`로 넣을 수 없다.
+`MAIL_HOST`·`MAIL_PORT`·`MAIL_SMTP_AUTH`·`MAIL_STARTTLS`는 base에 있어 prod `envOverrides`로 바꾼다(값은 `docs/ses.md` 5번).
+base에 추가하면 EC2 dev auth가 새 Pod 스펙으로 카나리 배포(50%에서 멈춤)되므로, prod values에서만 env를 더하는 방법을 #43에서 정한다.
+#49 NetworkPolicy가 prod에 들어가면 auth → SES SMTP(587) egress와 bootstrap Job → RDS(5432) egress를 허용 목록에 넣는다.
+
+### prod 값 교체
+
+이 PR은 교체 도구를 만들지 않는다. DB 비밀번호 교체 순서(설계만): 묶음에 새 버전(`put-secret-value`, 이전 값은 AWSPREVIOUS) → 2번 bootstrap(새 해시)
+→ ESO 새로 고침 → prod 앱 재시작. 2번과 앱 재시작 사이에는 기존 연결만 살아 있고 새 연결은 실패한다. JWT 키 교체는 모든 로그인 토큰을 끊는다.
 
 ## 로컬 검증 (AWS·클러스터 불필요)
 
 ```sh
 terraform -chdir=infra/environments/eks test
 terraform -chdir=infra/environments/data test
-python3 -m unittest discover -s tests/eks
+python3 -m unittest discover -s tests/eks      # 복사·시드·bootstrap 도구(가짜 aws·kubectl)
 bash scripts/test-eks-secrets.sh
+bash scripts/test-run-bootstrap.sh            # DB_SUFFIX 검사 포함
+bash scripts/test-db-bootstrap-sql.sh         # Docker: dev·prod 두 벌, 환경 경계
 bash scripts/check-forbidden-files.sh
 ```
 
@@ -212,3 +294,7 @@ bash scripts/check-forbidden-files.sh
 - VAP의 TokenRequest 거부가 실제 apiserver에서 동작하는지(위 5번 시험)
 - ESO 컨트롤러 egress(Secrets Manager·STS, NAT 경유)는 #49 NetworkPolicy에서 허용 목록에 넣는다
 - ESO 차트 이미지 취약점 검사, 실제 메모리 사용량
+- prod 시드: 실제 `get-random-password`·`create-secret`(표준 입력 `file:///dev/stdin`)이 운영 PC aws CLI v2에서 되는지
+- prod bootstrap: 실제 RDS(마스터는 슈퍼유저 아님)에서 `_prod` 두 번째 벌 생성, prod 네임스페이스 restricted에서 Job 실행, 노드 → RDS 5432,
+  RDS의 `postgres` DB CONNECT 회수 여부(dev와 같은 한계), prod 앱 Flyway가 `content_db_prod_*` 역할을 만드는지
+- auth가 `ureka-auth-mail`을 실제로 읽는 연결(#43 후속)과 SES 발송

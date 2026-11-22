@@ -2,7 +2,7 @@
 # - ESO 컨트롤러 자신의 서비스계정에는 AWS 역할을 주지 않는다. 네임스페이스 SecretStore가
 #   그 네임스페이스의 리더 서비스계정 토큰으로 이 역할을 맡는다(dev 리더는 prod 경로를 못 읽는다).
 # - 비밀 자체(값·컨테이너)는 이 스택이 만들지 않는다. EKS를 지워도 남아야 하고 값이 state에 남으면 안 된다.
-#   dev는 scripts/ec2/copy_eks_dev_secrets.py, prod는 후속 PR의 시드 절차가 만든다(docs/eks-secrets.md).
+#   dev는 scripts/ec2/copy_eks_dev_secrets.py, prod는 scripts/eks/seed_prod_secrets.py가 만든다(docs/eks-secrets.md).
 # - 기본 KMS 키(aws/secretsmanager)를 쓰므로 kms 권한은 주지 않는다. 고객 관리 키로 바꾸면 재검토한다.
 data "aws_caller_identity" "current" {}
 
