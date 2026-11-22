@@ -1,0 +1,27 @@
+# EKS prod ureka-chat values. environments/base/ureka-chat.yaml 위에 겹친다(Argo CD valueFiles: base → eks/prod, argocd/eks/apps).
+# prod는 공개 환경이다. 업무 앱은 수동 Sync: Git PR로 내용을 정하고 반영 시점은 사람이 Argo CD에서 Sync로 승인한다.
+# 이미지: EKS dev와 같은 tag·digest(흐름: EC2 dev → EKS dev → EKS prod, 각각 gitops PR).
+# 레지스트리 주소(계정 ID 포함)는 Git에 쓰지 않고 root 앱이 image.registry로 넣는다(scripts/eks/register_root_app.py).
+# DB: 같은 RDS 안의 prod 전용 논리 DB·계정(<db>_prod, <db>_prod_app, #63). Secret 이름·키는 dev와 같고 값만 prod 원본이다.
+# base env 중 prod에서 다른 값만 envOverrides로 바꾼다(차트가 env에 없는 이름·Secret 참조 덮어쓰기를 거부한다).
+
+image:
+  requireRegistry: true
+  repository: ureka/chat
+  tag: sha-9e87f390928a186c3fa6911419bf9b4796d180e4
+  digest: sha256:7aeff3ba99cd1636e8842289bb71901173db6040bb2ae898625f24432fdb1c3c
+  pullPolicy: IfNotPresent
+
+# EC2 dev와 같은 값. EKS에서 kubectl top으로 다시 잰다.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 384Mi
+
+# prod 논리 DB·계정(#63 이름 규칙). worker(ureka-chat-worker.yaml)와 같아야 한다(scripts/check-charts.sh가 비교).
+# RECOMMEND_COMPLETION_RESERVE_SECONDS=2는 base의 dev 임시값을 그대로 쓴다(운영값은 실측 뒤 chat 담당과 확정).
+envOverrides:
+  DATABASE_URL: postgresql+psycopg://chat_db_prod_app:$(DB_PASSWORD)@postgres:5432/chat_db_prod

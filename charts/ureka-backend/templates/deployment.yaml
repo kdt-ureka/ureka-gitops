@@ -56,10 +56,11 @@ spec:
               containerPort: 9091
           {{- end }}
           {{- end }}
-          {{- if or .Values.env .Values.metrics.enabled }}
+          {{- $env := include "ureka-backend.env" . }}
+          {{- if or $env .Values.metrics.enabled }}
           env:
-            {{- with .Values.env }}
-            {{- toYaml . | nindent 12 }}
+            {{- with $env }}
+            {{- . | nindent 12 }}
             {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: SPRING_PROFILES_INCLUDE

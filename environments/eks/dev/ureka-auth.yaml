@@ -1,0 +1,30 @@
+# EKS dev ureka-auth values. environments/base/ureka-auth.yaml 위에 겹친다(Argo CD valueFiles: base → eks/dev, argocd/eks/apps).
+# EKS dev는 시험용(카나리·NetworkPolicy 시험)이라 작게 둔다: 모든 서비스 1개. 공개하지 않는다(Ingress 없음, 공개는 prod #64).
+# 이미지: EC2 dev에서 확인한 것과 같은 tag·digest(흐름: EC2 dev → EKS dev → EKS prod, 각각 gitops PR).
+# 레지스트리 주소(계정 ID 포함)는 Git에 쓰지 않고 root 앱이 image.registry로 넣는다(scripts/eks/register_root_app.py).
+# DB: Service postgres → EC2 dev와 같은 RDS의 dev 논리 DB·계정(environments/eks/dev/data). 비밀값은 #63 ExternalSecret이 같은 이름·키로 만든다.
+
+image:
+  requireRegistry: true
+  repository: ureka/auth
+  tag: sha-fb92c50a762878aedbf1678b8e1955c7695a372c
+  digest: sha256:eebfd7fb2da73c00b8ca1afdb019dcf8accb3eb04717f41cc18d60b10f360802
+  pullPolicy: IfNotPresent
+
+# JVM: limit 768Mi + base의 -Xmx256m(EC2 dev와 같은 값). EKS에서 kubectl top으로 다시 잰다.
+resources:
+  requests:
+    cpu: 100m # EC2 카나리 시험값(120m)을 원래대로 되돌림
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 768Mi
+
+# 카나리(gitops#47을 EKS로 옮김). Argo Rollouts(argocd/eks/argo-rollouts-app.yaml)를 먼저 설치한다.
+# dev는 1개: 새 이미지가 오면 새 파드 1개가 더 떠서(옛 1 + 새 1) 사람이 Argo CD에서 승격·중단할 때까지 멈춘다.
+replicaCount: 1
+rollout:
+  enabled: true
+  steps:
+    - setWeight: 50
+    - pause: {}

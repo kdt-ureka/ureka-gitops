@@ -112,4 +112,18 @@ d="$(printf '%s\n' "$base" | yq ea 'select(.kind=="Deployment") | .spec.template
 r="$(printf '%s\n' "$out" | yq ea 'select(.kind=="Rollout") | .spec.template' -o json -)"
 [ "$d" = "$r" ] && [ "$d" != null ] && ok "rollout: Pod 템플릿이 Deployment와 같음" || fail "rollout: Pod 템플릿이 Deployment와 다름"
 must_render_fail "rollout 켰는데 steps 없음" -f environments/kind/ureka-auth.yaml --set rollout.enabled=true
+
+# 9) envOverrides: 이름이 같은 값만 바꾸고 순서·Secret 참조는 그대로, Deployment·Job 같음. 잘못 쓰면 실패
+base="$(render tests/chart/api-with-migration.yaml)"
+out="$(render tests/chart/api-with-migration.yaml -f tests/chart/env-overrides.yaml)"
+expect "envOverrides: 값만 바뀜, 순서 유지" "$out" 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env | ((.[0].name=="DB_PASSWORD") and (.[0].valueFrom.secretKeyRef.name=="example-secrets") and (.[1].name=="DATABASE_URL") and (.[1].value | test("example_db_prod$")) and (length==2))'
+d="$(printf '%s\n' "$out" | yq ea 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env' -o json -)"
+j="$(printf '%s\n' "$out" | yq ea 'select(.kind=="Job") | .spec.template.spec.containers[0].env' -o json -)"
+[ "$d" = "$j" ] && ok "envOverrides: 마이그레이션 Job env도 같음" || fail "envOverrides: Job env가 Deployment와 다름"
+b="$(printf '%s\n' "$base" | yq ea 'select(.kind=="Deployment") | del(.spec.template.spec.containers[0].env)' -o json -)"
+o="$(printf '%s\n' "$out" | yq ea 'select(.kind=="Deployment") | del(.spec.template.spec.containers[0].env)' -o json -)"
+[ "$b" = "$o" ] && ok "envOverrides: env 밖은 그대로" || fail "envOverrides: env 밖이 바뀜"
+must_render_fail "envOverrides: env에 없는 이름" -f tests/chart/api-with-migration.yaml --set envOverrides.NO_SUCH=x
+must_render_fail "envOverrides: Secret 참조 항목 덮어쓰기" -f tests/chart/api-with-migration.yaml --set envOverrides.DB_PASSWORD=plain
+must_render_fail "envOverrides: 문자열 아닌 값" -f tests/chart/api-with-migration.yaml --set envOverrides.DATABASE_URL=true
 exit "$status"

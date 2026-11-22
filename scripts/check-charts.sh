@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # environments/*/ureka-*.yaml 각각으로 charts/ureka-backend를 lint·렌더링한다(kind 등 한 겹 values).
-# 두 겹 values(environments/base + environments/ec2/<환경>)는 겹쳐서 렌더링하고, 레지스트리 주입 없이는 실패하는지도 본다.
-# root 앱 차트(argocd/ec2/apps)가 만드는 Application이 가리키는 values 파일이 모두 있는지 본다.
+# 두 겹 values(environments/base + environments/{ec2,eks}/<환경>)는 겹쳐서 렌더링하고, 레지스트리 주입 없이는 실패하는지도 본다.
+# root 앱 차트(argocd/{ec2,eks}/apps)가 만드는 Application이 가리키는 values 파일이 모두 있는지 본다.
+# EKS(#43)는 tests/eksapps/check_eks_apps.py로 AppProject 범위·동기화·prod/dev 분리·Quota를 더 본다.
 # worker values는 본 서비스 values와 image·env가 같은지 비교한다(yq).
 # environments/*/data(kustomize: DB·Redis)도 렌더링한다. 이미지가 digest(sha256)로 고정됐는지 모두 확인한다.
 # CI(Helm 워크플로)와 로컬에서 같이 쓴다.
@@ -26,18 +27,18 @@ for values in environments/*/ureka-*.yaml; do
   done < <(printf '%s\n' "$rendered" | sed -n 's/^ *image: *//p' | sort -u)
 done
 # 같은 이미지로 띄우는 worker(ureka-<서비스>-worker.yaml)는 본 서비스 values와 image·env가 같아야 한다.
-for worker in environments/*/ureka-*-worker.yaml environments/ec2/*/ureka-*-worker.yaml; do
+for worker in environments/*/ureka-*-worker.yaml environments/ec2/*/ureka-*-worker.yaml environments/eks/*/ureka-*-worker.yaml; do
   [ -f "$worker" ] || continue
   base="${worker%-worker.yaml}.yaml"
   echo "== ${worker} ↔ ${base} (image·env 비교)"
-  for key in .image .env; do
+  for key in .image .env .envOverrides; do
     if [ "$(yq -o=json "$key" "$worker")" != "$(yq -o=json "$key" "$base")" ]; then
       echo "::error file=${worker}::${key}가 ${base}와 다르다"
       status=1
     fi
   done
 done
-for dir in environments/*/data environments/ec2/*/data; do
+for dir in environments/*/data environments/ec2/*/data environments/eks/*/data; do
   [ -f "${dir}/kustomization.yaml" ] || continue
   echo "== ${dir} (kustomize)"
   rendered="$(kubectl kustomize "$dir")" || { echo "::error file=${dir}::kustomize 렌더링 실패"; status=1; continue; }
@@ -57,17 +58,17 @@ for dir in environments/*/data environments/ec2/*/data; do
     fi
     echo "externalName: ${ext}"
   done < <(printf '%s\n' "$rendered" | yq ea 'select(.kind == "Service" and .spec.type == "ExternalName") | .spec.externalName' - | grep -v '^---$' || true)
-  # EC2 data에는 PostgreSQL을 클러스터 안에 띄우는 StatefulSet·PostSync 계정 Job이 없어야 한다(마스터 비밀번호 상시 보관 방지).
-  case "$dir" in environments/ec2/*)
+  # EC2·EKS data에는 PostgreSQL을 클러스터 안에 띄우는 StatefulSet·PostSync 계정 Job이 없어야 한다(마스터 비밀번호 상시 보관 방지).
+  case "$dir" in environments/ec2/*|environments/eks/*)
     if printf '%s\n' "$rendered" | yq ea 'select(.kind == "StatefulSet" or .kind == "Job") | .metadata.name' - | grep -qv '^---$'; then
-      echo "::error file=${dir}::EC2 data에 StatefulSet·Job이 있다(RDS 계정 Job은 scripts/ec2/rds-bootstrap.sh만 만든다)"
+      echo "::error file=${dir}::EC2·EKS data에 StatefulSet·Job이 있다(RDS 계정 Job은 bootstrap 스크립트만 만든다)"
       status=1
     fi ;;
   esac
 done
-# 두 겹 values: base → environments/ec2/<환경>. 시험용 레지스트리(예시 계정 ID)를 넣어 렌더링한다.
+# 두 겹 values: base → environments/{ec2,eks}/<환경>. 시험용 레지스트리(예시 계정 ID)를 넣어 렌더링한다.
 test_registry=123456789012.dkr.ecr.ap-northeast-2.amazonaws.com
-for envdir in environments/ec2/*/; do
+for envdir in environments/ec2/*/ environments/eks/*/; do
   envdir="${envdir%/}"
   ls "$envdir"/ureka-*.yaml >/dev/null 2>&1 || continue
   # 환경마다 base의 서비스가 모두 있고, base에 없는 서비스는 없어야 한다.
@@ -97,7 +98,7 @@ for envdir in environments/ec2/*/; do
 done
 
 # root 앱 차트: 레지스트리 없이는 실패, 넣으면 Application이 가리키는 values·경로가 모두 있어야 한다.
-for apps in argocd/ec2/apps; do
+for apps in argocd/ec2/apps argocd/eks/apps; do
   echo "== ${apps}"
   if helm template root "$apps" >/dev/null 2>&1; then
     echo "::error file=${apps}::ecrRegistry 없이 렌더링됐다"; status=1
@@ -110,4 +111,33 @@ for apps in argocd/ec2/apps; do
     grep -v -e '^---$' -e '^$' | sed 's#^\.\./\.\./##' | sort -u)
   echo "applications: $(printf '%s\n' "$rendered" | yq ea '[.metadata.name] | join(" ")' -)"
 done
+# root 앱 파일(Git)은 레지스트리 빈칸이어야 한다(등록 도구가 메모리에서만 채운다).
+for root in argocd/ec2/root-app.yaml argocd/eks/root-app.yaml; do
+  [ "$(yq '.spec.source.helm.parameters[] | select(.name == "ecrRegistry") | .value' "$root")" = "" ] ||
+    { echo "::error file=${root}::ecrRegistry 값이 Git에 있다"; status=1; }
+done
+
+# EKS(#43): 렌더링 결과를 모아 정책 검사(AppProject·동기화·prod/dev 분리·Quota)와 검사기 자체 시험(망가뜨린 입력은 실패)을 돌린다.
+echo "== EKS 앱 구성 검사"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+to_jsonl() { yq ea -o=json -I=0 'select(. != null)' -; }
+helm template root argocd/eks/apps --set "ecrRegistry=${test_registry}" | to_jsonl > "$work/apps.jsonl"
+render_services() { # 환경 values 폴더, 네임스페이스
+  for base in environments/base/ureka-*.yaml; do
+    file="$(basename "$base")"
+    [ -f "$1/${file}" ] || continue
+    helm template "${file%.yaml}" charts/ureka-backend -n "$2" -f "$base" -f "$1/${file}" --set "image.registry=${test_registry}"
+  done | to_jsonl
+}
+render_services environments/ec2/dev dev > "$work/ec2-svc.jsonl"
+for env in dev prod; do
+  render_services "environments/eks/${env}" "$env" > "$work/${env}-svc.jsonl"
+  kubectl kustomize "environments/eks/${env}/data" | to_jsonl > "$work/${env}-data.jsonl"
+  if [ -d "environments/eks/${env}/namespace" ]; then
+    kubectl kustomize "environments/eks/${env}/namespace" | to_jsonl > "$work/${env}-namespace.jsonl"
+  fi
+done
+python3 tests/eksapps/check_eks_apps.py "$work" || status=1
+UREKA_EKS_APPS_WORKDIR="$work" python3 -m unittest discover -s tests/eksapps -p 'test_*.py' || status=1
 exit "$status"

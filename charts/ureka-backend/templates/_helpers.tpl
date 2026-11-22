@@ -114,3 +114,39 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+컨테이너 env 목록. env(목록)에 envOverrides(이름 → 문자열 값)를 겹친다. Deployment·Rollout·마이그레이션 Job이 같이 쓴다.
+Helm은 목록을 합치지 못하고 통째로 바꾸므로, 환경 values(예: EKS prod)가 base env 전체를 복사하지 않고 다른 값만 바꾸게 한다.
+- 순서·나머지 항목은 그대로다($(DB_PASSWORD) 같은 치환 순서가 유지된다).
+- env에 없는 이름은 실패한다(오타로 조용히 무시되지 않게). 새 변수는 base env에 추가한다.
+- Secret 참조(valueFrom) 항목은 바꿀 수 없다(비밀값을 평문 values로 덮어쓰지 않게). 값은 문자열만 받는다.
+*/ -}}
+{{- define "ureka-backend.env" -}}
+{{- $overrides := .Values.envOverrides | default dict -}}
+{{- $names := list -}}
+{{- $out := list -}}
+{{- range .Values.env -}}
+{{- $item := . -}}
+{{- $names = append $names .name -}}
+{{- if hasKey $overrides .name -}}
+{{- if hasKey . "valueFrom" -}}
+{{- fail (printf "envOverrides.%s: Secret 참조(valueFrom) 항목은 덮어쓸 수 없다" .name) -}}
+{{- end -}}
+{{- $value := index $overrides .name -}}
+{{- if not (kindIs "string" $value) -}}
+{{- fail (printf "envOverrides.%s: 값은 문자열이어야 한다(숫자·불리언은 따옴표로 감싼다)" .name) -}}
+{{- end -}}
+{{- $item = dict "name" .name "value" $value -}}
+{{- end -}}
+{{- $out = append $out $item -}}
+{{- end -}}
+{{- range $name, $_ := $overrides -}}
+{{- if not (has $name $names) -}}
+{{- fail (printf "envOverrides.%s: env에 없는 이름이다(새 변수는 base env에 추가한다)" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- if $out -}}
+{{- toYaml $out -}}
+{{- end -}}
+{{- end -}}

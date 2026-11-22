@@ -1,0 +1,21 @@
+# EKS prod 데이터 계층: Service postgres(ExternalName → EC2 dev와 같은 RDS), Redis, Mailpit.
+# EC2 dev data(environments/ec2/dev/data: kind data에서 PostgreSQL StatefulSet·계정 Job을 빼고 RDS를 가리킴)를 그대로 쓰고 네임스페이스만 바꾼다.
+# - 같은 RDS 인스턴스라 엔드포인트가 같다. EC2 data에 EC2 전용 자원이 생기면 이 파일에 패치를 옮겨 적는다(scripts/check-charts.sh가 종류를 검사).
+# - DB 계정은 여기서 만들지 않는다(마스터 비밀번호를 클러스터에 상시 두지 않는다). prod 계정 생성은 #63 후속 bootstrap.
+# - Redis·Mailpit은 네임스페이스마다 따로다(dev·prod가 토큰·캐시·메일을 공유하지 않는다). 볼륨 없음(prod Quota PVC 0).
+# - 둘 다 Recreate로 바꾼다: 볼륨이 없어 롤링 업데이트로 새 파드를 먼저 띄워도 데이터는 이어지지 않고, Quota(#62 동시 갱신 기준)만 더 쓴다.
+#   갱신하는 짧은 동안 로그인 토큰·캐시·받은 메일이 비는 것은 롤링과 같다.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: prod
+resources:
+  - ../../../ec2/dev/data
+patches:
+  - target:
+      kind: Deployment
+      name: (redis|mailpit)
+    patch: |-
+      - op: add
+        path: /spec/strategy
+        value:
+          type: Recreate

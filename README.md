@@ -15,6 +15,7 @@ Ureka AWS·EKS 인프라 및 Argo CD 배포 설정
 | `kind/`, `scripts/kind/` | kind 클러스터·로컬 레지스트리 준비, ECR 이미지 복사 |
 | `environments/kind/data/` | kind dev PostgreSQL(pgvector)·Redis·DB 계정 생성 Job (kustomize) |
 | `argocd/ec2/`, `environments/{base,ec2}/`, `scripts/ec2/` | EC2 dev(k3s) root 앱·values 두 겹·첫 설치. 순서와 접속은 [docs/ec2-dev.md](docs/ec2-dev.md) |
+| `argocd/eks/`, `environments/eks/{dev,prod}/ureka-*.yaml`·`data/`, `scripts/eks/register_root_app.py` | EKS root 앱·AppProject 3개·dev(자동)·prod(수동 Sync) 서비스 앱. 순서는 [docs/eks-apps.md](docs/eks-apps.md) |
 | `tests/db/` | DB 권한 시험(P11 검색 함수 역할) |
 | `environments/eks/{dev,prod}/namespace/`, `docs/eks-namespaces.md` | EKS dev·prod 네임스페이스: Pod Security restricted·ResourceQuota·LimitRange·prod 사람 권한(조회 전용, 쓰기는 Argo CD만) |
 | `docs/ec2-networkpolicy.md` | EC2 dev 들어오는 연결 정책(기본 거부 + 서비스별 허용): 연결 표·시험·되돌리기 |

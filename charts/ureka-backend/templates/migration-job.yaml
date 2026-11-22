@@ -36,9 +36,9 @@ spec:
           args:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.env }}
+          {{- with include "ureka-backend.env" . }}
           env:
-            {{- toYaml . | nindent 12 }}
+            {{- . | nindent 12 }}
           {{- end }}
           securityContext:
             {{- include "ureka-backend.containerSecurityContext" . | nindent 12 }}

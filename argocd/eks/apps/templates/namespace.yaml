@@ -1,0 +1,23 @@
+{{- /* 네임스페이스 앱(#62: Pod Security restricted·Quota·LimitRange, prod는 사람 권한 포함). 가장 먼저(wave -2). 두 환경 모두 자동 동기화. */ -}}
+{{- range .Values.environments }}
+{{- $env := include "eksapps.envName" . }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-eks-namespace-{{ $env }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: ureka-eks-platform
+  source:
+    repoURL: {{ $.Values.repoURL }}
+    targetRevision: {{ $.Values.targetRevision }}
+    path: environments/eks/{{ $env }}/namespace
+  destination:
+    server: https://kubernetes.default.svc
+    # Namespace는 클러스터 범위라 이 값과 관계없다. Quota·LimitRange·Role은 파일에 네임스페이스가 적혀 있다.
+    namespace: {{ $env }}
+  {{- include "eksapps.syncPolicy" (dict "autoSync" true) | nindent 2 }}
+{{- end }}

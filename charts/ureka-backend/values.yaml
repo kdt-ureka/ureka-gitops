@@ -71,6 +71,9 @@ resources:
 
 # 비밀값이 아닌 환경 변수만 둔다. 비밀값은 S6 이후 ESO(Secrets Manager)로 넣는다.
 env: []
+# env 중 일부 값만 바꿀 때(이름 → 문자열). 목록 전체를 복사하지 않는다(예: EKS prod의 DB 이름·frontend 넘김 주소).
+# env에 없는 이름, Secret 참조(valueFrom) 항목, 문자열이 아닌 값은 렌더링이 실패한다.
+envOverrides: {}
 
 # DB 마이그레이션 Job (Argo CD PreSync 훅). Deployment와 같은 이미지·env·보안 설정에 실행 명령만 다르다.
 # 앱이 기동할 때 스스로 마이그레이션하는 서비스(Flyway: auth·content·ops)는 쓰지 않는다.

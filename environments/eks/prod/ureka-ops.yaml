@@ -1,0 +1,27 @@
+# EKS prod ureka-ops values. environments/base/ureka-ops.yaml 위에 겹친다(Argo CD valueFiles: base → eks/prod, argocd/eks/apps).
+# prod는 공개 환경이다. 업무 앱은 수동 Sync: Git PR로 내용을 정하고 반영 시점은 사람이 Argo CD에서 Sync로 승인한다.
+# 이미지: EKS dev와 같은 tag·digest(흐름: EC2 dev → EKS dev → EKS prod, 각각 gitops PR).
+# 레지스트리 주소(계정 ID 포함)는 Git에 쓰지 않고 root 앱이 image.registry로 넣는다(scripts/eks/register_root_app.py).
+# DB: 같은 RDS 안의 prod 전용 논리 DB·계정(<db>_prod, <db>_prod_app, #63). Secret 이름·키는 dev와 같고 값만 prod 원본이다.
+# base env 중 prod에서 다른 값만 envOverrides로 바꾼다(차트가 env에 없는 이름·Secret 참조 덮어쓰기를 거부한다).
+
+image:
+  requireRegistry: true
+  repository: ureka/ops
+  tag: sha-895b3c0daaca2c15f720037c23789c0babcd1f6a
+  digest: sha256:25cf8667f5b857bfeeb29644a983214a418b93372b6523acfea58e871af1fdc3
+  pullPolicy: IfNotPresent
+
+# JVM: limit 768Mi + base의 -Xmx256m(EC2 dev와 같은 값). EKS에서 kubectl top으로 다시 잰다.
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 768Mi
+
+# prod 논리 DB·계정(#63 이름 규칙).
+envOverrides:
+  DB_URL: jdbc:postgresql://postgres:5432/ops_db_prod
+  DB_USERNAME: ops_db_prod_app

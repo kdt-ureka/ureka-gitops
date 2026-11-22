@@ -1,0 +1,40 @@
+# EKS prod ureka-auth values. environments/base/ureka-auth.yaml 위에 겹친다(Argo CD valueFiles: base → eks/prod, argocd/eks/apps).
+# prod는 공개 환경이다. 업무 앱은 수동 Sync: Git PR로 내용을 정하고 반영 시점은 사람이 Argo CD에서 Sync로 승인한다.
+# 이미지: EKS dev와 같은 tag·digest(흐름: EC2 dev → EKS dev → EKS prod, 각각 gitops PR).
+# 레지스트리 주소(계정 ID 포함)는 Git에 쓰지 않고 root 앱이 image.registry로 넣는다(scripts/eks/register_root_app.py).
+# DB: 같은 RDS 안의 prod 전용 논리 DB·계정(<db>_prod, <db>_prod_app, #63). Secret 이름·키는 dev와 같고 값만 prod 원본이다.
+# base env 중 prod에서 다른 값만 envOverrides로 바꾼다(차트가 env에 없는 이름·Secret 참조 덮어쓰기를 거부한다).
+
+image:
+  requireRegistry: true
+  repository: ureka/auth
+  tag: sha-fb92c50a762878aedbf1678b8e1955c7695a372c
+  digest: sha256:eebfd7fb2da73c00b8ca1afdb019dcf8accb3eb04717f41cc18d60b10f360802
+  pullPolicy: IfNotPresent
+
+# JVM: limit 768Mi + base의 -Xmx256m(EC2 dev와 같은 값). EKS에서 kubectl top으로 다시 잰다.
+resources:
+  requests:
+    cpu: 100m # EC2 카나리 시험값(120m)을 원래대로 되돌림
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 768Mi
+
+# 카나리(gitops#47을 EKS로 옮김). Argo Rollouts(argocd/eks/argo-rollouts-app.yaml)를 먼저 설치한다.
+# 파드 2개: 새 이미지가 오면 1개만 바꾸고(50%) 사람이 승격·중단할 때까지 멈춘다.
+# 승격·중단은 Argo CD의 Rollout 동작으로만 한다(AppProject ureka-eks-prod의 auth-rollout-operator 역할, Kubernetes patch 권한 없음 #62).
+# 사람별 Argo CD 계정이 생기기 전까지는 관리자가 한다.
+replicaCount: 2
+rollout:
+  enabled: true
+  steps:
+    - setWeight: 50
+    - pause: {}
+
+# prod 논리 DB·계정(#63 이름 규칙). 쿠키는 공개 주소가 https라 Secure로 보낸다(#64 ALB·인증서 전에는 localhost 포트 포워딩으로만 확인).
+# 메일: 지금은 dev와 같이 클러스터 안 Mailpit(받기만, 밖으로 안 보냄). 공개 전 SES(magonjal.com) 실제 메일 필요 — CN 후속.
+envOverrides:
+  DB_URL: jdbc:postgresql://postgres:5432/auth_db_prod
+  DB_USERNAME: auth_db_prod_app
+  COOKIE_SECURE: "true"

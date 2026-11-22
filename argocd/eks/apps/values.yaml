@@ -1,0 +1,35 @@
+# ECR 레지스트리 주소(<계정>.dkr.ecr.<리전>.amazonaws.com). Git에는 비워 두고 scripts/eks/register_root_app.py가 root 앱 파라미터로 넣는다.
+# 비어 있으면 렌더링이 실패한다(서비스 앱이 레지스트리 없이 만들어지지 않게).
+ecrRegistry: ""
+
+repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+targetRevision: main
+
+# 환경. values 두 겹: environments/base/<파일> → environments/eks/<이름>/<파일>
+# autoSync: 업무 앱(데이터 계층·서비스)의 자동 동기화.
+#   dev  = 자동(prune·selfHeal). 시험용이라 병합하면 바로 반영한다.
+#   prod = 수동. 바뀌는 내용은 Git PR로만 정하고, 공개 환경에 반영하는 시점은 사람이 Argo CD에서 Sync로 따로 승인한다.
+# 네임스페이스 앱(Pod Security·Quota·RBAC)은 두 환경 모두 자동이다(안전장치라 손으로 바뀌면 바로 되돌린다).
+environments:
+  - name: dev
+    autoSync: true
+  - name: prod
+    autoSync: false
+
+# 서비스 앱. releases가 여러 개면 한 Application에 묶는다(chat: api의 PreSync 마이그레이션이 worker보다 먼저 돈다).
+services:
+  - name: auth
+    releases: [auth]
+  - name: chat
+    releases: [chat, chat-worker]
+  - name: content
+    releases: [content]
+  - name: ops
+    releases: [ops]
+  - name: recommend
+    releases: [recommend]
+  - name: frontend
+    releases: [frontend]
+
+# JVM 지표(auth·content). EKS에는 아직 관측 스택이 없다(EC2와 같이 false).
+jvmMetricsEnabled: false
