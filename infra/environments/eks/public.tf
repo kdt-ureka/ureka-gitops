@@ -4,7 +4,8 @@
 # (ALB에 연결된 WAF는 지워지지 않아 destroy가 멈춘다: ALB를 남긴 채 지우는 실수를 막는 장치로 둔다.)
 locals {
   public_count = var.public_enabled ? 1 : 0
-  public_hosts = var.public_enabled ? toset([var.public_domain, "www.${var.public_domain}"]) : toset([])
+  # 공개 주소는 하위 도메인 하나(기본 ureka.magonjal.com). apex·www는 지금 공개하지 않는다.
+  public_hosts = var.public_enabled ? toset([var.public_host]) : toset([])
   # 컨트롤러 IngressClassParams의 group 이름과 같아야 한다(argocd/eks/aws-load-balancer-controller-app.yaml).
   public_alb_group    = "ureka-prod"
   lbc_service_account = "system:serviceaccount:kube-system:aws-load-balancer-controller"
@@ -18,7 +19,7 @@ locals {
   ambiguous_path_regex = "//|/\\.\\./|/\\./|/\\.\\.$|/\\.$|%2e|%2f|%5c|%25|%00|\\\\|;"
 }
 
-# 도메인 구매 때 Route 53이 만든 공개 호스팅 영역. Terraform이 만들거나 지우지 않는다.
+# 도메인 구매 때 Route 53이 만든 공개 호스팅 영역(apex). Terraform이 만들거나 지우지 않는다. 하위 도메인 레코드를 이 영역에 만든다.
 data "aws_route53_zone" "public" {
   count        = local.public_count
   name         = var.public_domain
@@ -27,11 +28,10 @@ data "aws_route53_zone" "public" {
 
 # ---------- 인증서 (DNS 검증, 무료) ----------
 resource "aws_acm_certificate" "public" {
-  count                     = local.public_count
-  domain_name               = var.public_domain
-  subject_alternative_names = ["www.${var.public_domain}"]
-  validation_method         = "DNS"
-  key_algorithm             = "RSA_2048"
+  count             = local.public_count
+  domain_name       = var.public_host
+  validation_method = "DNS"
+  key_algorithm     = "RSA_2048"
   options {
     certificate_transparency_logging_preference = "ENABLED"
   }

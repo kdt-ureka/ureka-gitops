@@ -2,8 +2,8 @@
 {{- if ne .Release.Namespace "prod" }}
 {{- fail "ureka-public-ingress is prod-only (dev is not public; IngressClassParams also refuses other namespaces)" }}
 {{- end }}
-{{- if not (regexMatch "^[a-z0-9-]+(\\.[a-z0-9-]+)+$" (required "host is required (e.g. magonjal.com)" .Values.host)) }}
-{{- fail "host must be a lowercase apex domain" }}
+{{- if not (regexMatch "^[a-z0-9-]+(\\.[a-z0-9-]+){2,}$" (required "host is required (e.g. ureka.magonjal.com)" .Values.host)) }}
+{{- fail "host must be a lowercase subdomain such as ureka.magonjal.com (apex is not published)" }}
 {{- end }}
 {{- $paths := list }}
 {{- range .Values.routes }}

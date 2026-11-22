@@ -1,8 +1,6 @@
 # prod 공개 입구 기본값. 환경 값은 environments/eks/prod/public-ingress.yaml. 설명은 docs/eks-public.md.
 # 비우면 렌더링이 실패한다(주소 없이 Ingress를 만들지 않는다).
 host: ""
-# www.<host>로 온 요청을 https://<host>로 301 돌려보낸다(인증서에 www도 들어 있다).
-wwwRedirect: true
 # ALB 헬스 체크. 프론트(nginx)와 백엔드 모두 /healthz가 있다(앱 상태만 보는 /readyz는 nginx에 없음).
 healthcheckPath: /healthz
 # 경로 → Service. Service 포트는 차트 기본 80. NetworkPolicy는 Pod 포트(containerPort)를 본다.

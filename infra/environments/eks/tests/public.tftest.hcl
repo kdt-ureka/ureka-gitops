@@ -19,8 +19,7 @@ mock_provider "aws" {
     defaults = {
       arn = "arn:aws:acm:ap-northeast-2:123456789012:certificate/TEST"
       domain_validation_options = [
-        { domain_name = "magonjal.com", resource_record_name = "_a.magonjal.com.", resource_record_type = "CNAME", resource_record_value = "_a.acm-validations.aws." },
-        { domain_name = "www.magonjal.com", resource_record_name = "_b.www.magonjal.com.", resource_record_type = "CNAME", resource_record_value = "_b.acm-validations.aws." },
+        { domain_name = "ureka.magonjal.com", resource_record_name = "_a.ureka.magonjal.com.", resource_record_type = "CNAME", resource_record_value = "_a.acm-validations.aws." },
       ]
     }
   }
@@ -83,11 +82,11 @@ run "public_phase_one" {
     alb_tester_cidrs         = ["203.0.113.5/32"]
   }
   assert {
-    condition     = aws_acm_certificate.public[0].domain_name == "magonjal.com" && toset(aws_acm_certificate.public[0].subject_alternative_names) == toset(["www.magonjal.com"]) && aws_acm_certificate.public[0].validation_method == "DNS"
-    error_message = "Certificate covers apex and www with DNS validation."
+    condition     = aws_acm_certificate.public[0].domain_name == "ureka.magonjal.com" && length(coalesce(aws_acm_certificate.public[0].subject_alternative_names, [])) == 0 && aws_acm_certificate.public[0].validation_method == "DNS" && data.aws_route53_zone.public[0].name == "magonjal.com"
+    error_message = "Certificate covers only the public subdomain (no apex/www), validated in the apex zone."
   }
   assert {
-    condition     = toset(keys(aws_route53_record.cert_validation)) == toset(["magonjal.com", "www.magonjal.com"]) && aws_route53_record.cert_validation["www.magonjal.com"].name == "_b.www.magonjal.com."
+    condition     = toset(keys(aws_route53_record.cert_validation)) == toset(["ureka.magonjal.com"]) && aws_route53_record.cert_validation["ureka.magonjal.com"].name == "_a.ureka.magonjal.com."
     error_message = "One validation record per host, taken from that host's option."
   }
   assert {
@@ -193,8 +192,8 @@ run "public_phase_two_dns" {
     public_dns_enabled = true
   }
   assert {
-    condition     = toset(keys(aws_route53_record.public)) == toset(["magonjal.com", "www.magonjal.com"]) && alltrue([for r in aws_route53_record.public : r.type == "A" && r.alias[0].name == data.aws_lb.public[0].dns_name])
-    error_message = "Apex and www alias to the controller ALB."
+    condition     = toset(keys(aws_route53_record.public)) == toset(["ureka.magonjal.com"]) && alltrue([for r in aws_route53_record.public : r.type == "A" && r.alias[0].name == data.aws_lb.public[0].dns_name])
+    error_message = "Only the public subdomain aliases to the controller ALB (apex/www untouched)."
   }
   assert {
     condition     = data.aws_lbs.public[0].tags["ingress.k8s.aws/stack"] == "ureka-prod" && data.aws_lbs.public[0].tags["elbv2.k8s.aws/cluster"] == "ureka-eks"
@@ -248,6 +247,24 @@ run "rejects_unknown_access_mode" {
     public_access_mode = "public"
   }
   expect_failures = [var.public_access_mode]
+}
+
+run "rejects_apex_host" {
+  command = plan
+  variables {
+    public_enabled = true
+    public_host    = "magonjal.com"
+  }
+  expect_failures = [var.public_host]
+}
+
+run "rejects_host_outside_zone" {
+  command = plan
+  variables {
+    public_enabled = true
+    public_host    = "ureka.example.com"
+  }
+  expect_failures = [var.public_host]
 }
 
 run "dns_requires_public" {

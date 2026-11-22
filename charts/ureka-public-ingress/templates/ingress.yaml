@@ -1,6 +1,7 @@
 {{- /*
 prod 공개 Ingress. 클래스 alb의 IngressClassParams(argocd/eks/aws-load-balancer-controller-app.yaml)가
 인터넷용 ALB 하나(group ureka-prod)·대상 ip·TLS 정책·80→443·WAF(ureka-eks-public)를 강제한다. 여기 주석으로 바꿀 수 없다.
+호스트 규칙은 공개 주소 하나뿐이다(apex·www 없음). 다른 Host 헤더는 컨트롤러 기본 동작(404)으로 끝난다.
 인증서는 ARN을 쓰지 않고 tls.hosts로 ACM에서 찾는다(계정 ID가 Git에 남지 않음).
 ALB 프런트엔드 SG는 Terraform이 만든 ureka-eks-alb-public(Name 태그로 찾음)만 쓴다: 처음에는 시험자 IP만 80/443을 받고,
 공개 전 게이트를 통과한 뒤 Terraform public_access_mode=open으로 연다. SG를 못 찾으면 컨트롤러가 ALB를 만들지 않는다.
@@ -20,18 +21,11 @@ metadata:
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
     alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.healthcheckPath | quote }}
     alb.ingress.kubernetes.io/success-codes: "200"
-    {{- if .Values.wwwRedirect }}
-    alb.ingress.kubernetes.io/actions.www-to-apex: >-
-      {"type":"redirect","redirectConfig":{"host":{{ .Values.host | quote }},"port":"443","protocol":"HTTPS","statusCode":"HTTP_301"}}
-    {{- end }}
 spec:
   ingressClassName: alb
   tls:
     - hosts:
         - {{ .Values.host | quote }}
-        {{- if .Values.wwwRedirect }}
-        - {{ printf "www.%s" .Values.host | quote }}
-        {{- end }}
   rules:
     - host: {{ .Values.host | quote }}
       http:
@@ -45,15 +39,3 @@ spec:
                 port:
                   number: {{ $.Values.servicePort }}
           {{- end }}
-    {{- if .Values.wwwRedirect }}
-    - host: {{ printf "www.%s" .Values.host | quote }}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: www-to-apex
-                port:
-                  name: use-annotation
-    {{- end }}

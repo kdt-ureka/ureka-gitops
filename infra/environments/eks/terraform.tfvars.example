@@ -19,6 +19,8 @@ addon_versions = {
 public_enabled     = false
 public_dns_enabled = false
 public_access_mode = "testers"
+# 공개 주소(하위 도메인 하나). 기본값과 같으면 생략. environments/eks/prod/public-ingress.yaml의 host와 같아야 한다.
+public_host = "ureka.magonjal.com"
 # testers 단계에서 ALB에 들어올 수 있는 공인 IPv4 /32. 관리자 IP와, 관리자 목록에 없는 시험 IP(휴대폰 핫스팟 등)를 함께 넣는다.
 alb_tester_cidrs = ["192.0.2.10/32", "198.51.100.20/32"] # documentation addresses; replace locally
 # 관리자 경로(/admin, /api/admin)를 열어 줄 공인 IPv4 /32. 비우면 아무도 못 들어간다. 실제 값은 Git에 쓰지 않는다.

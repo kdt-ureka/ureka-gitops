@@ -17,12 +17,15 @@ rendered="$(helm template t "$chart" -n prod -f "$values")" || { echo "::error::
 
 ingress="$(printf '%s\n' "$rendered" | yq ea 'select(.kind == "Ingress")' -)"
 [ "$(printf '%s\n' "$ingress" | yq '.spec.ingressClassName')" = alb ] || fail "ingressClassName이 alb가 아니다"
-paths="$(printf '%s\n' "$ingress" | yq -o=tsv '.spec.rules[] | select(.host == "magonjal.com") | .http.paths[] | [.path, .backend.service.name]' | sort)"
+paths="$(printf '%s\n' "$ingress" | yq -o=tsv '.spec.rules[] | select(.host == "ureka.magonjal.com") | .http.paths[] | [.path, .backend.service.name]' | sort)"
 expected="$(printf '%s\n' $'/\tureka-frontend' $'/api/admin\tureka-ops' $'/api/auth\tureka-auth' $'/api/chat\tureka-chat' $'/api/content\tureka-content' | sort)"
 [ "$paths" = "$expected" ] || fail "공개 경로가 검토한 5줄과 다르다: ${paths//$'\n'/, }"
 if printf '%s\n' "$rendered" | grep -q recommend; then fail "recommend가 공개 매니페스트에 있다"; fi
-[ "$(printf '%s\n' "$ingress" | yq '.spec.rules[] | select(.host == "www.magonjal.com") | .http.paths[0].backend.service.name')" = www-to-apex ] || fail "www 리다이렉트 규칙이 없다"
-[ "$(printf '%s\n' "$ingress" | yq '.spec.tls[0].hosts | sort | join(",")')" = "magonjal.com,www.magonjal.com" ] || fail "인증서 찾기용 tls.hosts가 apex·www가 아니다"
+# 공개 주소는 하위 도메인 하나. apex·www 규칙이나 리다이렉트 동작이 없어야 한다.
+[ "$(printf '%s\n' "$ingress" | yq '[.spec.rules[].host] | join(",")')" = "ureka.magonjal.com" ] || fail "호스트 규칙이 ureka.magonjal.com 하나가 아니다"
+[ "$(printf '%s\n' "$ingress" | yq '.spec.tls[0].hosts | join(",")')" = "ureka.magonjal.com" ] || fail "인증서 찾기용 tls.hosts가 ureka.magonjal.com 하나가 아니다"
+if printf '%s\n' "$ingress" | yq '.metadata.annotations | keys | .[]' | grep -q '^alb.ingress.kubernetes.io/actions\.'; then fail "리다이렉트 등 actions 주석은 쓰지 않는다(www 공개 안 함)"; fi
+grep -q 'default     = "ureka.magonjal.com"' infra/environments/eks/public_variables.tf || fail "Terraform public_host 기본값이 Ingress 호스트와 다르다"
 # 프런트엔드 SG는 Terraform 소유 SG를 이름으로만(IP가 Git에 남지 않고, 시험자 단계 → open 단계를 Terraform이 정한다).
 [ "$(printf '%s\n' "$ingress" | yq '.metadata.annotations["alb.ingress.kubernetes.io/security-groups"]')" = ureka-eks-alb-public ] || fail "ALB SG가 Terraform의 ureka-eks-alb-public이 아니다"
 grep -q 'alb_security_group = "${local.name}-alb-public"' infra/environments/eks/public.tf || fail "Terraform ALB SG 이름 규칙이 바뀌었다"
@@ -45,6 +48,7 @@ expect_fail() {
 }
 expect_fail "dev 네임스페이스" -n dev -f "$values"
 expect_fail "주소 없음" -n prod
+expect_fail "apex 주소" -n prod -f "$values" --set host=magonjal.com
 expect_fail "recommend 경로" -n prod -f "$values" --set 'routes[0].path=/api/recommend' --set 'routes[0].service=ureka-recommend'
 expect_fail "검토 안 한 경로" -n prod -f "$values" --set 'routes[0].path=/internal'
 expect_fail "중복 경로" -n prod -f "$values" --set 'routes[1].path=/api/auth'

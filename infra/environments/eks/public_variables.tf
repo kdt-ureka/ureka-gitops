@@ -16,10 +16,19 @@ variable "public_dns_enabled" {
 variable "public_domain" {
   type        = string
   default     = "magonjal.com"
-  description = "Route 53에 이미 있는 공개 호스팅 영역 이름. apex를 서비스 주소로, www는 apex로 돌려보낸다."
+  description = "Route 53에 이미 있는 공개 호스팅 영역 이름(apex). 영역만 찾는 데 쓰고 apex 자체는 공개하지 않는다."
   validation {
     condition     = can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$", var.public_domain))
     error_message = "Use a lowercase apex domain such as example.com."
+  }
+}
+variable "public_host" {
+  type        = string
+  default     = "ureka.magonjal.com"
+  description = "prod 공개 주소. public_domain 영역 안의 하위 도메인 하나. 인증서·별칭·Ingress 호스트(environments/eks/prod/public-ingress.yaml)와 같아야 한다."
+  validation {
+    condition     = can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$", var.public_host)) && endswith(var.public_host, ".${var.public_domain}")
+    error_message = "public_host must be a lowercase subdomain inside public_domain (apex is not published)."
   }
 }
 variable "admin_path_allowed_cidrs" {

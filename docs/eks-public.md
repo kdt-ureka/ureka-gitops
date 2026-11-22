@@ -1,13 +1,14 @@
 # EKS prod 공개 입구 (#64 ALB·도메인·인증서, #81 WAF)
 
-EKS **prod**를 `https://magonjal.com`으로 엽니다. dev는 공개하지 않습니다.
+EKS **prod**를 `https://ureka.magonjal.com`으로 엽니다. dev는 공개하지 않습니다.
+apex(`magonjal.com`)와 `www`는 지금 공개하지 않습니다. 레코드·인증서·Ingress 규칙을 만들지 않습니다. 같은 도메인의 SES 발신 주소(no-reply)는 이 문서와 관계없이 그대로 씁니다.
 이 문서와 코드는 설계·로컬 시험까지입니다. AWS·클러스터에 적용하거나 차단 시험을 한 기록이 아닙니다.
 실제 숫자는 아래 [시험 기록](#시험-기록)에 채웁니다.
 
 ## 한눈에 보기
 
 ```
-사용자 ─HTTPS→ Route 53(magonjal.com, www)
+사용자 ─HTTPS→ Route 53(ureka.magonjal.com, magonjal.com 영역 안 별칭)
   → ALB(공개 서브넷 2개)
       입구 SG ureka-eks-alb-public: 처음엔 시험자 /32만 → 게이트 통과·승인 뒤 인터넷 전체
       WAF ureka-eks-public: 모호한 경로 400 → 공지 GET 허용 → 관리자 경로 IP 제한 → 비회원 발급 IP별 제한
@@ -16,16 +17,16 @@ EKS **prod**를 `https://magonjal.com`으로 엽니다. dev는 공개하지 않�
    ├ /api/content → ureka-content  │ recommend는 연결하지 않음(내부 전용)
    ├ /api/admin   → ureka-ops      │
    └ /            → ureka-frontend ┘
-   www.magonjal.com → https://magonjal.com 으로 301, http(80) → https(443)
+   http(80) → https(443). 다른 Host(apex·ALB 주소 등)는 404
 ```
 
 | 무엇 | 어디 | 수명 |
 |---|---|---|
-| 인증서(ACM, apex+www, DNS 검증) | `infra/environments/eks/public.tf` | EKS 스택과 같이 생성·삭제 |
+| 인증서(ACM, `ureka.magonjal.com` 하나, DNS 검증) | `infra/environments/eks/public.tf` | EKS 스택과 같이 생성·삭제 |
 | ALB 입구 SG·시험자 목록(prefix list) | 〃 | 〃 |
 | WAF(규칙 4개)·관리자 IP 목록 | 〃 | 〃 |
 | 컨트롤러 IRSA 역할·정책 | 〃 + `policies/aws-load-balancer-controller-v3.6.3.json` | 〃 |
-| Route 53 별칭 레코드(apex·www) | 〃 (2단계) | 〃 |
+| Route 53 별칭 레코드(`ureka.magonjal.com`) | 〃 (2단계) | 〃 |
 | AWS Load Balancer Controller | `argocd/eks/aws-load-balancer-controller-app.yaml` (차트 3.6.3) | 클러스터와 같이 |
 | 공개 Ingress(+ 기본 꺼진 ALB 허용 NetworkPolicy) | `charts/ureka-public-ingress`, `environments/eks/prod/public-ingress.yaml`, `argocd/eks/prod-public-ingress-app.yaml` | 〃 |
 | ALB 자체 | 컨트롤러가 Ingress에서 만듦 | **Ingress를 지워야 지워짐** |
@@ -105,7 +106,7 @@ AWS 가격표에서 확인한 것은 미국 리전 예시값뿐입니다. 서울
      - `public_access_mode = "testers"`
      - `alb_tester_cidrs`: 관리자 IP + **관리자 목록에 없는 시험 IP** 하나 이상(휴대폰 핫스팟 등, 관리자 차단 시험용)
      - `admin_path_allowed_cidrs`: 관리자 IP만
-   - 공통 운영 도구로 plan → 검토 → apply합니다. 새로 생기는 것: 인증서·검증 CNAME 2개, 입구 SG·규칙(80/443 시험자 목록, 8080 VPC 방향)·prefix list, WAF·IP 목록, 컨트롤러 역할·정책.
+   - 공통 운영 도구로 plan → 검토 → apply합니다. 새로 생기는 것: 인증서·검증 CNAME 1개, 입구 SG·규칙(80/443 시험자 목록, 8080 VPC 방향)·prefix list, WAF·IP 목록, 컨트롤러 역할·정책.
    - plan에서 확인할 것: 생성만 있는지, `0.0.0.0/0` 입구 규칙이 없는지, RDS·network 변경이 없는지.
    - 인증서 `ISSUED`를 확인합니다(보통 몇 분). 검증 레코드가 이미 있어 apply가 멈추면, 그 레코드가 어디서 왔는지 확인한 뒤 진행합니다.
 2. **컨트롤러 등록·Sync**
@@ -129,7 +130,7 @@ AWS 가격표에서 확인한 것은 미국 리전 예시값뿐입니다. 서울
    - 확인 내용: ALB가 정확히 1개, 입구 SG `ureka-eks-alb-public` 연결, WAF `ureka-eks-public` 연결.
    - 하나라도 아니면 **멈추고** 공개 Ingress Application을 지웁니다. 이름으로 WAF를 못 찾았을 때 컨트롤러가 어떻게 동작하는지는 공식 문서에 없어서 반드시 확인합니다.
 5. **Terraform 2단계 (DNS)**
-   - tfvars에 `public_dns_enabled = true`를 넣고 plan → apply합니다. 새로 생기는 것: apex·www A 별칭 레코드 2개.
+   - tfvars에 `public_dns_enabled = true`를 넣고 plan → apply합니다. 새로 생기는 것: `ureka.magonjal.com` A 별칭 레코드 1개.
    - plan에 레코드가 없고 `public_alb_found` 경고가 나오면 ALB를 못 찾은 것이니 4단계로 돌아갑니다.
    - DNS가 생겨도 입구는 아직 시험자만입니다.
 6. **[공개 전 게이트](#공개-전-게이트)**를 시험자 IP에서 모두 통과하고 결과를 기록합니다.
@@ -158,8 +159,8 @@ AWS 가격표에서 확인한 것은 미국 리전 예시값뿐입니다. 서울
 - [ ] **HTTPS 전제 설정**
   - prod auth `COOKIE_SECURE=true`(base values는 dev용 `false`라 #43 prod values에서 덮어씀)
   - 브라우저에서 로그인 → 새로고침 → 리프레시 쿠키(Secure·Lax)가 유지됩니다.
-- [ ] `http://magonjal.com` → https, `https://www.magonjal.com` → `https://magonjal.com`(301)으로 갑니다. 인증서 이름이 맞습니다.
-- [ ] `https://magonjal.com/api/recommend/…`처럼 내부 경로를 부르면 recommend에 닿지 않습니다(화면 HTML이 나옴).
+- [ ] `http://ureka.magonjal.com` → https로 갑니다. 인증서 이름이 `ureka.magonjal.com`입니다. `magonjal.com`·`www.magonjal.com`은 이 작업으로 생긴 레코드가 없습니다.
+- [ ] `https://ureka.magonjal.com/api/recommend/…`처럼 내부 경로를 부르면 recommend에 닿지 않습니다(화면 HTML이 나옴).
 - [ ] 시험자 목록에 없는 IP(다른 회선)에서는 ALB에 연결되지 않습니다(시간 초과).
 - [ ] 비용 알림(예산)이 켜져 있고, 끄는 날짜·담당자를 정했습니다.
 
@@ -173,7 +174,7 @@ AWS 가격표에서 확인한 것은 미국 리전 예시값뿐입니다. 서울
 
 ```sh
 for i in $(seq 1 40); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST https://magonjal.com/api/auth/v1/guest-tokens \
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST https://ureka.magonjal.com/api/auth/v1/guest-tokens \
     -H 'Content-Type: application/json' -d '{}')
   echo "$(date +%T) $i $code"; sleep 2
 done
@@ -187,10 +188,10 @@ done
 
 ```sh
 # 관리자 목록에 없는 시험 IP에서
-curl -s -o /dev/null -w '%{http_code}\n' https://magonjal.com/admin                    # 403
-curl -s -o /dev/null -w '%{http_code}\n' https://magonjal.com/api/admin/v1/incidents   # 403 (경로는 ops 기준으로 바꿔서)
-curl -s -o /dev/null -w '%{http_code}\n' https://magonjal.com/api/admin/v1/public-notice  # 200 (예외)
-curl -s -o /dev/null -w '%{http_code}\n' -X POST https://magonjal.com/api/admin/v1/public-notice  # 403 (GET만 예외)
+curl -s -o /dev/null -w '%{http_code}\n' https://ureka.magonjal.com/admin                    # 403
+curl -s -o /dev/null -w '%{http_code}\n' https://ureka.magonjal.com/api/admin/v1/incidents   # 403 (경로는 ops 기준으로 바꿔서)
+curl -s -o /dev/null -w '%{http_code}\n' https://ureka.magonjal.com/api/admin/v1/public-notice  # 200 (예외)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://ureka.magonjal.com/api/admin/v1/public-notice  # 403 (GET만 예외)
 # 관리자 IP에서: /admin 화면이 열리고, ADMIN 토큰 없이 부르는 관리자 API는 ops가 401/403
 ```
 
@@ -202,11 +203,11 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST https://magonjal.com/api/admin/
 for p in '/api//admin/v1/incidents' '/api/./admin/v1/incidents' '/api/x/../admin/v1/incidents' \
          '/api/%2e%2e/admin/v1/incidents' '/api/admin%2fv1/incidents' '/api/admin;x/v1/incidents' \
          '/api/admin/v1/public-notice/../incidents' '/api/auth/v1//guest-tokens'; do
-  echo "$p $(curl --path-as-is -s -o /dev/null -w '%{http_code}' "https://magonjal.com$p")"   # 모두 400
+  echo "$p $(curl --path-as-is -s -o /dev/null -w '%{http_code}' "https://ureka.magonjal.com$p")"   # 모두 400
 done
-curl -s -o /dev/null -w '%{http_code}\n' https://magonjal.com/api/%61dmin/v1/incidents       # 403 (디코딩 뒤 관리자)
-curl -s -o /dev/null -w '%{http_code}\n' https://magonjal.com/API/ADMIN/v1/incidents         # 403 (소문자 뒤 관리자)
-curl -s -o /dev/null -w '%{http_code}\n' https://magonjal.com/API/ADMIN/V1/PUBLIC-NOTICE     # 403 (예외는 원래 경로 그대로만)
+curl -s -o /dev/null -w '%{http_code}\n' https://ureka.magonjal.com/api/%61dmin/v1/incidents       # 403 (디코딩 뒤 관리자)
+curl -s -o /dev/null -w '%{http_code}\n' https://ureka.magonjal.com/API/ADMIN/v1/incidents         # 403 (소문자 뒤 관리자)
+curl -s -o /dev/null -w '%{http_code}\n' https://ureka.magonjal.com/API/ADMIN/V1/PUBLIC-NOTICE     # 403 (예외는 원래 경로 그대로만)
 ```
 
 - 대문자·인코딩 경로는 ALB 경로 규칙(대소문자 구분)상 ops로 가지 않고 화면(nginx)으로 갑니다. WAF가 그보다 먼저 막는지 확인하는 시험입니다.
