@@ -2,6 +2,9 @@
 prod 공개 Ingress. 클래스 alb의 IngressClassParams(argocd/eks/aws-load-balancer-controller-app.yaml)가
 인터넷용 ALB 하나(group ureka-prod)·대상 ip·TLS 정책·80→443·WAF(ureka-eks-public)를 강제한다. 여기 주석으로 바꿀 수 없다.
 인증서는 ARN을 쓰지 않고 tls.hosts로 ACM에서 찾는다(계정 ID가 Git에 남지 않음).
+ALB 프런트엔드 SG는 Terraform이 만든 ureka-eks-alb-public(Name 태그로 찾음)만 쓴다: 처음에는 시험자 IP만 80/443을 받고,
+공개 전 게이트를 통과한 뒤 Terraform public_access_mode=open으로 연다. SG를 못 찾으면 컨트롤러가 ALB를 만들지 않는다.
+SG를 직접 지정하면 컨트롤러가 노드 쪽 허용을 하지 않으므로 manage-backend-security-group-rules로 백엔드 규칙만 맡긴다.
 관리자 경로 IP 제한·비회원 발급 요청 수 제한은 WAF가 한다(IP 값은 Terraform 비공개 tfvars).
 경로는 ALB가 정의 순서와 관계없이 긴 경로를 먼저 맞추도록 컨트롤러가 정렬한다. "/"는 나머지 전부(화면)다.
 */ -}}
@@ -13,6 +16,8 @@ metadata:
     {{- include "ureka-public-ingress.labels" . | nindent 4 }}
   annotations:
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/security-groups: ureka-eks-alb-public
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
     alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.healthcheckPath | quote }}
     alb.ingress.kubernetes.io/success-codes: "200"
     {{- if .Values.wwwRedirect }}

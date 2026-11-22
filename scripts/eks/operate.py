@@ -79,8 +79,8 @@ class Operator:
         ARTIFACTS.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(ARTIFACTS, 0o700)
 
-    def run(self, command):
-        result = subprocess.run(command, cwd=ROOT, env=self.env, capture_output=True, text=True)
+    def run(self, command, stdin=None):
+        result = subprocess.run(command, cwd=ROOT, env=self.env, capture_output=True, text=True, input=stdin)
         if result.returncode:
             path = ARTIFACTS / "last-error.log"
             path.write_text(result.stdout + result.stderr)
@@ -88,9 +88,13 @@ class Operator:
             raise SafeError("실행 실패. 로컬 .local/eks/last-error.log를 확인해 주세요(공유 금지).")
         return result.stdout
 
-    def aws(self, *args):
-        return json.loads(self.run(["aws", *args, "--profile", self.args.profile,
-                                    "--region", "ap-northeast-2", "--output", "json"]))
+    def aws(self, *args, payload=None):
+        # payload: 계정 ID가 든 ARN 같은 입력을 명령 인자(다른 프로세스·셸 기록에 보임) 대신 표준 입력 JSON으로 넘긴다.
+        extra = ["--cli-input-json", "file:///dev/stdin"] if payload is not None else []
+        command = ["aws", *args, *extra, "--profile", self.args.profile, "--region", "ap-northeast-2", "--output", "json"]
+        if payload is None:
+            return json.loads(self.run(command))
+        return json.loads(self.run(command, stdin=json.dumps(payload)))
 
     def identity(self):
         identity = self.aws("sts", "get-caller-identity")
@@ -159,7 +163,7 @@ class Operator:
         arns = [lb["LoadBalancerArn"] for lb in self.aws("elbv2", "describe-load-balancers")["LoadBalancers"]
                 if lb.get("VpcId") == vpc_id]
         for start in range(0, len(arns), 20):
-            described = self.aws("elbv2", "describe-tags", "--resource-arns", *arns[start:start + 20])
+            described = self.aws("elbv2", "describe-tags", payload={"ResourceArns": arns[start:start + 20]})
             for item in described["TagDescriptions"]:
                 if any(t["Key"] == "elbv2.k8s.aws/cluster" and t["Value"] == name for t in item.get("Tags", [])):
                     raise SafeError("이 클러스터 컨트롤러가 만든 ALB가 남아 있습니다. 공개 Ingress Application을 먼저 지우고 "

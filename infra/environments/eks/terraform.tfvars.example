@@ -13,10 +13,14 @@ addon_versions = {
   aws-ebs-csi-driver = "REPLACE_WITH_COMPATIBLE_EKS_BUILD"
 }
 # --- prod 공개 입구 (#64·#81, docs/eks-public.md) ---
-# 1단계: public_enabled = true → apply → 컨트롤러·Ingress 동기화로 ALB 생성
+# 1단계: public_enabled = true → apply → 컨트롤러·Ingress 동기화로 ALB 생성(시험자 IP만)
 # 2단계: public_dns_enabled = true → apply (Route 53 별칭 레코드)
+# 3단계: 공개 전 게이트 통과·파트장 승인 뒤 public_access_mode = "open" → apply
 public_enabled     = false
 public_dns_enabled = false
+public_access_mode = "testers"
+# testers 단계에서 ALB에 들어올 수 있는 공인 IPv4 /32. 관리자 IP와, 관리자 목록에 없는 시험 IP(휴대폰 핫스팟 등)를 함께 넣는다.
+alb_tester_cidrs = ["192.0.2.10/32", "198.51.100.20/32"] # documentation addresses; replace locally
 # 관리자 경로(/admin, /api/admin)를 열어 줄 공인 IPv4 /32. 비우면 아무도 못 들어간다. 실제 값은 Git에 쓰지 않는다.
 admin_path_allowed_cidrs = ["192.0.2.10/32"] # documentation address; replace locally
 # 비회원 토큰 발급 IP별 제한: 5분(300초)에 20회. WAF 최소 10, 창은 60/120/300/600초만.

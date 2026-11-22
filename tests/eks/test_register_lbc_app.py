@@ -31,10 +31,12 @@ class RegisterTests(unittest.TestCase):
         op.aws = aws or self.aws()
         return op
 
-    def aws(self, acls=("ureka-eks-public",), tags=None, attached="ureka-eks-public"):
+    def aws(self, acls=("ureka-eks-public",), tags=None, attached="ureka-eks-public", alb_sgs=("sg-alb",)):
         tags = tags if tags is not None else [{"Key": "elbv2.k8s.aws/cluster", "Value": "ureka-eks"},
                                               {"Key": "ingress.k8s.aws/stack", "Value": "ureka-prod"}]
-        def call(*args):
+        def call(*args, payload=None):
+            if payload is not None:
+                self.assertFalse(any("arn:" in str(a) for a in args), "ARN must not be an argument")
             if args[:2] == ("eks", "describe-cluster"):
                 return {"cluster": CLUSTER}
             if args[:2] == ("iam", "get-role"):
@@ -42,10 +44,15 @@ class RegisterTests(unittest.TestCase):
             if args[:2] == ("wafv2", "list-web-acls"):
                 return {"WebACLs": [{"Name": n} for n in acls]}
             if args[:2] == ("elbv2", "describe-load-balancers"):
-                return {"LoadBalancers": [{"LoadBalancerArn": "alb-1", "VpcId": "vpc-1"}]}
+                return {"LoadBalancers": [{"LoadBalancerArn": "arn:alb-1", "VpcId": "vpc-1", "SecurityGroups": list(alb_sgs)}]}
+            if args[:2] == ("ec2", "describe-security-groups"):
+                self.assertIn("Name=group-name,Values=ureka-eks-alb-public", args)
+                return {"SecurityGroups": [{"GroupId": "sg-alb"}]}
             if args[:2] == ("elbv2", "describe-tags"):
-                return {"TagDescriptions": [{"ResourceArn": "alb-1", "Tags": tags}]}
+                self.assertEqual(payload, {"ResourceArns": ["arn:alb-1"]})
+                return {"TagDescriptions": [{"ResourceArn": "arn:alb-1", "Tags": tags}]}
             if args[:2] == ("wafv2", "get-web-acl-for-resource"):
+                self.assertEqual(payload, {"ResourceArn": "arn:alb-1"})
                 return {"WebACL": {"Name": attached}} if attached else {}
             raise AssertionError(args)
         return call
@@ -101,6 +108,10 @@ class RegisterTests(unittest.TestCase):
     def test_verify_fails_without_waf(self):
         with self.assertRaises(module.SafeError):
             self.operator(action="verify", aws=self.aws(attached=None)).execute()
+
+    def test_verify_fails_without_terraform_frontend_sg(self):
+        with self.assertRaises(module.SafeError):
+            self.operator(action="verify", aws=self.aws(alb_sgs=("sg-controller-made",))).execute()
 
     def test_verify_ignores_other_cluster_or_group(self):
         tags = [{"Key": "elbv2.k8s.aws/cluster", "Value": "ureka-eks"},

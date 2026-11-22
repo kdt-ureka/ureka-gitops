@@ -50,3 +50,22 @@ variable "guest_token_rate_window_sec" {
     error_message = "WAF evaluation window must be 60, 120, 300 or 600 seconds."
   }
 }
+variable "public_access_mode" {
+  type        = string
+  default     = "testers"
+  description = "ALB 입구. testers: alb_tester_cidrs에서만 80/443. open: 공개 전 게이트 통과·파트장 승인 뒤 인터넷 전체."
+  validation {
+    condition     = contains(["testers", "open"], var.public_access_mode)
+    error_message = "public_access_mode must be testers or open."
+  }
+}
+variable "alb_tester_cidrs" {
+  type        = list(string)
+  default     = []
+  sensitive   = true
+  description = "testers 단계에서 ALB에 들어올 수 있는 공인 IPv4 /32(관리자 + 관리자 목록에 없는 시험 IP 하나 이상). Git에 쓰지 않는다."
+  validation {
+    condition     = length(var.alb_tester_cidrs) <= 20 && alltrue([for c in var.alb_tester_cidrs : can(cidrnetmask(c)) && endswith(c, "/32")])
+    error_message = "Up to 20 IPv4 /32 entries."
+  }
+}

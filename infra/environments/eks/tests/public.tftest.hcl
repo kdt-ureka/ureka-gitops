@@ -25,7 +25,13 @@ mock_provider "aws" {
     }
   }
   mock_data "aws_vpc" {
-    defaults = { id = "vpc-0123456789abcdef0" }
+    defaults = { id = "vpc-0123456789abcdef0", cidr_block = "10.0.0.0/16" }
+  }
+  mock_resource "aws_security_group" {
+    defaults = { id = "sg-0123456789abcdef0" }
+  }
+  mock_resource "aws_ec2_managed_prefix_list" {
+    defaults = { id = "pl-0123456789abcdef0" }
   }
   mock_data "aws_subnet" {
     defaults = { id = "subnet-0123456789abcdef0" }
@@ -35,6 +41,9 @@ mock_provider "aws" {
   }
   mock_data "aws_route53_zone" {
     defaults = { zone_id = "Z0000000000TEST" }
+  }
+  mock_data "aws_lbs" {
+    defaults = { arns = ["arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:loadbalancer/app/k8s-urekaprod-test/TEST"] }
   }
   mock_data "aws_lb" {
     defaults = { dns_name = "k8s-urekaprod-test.ap-northeast-2.elb.amazonaws.com", zone_id = "ZALBTEST" }
@@ -71,6 +80,7 @@ run "public_phase_one" {
   variables {
     public_enabled           = true
     admin_path_allowed_cidrs = ["198.51.100.7/32"]
+    alb_tester_cidrs         = ["203.0.113.5/32"]
   }
   assert {
     condition     = aws_acm_certificate.public[0].domain_name == "magonjal.com" && toset(aws_acm_certificate.public[0].subject_alternative_names) == toset(["www.magonjal.com"]) && aws_acm_certificate.public[0].validation_method == "DNS"
@@ -92,25 +102,64 @@ run "public_phase_one" {
     condition     = toset(aws_wafv2_ip_set.admin[0].addresses) == toset(["198.51.100.7/32"]) && aws_wafv2_ip_set.admin[0].ip_address_version == "IPV4"
     error_message = "Admin allow list comes only from the private variable."
   }
-  # 규칙 순서(priority): 공지 예외(10) → 관리자 차단(20) → 발급 제한(30). 규칙이 정확히 3개인지도 본다.
+  # 규칙 순서(priority): 모호한 경로 거부(5) → 공지 예외(10) → 관리자 차단(20) → 발급 제한(30). 정확히 4개.
   assert {
-    condition     = toset([for r in aws_wafv2_web_acl.public[0].rule : "${r.priority}:${r.name}"]) == toset(["10:allow-public-notice", "20:block-admin-outside-allowlist", "30:rate-limit-guest-tokens"])
-    error_message = "Exactly the three reviewed WAF rules, in this priority order."
+    condition     = toset([for r in aws_wafv2_web_acl.public[0].rule : "${r.priority}:${r.name}"]) == toset(["5:block-ambiguous-path", "10:allow-public-notice", "20:block-admin-outside-allowlist", "30:rate-limit-guest-tokens"])
+    error_message = "Exactly the four reviewed WAF rules, in this priority order."
+  }
+  assert {
+    condition     = !aws_wafv2_web_acl.public[0].visibility_config[0].sampled_requests_enabled && alltrue([for r in aws_wafv2_web_acl.public[0].rule : !r.visibility_config[0].sampled_requests_enabled && r.visibility_config[0].cloudwatch_metrics_enabled])
+    error_message = "Request sampling (may hold Cookie/Authorization) is off; metrics stay on."
+  }
+  assert {
+    condition = alltrue([for r in aws_wafv2_web_acl.public[0].rule : r.name != "block-ambiguous-path" || (
+      r.action[0].block[0].custom_response[0].response_code == 400 &&
+      r.statement[0].regex_match_statement[0].regex_string == local.ambiguous_path_regex &&
+      length(r.statement[0].regex_match_statement[0].field_to_match[0].uri_path) == 1
+    )])
+    error_message = "Ambiguous path rule rejects with 400 on the URI path."
+  }
+  # RE2(Terraform)로 같은 정규식 동작 확인. WAF 실제 동작은 제한 단계 시험에서 다시 본다.
+  assert {
+    condition     = alltrue([for p in ["/api//admin/v1/x", "//api/admin", "/api/./admin", "/api/x/../admin", "/api/%2e%2e/admin", "/api/%2fadmin", "/api/%252e", "/api\\admin", "/api/admin;x/v1", "/api/%00", "/api/admin/.."] : can(regex(local.ambiguous_path_regex, lower(p)))])
+    error_message = "Ambiguous forms must match."
+  }
+  assert {
+    condition     = alltrue([for p in ["/", "/admin", "/api/admin/v1/public-notice", "/api/auth/v1/guest-tokens", "/assets/index-abc.js", "/.well-known/x", "/movies/123", "/api/content/v1/people/%ec%9d%b4"] : !can(regex(local.ambiguous_path_regex, lower(p)))])
+    error_message = "Normal paths must not match."
+  }
+  assert {
+    condition     = alltrue([for r in aws_route53_record.cert_validation : !r.allow_overwrite])
+    error_message = "Never take over an existing validation record."
+  }
+  assert {
+    condition     = aws_security_group.alb_public[0].name == "ureka-eks-alb-public" && aws_security_group.alb_public[0].tags["Name"] == "ureka-eks-alb-public" && toset(keys(aws_vpc_security_group_ingress_rule.alb_testers)) == toset(["80", "443"]) && length(aws_vpc_security_group_ingress_rule.alb_open) == 0 && alltrue([for r in aws_vpc_security_group_ingress_rule.alb_testers : r.prefix_list_id == aws_ec2_managed_prefix_list.alb_testers[0].id && r.cidr_ipv4 == null])
+    error_message = "Default testers mode: 80/443 only from the private tester list."
+  }
+  assert {
+    condition     = length(aws_ec2_managed_prefix_list.alb_testers[0].entry) == 1 && one(aws_ec2_managed_prefix_list.alb_testers[0].entry).cidr == "203.0.113.5/32"
+    error_message = "Tester list comes only from the private variable."
+  }
+  assert {
+    condition     = aws_vpc_security_group_egress_rule.alb_to_pods[0].from_port == 8080 && aws_vpc_security_group_egress_rule.alb_to_pods[0].to_port == 8080 && aws_vpc_security_group_egress_rule.alb_to_pods[0].cidr_ipv4 == "10.0.0.0/16"
+    error_message = "ALB egress only to Pods in the VPC on 8080."
   }
   assert {
     condition = alltrue([for r in aws_wafv2_web_acl.public[0].rule : (
-      r.name == "allow-public-notice" ? r.priority == 10 && length(r.action[0].allow) == 1 && toset([for s in r.statement[0].and_statement[0].statement : s.byte_match_statement[0].search_string]) == toset(["GET", "/api/admin/v1/public-notice"]) && alltrue([for s in r.statement[0].and_statement[0].statement : s.byte_match_statement[0].positional_constraint == "EXACTLY"]) :
-      r.name == "block-admin-outside-allowlist" ? r.priority == 20 && length(r.action[0].block) == 1 && toset([for s in r.statement[0].and_statement[0].statement[0].or_statement[0].statement : s.byte_match_statement[0].search_string]) == toset(["/admin", "/api/admin"]) && r.statement[0].and_statement[0].statement[1].not_statement[0].statement[0].ip_set_reference_statement[0].arn == aws_wafv2_ip_set.admin[0].arn :
+      r.name == "block-ambiguous-path" ? true :
+      r.name == "allow-public-notice" ? r.priority == 10 && length(r.action[0].allow) == 1 && toset([for s in r.statement[0].and_statement[0].statement : s.byte_match_statement[0].search_string]) == toset(["GET", "/api/admin/v1/public-notice"]) && alltrue([for s in r.statement[0].and_statement[0].statement : s.byte_match_statement[0].positional_constraint == "EXACTLY" && [for t in s.byte_match_statement[0].text_transformation : t.type] == ["NONE"]]) :
+      r.name == "block-admin-outside-allowlist" ? r.priority == 20 && length(r.action[0].block) == 1 && toset([for s in r.statement[0].and_statement[0].statement[0].or_statement[0].statement : s.byte_match_statement[0].search_string]) == toset(["/admin", "/api/admin"]) && alltrue([for s in r.statement[0].and_statement[0].statement[0].or_statement[0].statement : [for t in s.byte_match_statement[0].text_transformation : "${t.priority}:${t.type}"] == ["0:URL_DECODE", "1:NORMALIZE_PATH", "2:LOWERCASE"]]) && r.statement[0].and_statement[0].statement[1].not_statement[0].statement[0].ip_set_reference_statement[0].arn == aws_wafv2_ip_set.admin[0].arn :
       r.name == "rate-limit-guest-tokens" ? r.priority == 30 && r.action[0].block[0].custom_response[0].response_code == 429 : false
     )])
-    error_message = "Notice exception is GET+exact path only; admin block applies outside the IP set; rate rule answers 429."
+    error_message = "Notice exception is GET+exact raw path only; admin block decodes and normalizes, applies outside the IP set; rate rule answers 429."
   }
   assert {
     condition = alltrue([for r in aws_wafv2_web_acl.public[0].rule : r.name != "rate-limit-guest-tokens" || (
       r.statement[0].rate_based_statement[0].limit == 20 &&
       r.statement[0].rate_based_statement[0].evaluation_window_sec == 300 &&
       r.statement[0].rate_based_statement[0].aggregate_key_type == "IP" &&
-      toset([for s in r.statement[0].rate_based_statement[0].scope_down_statement[0].and_statement[0].statement : s.byte_match_statement[0].search_string]) == toset(["POST", "/api/auth/v1/guest-tokens"])
+      toset([for s in r.statement[0].rate_based_statement[0].scope_down_statement[0].and_statement[0].statement : s.byte_match_statement[0].search_string]) == toset(["POST", "/api/auth/v1/guest-tokens"]) &&
+      alltrue([for s in r.statement[0].rate_based_statement[0].scope_down_statement[0].and_statement[0].statement : s.byte_match_statement[0].search_string == "POST" || [for t in s.byte_match_statement[0].text_transformation : t.type] == ["URL_DECODE", "NORMALIZE_PATH", "LOWERCASE"]])
     )])
     error_message = "Guest token issuance: POST, per IP, 20 per 5 minutes by default."
   }
@@ -143,13 +192,57 @@ run "public_phase_two_dns" {
     error_message = "Apex and www alias to the controller ALB."
   }
   assert {
-    condition     = data.aws_lb.public[0].tags["ingress.k8s.aws/stack"] == "ureka-prod" && data.aws_lb.public[0].tags["elbv2.k8s.aws/cluster"] == "ureka-eks"
+    condition     = data.aws_lbs.public[0].tags["ingress.k8s.aws/stack"] == "ureka-prod" && data.aws_lbs.public[0].tags["elbv2.k8s.aws/cluster"] == "ureka-eks"
     error_message = "ALB lookup is limited to this cluster's prod IngressGroup."
+  }
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.alb_open) == 0 && length(aws_ec2_managed_prefix_list.alb_testers[0].entry) == 0
+    error_message = "DNS alone never opens the ALB; empty tester list lets nobody in."
   }
   assert {
     condition     = length(aws_wafv2_ip_set.admin[0].addresses) == 0
     error_message = "Default admin allow list is empty (fail closed)."
   }
+}
+
+# 끄는 순서: 2단계가 켜진 채 Ingress를 지워 ALB가 사라져도 plan이 실패하지 않고 별칭만 삭제 계획이 된다(destroy plan의 refresh도 같은 조회).
+run "public_dns_alb_gone" {
+  command = plan
+  variables {
+    public_enabled     = true
+    public_dns_enabled = true
+  }
+  override_data {
+    target = data.aws_lbs.public[0]
+    values = { arns = [] }
+  }
+  assert {
+    condition     = length(aws_route53_record.public) == 0 && length(data.aws_lb.public) == 0
+    error_message = "Missing ALB must not fail planning; alias records drop out."
+  }
+  expect_failures = [check.public_alb_found]
+}
+
+run "public_open_after_gate" {
+  command = apply
+  variables {
+    public_enabled     = true
+    public_dns_enabled = true
+    public_access_mode = "open"
+  }
+  assert {
+    condition     = toset(keys(aws_vpc_security_group_ingress_rule.alb_open)) == toset(["80", "443"]) && alltrue([for r in aws_vpc_security_group_ingress_rule.alb_open : r.cidr_ipv4 == "0.0.0.0/0"]) && length(aws_vpc_security_group_ingress_rule.alb_testers) == 0
+    error_message = "Open mode replaces the tester rules with world 80/443."
+  }
+}
+
+run "rejects_unknown_access_mode" {
+  command = plan
+  variables {
+    public_enabled     = true
+    public_access_mode = "public"
+  }
+  expect_failures = [var.public_access_mode]
 }
 
 run "dns_requires_public" {

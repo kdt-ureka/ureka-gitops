@@ -96,7 +96,7 @@ class SafetyTests(unittest.TestCase):
             self.operator.cleanup_gate()
 
     def alb_aws(self, tags):
-        def aws(*args):
+        def aws(*args, payload=None):
             if args[0] == "eks":
                 return {"cluster": {"resourcesVpcConfig": {"clusterSecurityGroupId": "cluster", "vpcId": "vpc-1"}}}
             if args[0] == "ec2":
@@ -104,7 +104,9 @@ class SafetyTests(unittest.TestCase):
             if args[1] == "describe-load-balancers":
                 return {"LoadBalancers": [{"LoadBalancerArn": "arn-a", "VpcId": "vpc-1"},
                                           {"LoadBalancerArn": "arn-other-vpc", "VpcId": "vpc-2"}]}
-            self.assertEqual(args[3:], ("arn-a",))
+            # ARN(계정 ID 포함)은 명령 인자가 아니라 표준 입력 JSON으로만.
+            self.assertEqual(args, ("elbv2", "describe-tags"))
+            self.assertEqual(payload, {"ResourceArns": ["arn-a"]})
             return {"TagDescriptions": [{"ResourceArn": "arn-a", "Tags": tags}]}
         return aws
 
@@ -120,6 +122,15 @@ class SafetyTests(unittest.TestCase):
                                                      "node_security_group_id": {"value": "node"}})
         self.operator.aws = self.alb_aws([{"Key": "elbv2.k8s.aws/cluster", "Value": "another-cluster"}])
         self.operator.cleanup_gate()
+
+    def test_aws_payload_goes_to_stdin_not_argv(self):
+        calls = []
+        self.operator.run = lambda command, stdin=None: calls.append((command, stdin)) or "{}"
+        self.operator.aws("elbv2", "describe-tags", payload={"ResourceArns": ["arn:aws:x:000000000000:y"]})
+        command, stdin = calls[0]
+        self.assertFalse(any("000000000000" in part for part in command))
+        self.assertIn("file:///dev/stdin", command)
+        self.assertIn("000000000000", stdin)
 
     def test_destroy_requires_explicit_cleanup_confirmation(self):
         self.args.confirm_cleanup = None

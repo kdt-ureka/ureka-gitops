@@ -1,7 +1,8 @@
 # prod 공개 Ingress (#64). 계정 ID 등 비공개 값이 없어 이 파일 그대로 등록한다(docs/eks-public.md 순서).
 #   kubectl --context ureka-eks apply -f argocd/eks/prod-public-ingress-app.yaml
 # 자동 동기화 없음(prod는 사람이 Sync). Sync하면 컨트롤러가 ALB를 만들고 과금이 시작된다.
-# 앞선 조건: Terraform public_enabled=true apply(인증서 ISSUED·WAF ureka-eks-public), 컨트롤러 Healthy, prod 서비스 Ready.
+# 앞선 조건: Terraform public_enabled=true·public_access_mode=testers apply(인증서 ISSUED, WAF ureka-eks-public, 입구 SG ureka-eks-alb-public),
+# 컨트롤러 Healthy, prod 서비스 Ready. Sync 뒤 scripts/eks/register_lbc_app.py verify.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
