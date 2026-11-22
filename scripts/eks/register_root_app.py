@@ -23,6 +23,10 @@ REGION = "ap-northeast-2"
 BLANK = '        - name: ecrRegistry\n          value: ""\n'
 # Root creates AppProjects/Applications; auth is a Rollout, so the controller CRD must already exist.
 CRDS = ("applications.argoproj.io", "appprojects.argoproj.io", "rollouts.argoproj.io")
+# A leftover CRD is not a running controller: also require Established and the controller Available
+# (argocd/eks/argo-rollouts-app.yaml, release argo-rollouts in namespace argo-rollouts).
+ROLLOUTS_CRD = "rollouts.argoproj.io"
+ROLLOUTS_CONTROLLER = ("argo-rollouts", "argo-rollouts")  # namespace, Deployment
 
 
 def inject_registry(source, account):
@@ -47,6 +51,19 @@ class Register(Operator):
             return False
         raise SafeError("클러스터 조회 실패(권한·연결). 없음으로 보지 않고 멈춥니다.")
 
+    def require_rollouts_ready(self):
+        established = self.run(self.k("get", "crd", ROLLOUTS_CRD, "-o",
+                                      'jsonpath={.status.conditions[?(@.type=="Established")].status}')).strip()
+        if established != "True":
+            raise SafeError("Rollout CRD가 Established가 아닙니다. Argo Rollouts 앱 Sync 상태를 확인하세요.")
+        namespace, name = ROLLOUTS_CONTROLLER
+        if not self.exists("deployment", name, "-n", namespace):
+            raise SafeError("Argo Rollouts 컨트롤러가 없습니다(CRD만 남은 상태). argocd/eks/argo-rollouts-app.yaml을 Sync하세요.")
+        available = self.run(self.k("get", "deployment", name, "-n", namespace, "-o",
+                                    "jsonpath={.status.availableReplicas}")).strip()
+        if not available.isdigit() or int(available) < 1:
+            raise SafeError("Argo Rollouts 컨트롤러가 Available이 아닙니다. Ready가 된 뒤 다시 실행하세요.")
+
     def preflight(self):
         identity = self.identity()
         cluster = self.aws("eks", "describe-cluster", "--name", self.args.cluster_name)["cluster"]
@@ -55,6 +72,7 @@ class Register(Operator):
         for crd in CRDS:
             if not self.exists("crd", crd):
                 raise SafeError(f"{crd}가 없습니다. Argo CD 설치와 argocd/eks/argo-rollouts-app.yaml Sync를 먼저 하세요.")
+        self.require_rollouts_ready()
         return inject_registry(MANIFEST.read_text(), identity["Account"])
 
     def execute(self):

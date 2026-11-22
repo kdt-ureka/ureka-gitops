@@ -70,6 +70,28 @@ class Mutations(unittest.TestCase):
         self.obj(apps, "AppProject", "ureka-eks-dev")["spec"]["sourceRepos"] = ["*"]
         self.assertTrue(m.check_projects(apps))
 
+    def test_platform_namespace_name_restricted(self):
+        def cluster(apps):
+            return self.obj(apps, "AppProject", "ureka-eks-platform")["spec"]["clusterResourceWhitelist"]
+        apps = self.apps_copy()
+        cluster(apps)[0].pop("name")  # name 누락 = 모든 Namespace
+        self.assertTrue(m.check_projects(apps))
+        apps = self.apps_copy()
+        cluster(apps)[0]["name"] = "*"
+        self.assertTrue(m.check_projects(apps))
+        apps = self.apps_copy()
+        cluster(apps).append({"group": "", "kind": "Namespace", "name": "argocd"})
+        self.assertTrue(m.check_projects(apps))
+        apps = self.apps_copy()
+        cluster(apps).pop()  # prod 빠짐
+        self.assertTrue(m.check_projects(apps))
+
+    def test_namespace_object_must_match_allowed_name(self):
+        ns = [{"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "argocd"}}]
+        self.assertTrue(m.check_kinds(self.apps, {("namespace", "dev"): ns}))
+        ok = [{"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "dev"}}]
+        self.assertEqual(m.check_kinds(self.apps, {("namespace", "dev"): ok}), [])
+
     def test_platform_extra_cluster_kind_fails(self):
         apps = self.apps_copy()
         self.obj(apps, "AppProject", "ureka-eks-platform")["spec"]["clusterResourceWhitelist"].append(

@@ -104,8 +104,10 @@ def check_projects(apps):
     plat = projects["ureka-eks-platform"]["spec"]
     if sorted(d["namespace"] for d in plat["destinations"]) != sorted(ENVS):
         errors.append("ureka-eks-platform: 목적지는 dev·prod 둘")
-    if [(c.get("group", ""), c["kind"]) for c in plat.get("clusterResourceWhitelist") or []] != [("", "Namespace")]:
-        errors.append("ureka-eks-platform: 클러스터 범위는 Namespace만")
+    # Argo CD는 클러스터 범위 자원에 destinations 검사를 하지 않는다. name이 비면 모든 Namespace가 허용된다.
+    cluster = sorted((c.get("group", ""), c.get("kind"), c.get("name", "")) for c in plat.get("clusterResourceWhitelist") or [])
+    if cluster != sorted(("", "Namespace", env) for env in ENVS):
+        errors.append(f"ureka-eks-platform: 클러스터 범위는 Namespace dev·prod(이름 명시)만: {cluster}")
     for env in ENVS:
         spec = projects[f"ureka-eks-{env}"]["spec"]
         if [d["namespace"] for d in spec["destinations"]] != [env]:
@@ -186,7 +188,7 @@ def check_applications(apps, prod_auto=False):
 
 def whitelist(spec):
     return ({(w.get("group", ""), w["kind"]) for w in spec.get("namespaceResourceWhitelist") or []},
-            {(w.get("group", ""), w["kind"]) for w in spec.get("clusterResourceWhitelist") or []})
+            {(w.get("group", ""), w["kind"], w.get("name", "")) for w in spec.get("clusterResourceWhitelist") or []})
 
 
 def check_kinds(apps, rendered):
@@ -201,8 +203,8 @@ def check_kinds(apps, rendered):
         for o in objs:
             key = (group_of(o), o["kind"])
             if o["kind"] == "Namespace":
-                if key not in cluster_ok:
-                    errors.append(f"{env}/{role}: 프로젝트 {project}가 Namespace를 허용하지 않는다")
+                if key + (o["metadata"]["name"],) not in cluster_ok:
+                    errors.append(f"{env}/{role}: 프로젝트 {project}가 Namespace {o['metadata']['name']}를 허용하지 않는다")
                 elif o["metadata"]["name"] != env:
                     errors.append(f"{env}/{role}: 다른 이름 Namespace {o['metadata']['name']}")
                 continue

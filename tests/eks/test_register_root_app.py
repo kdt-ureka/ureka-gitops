@@ -102,11 +102,11 @@ class RegisterTests(unittest.TestCase):
         self.assertIsInstance(error, module.SafeError)
         self.assertNotIn(ACCOUNT, str(error) + printed)
 
-    def preflight_with(self, crd_results):
+    def preflight_with(self, crd_results, established="True", available="1"):
         reg = self.make()
         reg.identity = Mock(return_value={"Account": ACCOUNT})
         reg.aws = Mock(return_value={"cluster": {}})
-        reg.run = Mock(return_value="{}")
+        reg.run = Mock(side_effect=lambda cmd: established if "crd" in cmd else available if "deployment" in cmd else "{}")
         return reg, patch.object(module, "verify_destination"), \
             patch.object(module.subprocess, "run", side_effect=crd_results)
 
@@ -122,8 +122,27 @@ class RegisterTests(unittest.TestCase):
             reg.preflight()
         self.assertIn("조회 실패", str(ctx.exception))
 
+    def test_preflight_stops_when_crd_not_established(self):
+        reg, vd, run = self.preflight_with([done(), done(), done()], established="False")
+        with vd, run, self.assertRaises(module.SafeError) as ctx:
+            reg.preflight()
+        self.assertIn("Established", str(ctx.exception))
+
+    def test_preflight_stops_without_controller(self):
+        reg, vd, run = self.preflight_with([done(), done(), done(), done(1, stderr="Error (NotFound)")])
+        with vd, run, self.assertRaises(module.SafeError) as ctx:
+            reg.preflight()
+        self.assertIn("컨트롤러가 없습니다", str(ctx.exception))
+
+    def test_preflight_stops_when_controller_unavailable(self):
+        for available in ("", "0"):
+            reg, vd, run = self.preflight_with([done(), done(), done(), done()], available=available)
+            with vd, run, self.assertRaises(module.SafeError) as ctx:
+                reg.preflight()
+            self.assertIn("Available", str(ctx.exception))
+
     def test_preflight_ok_returns_injected_manifest(self):
-        reg, vd, run = self.preflight_with([done(), done(), done()])
+        reg, vd, run = self.preflight_with([done(), done(), done(), done()])
         with vd as verify, run:
             out = reg.preflight()
         verify.assert_called_once()
