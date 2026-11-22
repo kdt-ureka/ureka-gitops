@@ -23,5 +23,19 @@ class SmtpPasswordTest(unittest.TestCase):
         self.assertNotEqual(mod.smtp_password(k, "ap-northeast-2"), mod.smtp_password(k, "us-east-1"))
 
 
+class SecretStateTest(unittest.TestCase):
+    def _run(self, code, stderr):
+        from unittest import mock
+        res = mock.Mock(returncode=code, stderr=stderr)
+        with mock.patch.object(mod.subprocess, "run", return_value=res):
+            return mod.secret_state("s", "p", "r")
+
+    def test_exists_absent_and_unknown(self):
+        self.assertEqual(self._run(0, ""), "exists")
+        self.assertEqual(self._run(254, "An error occurred (ResourceNotFoundException)"), "absent")
+        with self.assertRaises(SystemExit):
+            self._run(254, "An error occurred (AccessDeniedException)")
+
+
 if __name__ == "__main__":
     unittest.main()

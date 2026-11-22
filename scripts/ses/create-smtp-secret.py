@@ -37,6 +37,18 @@ def aws(args, profile, region, stdin=None):
     return json.loads(r.stdout) if r.stdout.strip() else {}
 
 
+def secret_state(secret_id, profile, region):
+    """있음/없음만 판단한다. 권한·연결 오류는 '없음'으로 보지 않고 멈춘다."""
+    r = subprocess.run(["aws", "secretsmanager", "describe-secret", "--secret-id", secret_id,
+                        "--profile", profile, "--region", region, "--output", "json"],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        return "exists"
+    if "ResourceNotFoundException" in r.stderr:
+        return "absent"
+    raise SystemExit("중단: 비밀 존재 여부를 확인하지 못했습니다(권한·연결 확인). 키를 만들지 않았습니다.")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--profile", required=True)
@@ -50,10 +62,7 @@ def main():
         raise SystemExit("중단: 승인된 AWS 계정이 아닙니다.")
     if aws(["iam", "list-access-keys", "--user-name", a.user_name], a.profile, a.region)["AccessKeyMetadata"]:
         raise SystemExit("중단: 이 사용자에 이미 접근 키가 있습니다. 교체는 별도 절차로 합니다.")
-    exists = subprocess.run(["aws", "secretsmanager", "describe-secret", "--secret-id", a.secret_id,
-                             "--profile", a.profile, "--region", a.region],
-                            capture_output=True, text=True).returncode == 0
-    if exists:
+    if secret_state(a.secret_id, a.profile, a.region) == "exists":
         raise SystemExit("중단: 같은 이름의 비밀이 이미 있습니다. 덮어쓰지 않습니다.")
 
     key = aws(["iam", "create-access-key", "--user-name", a.user_name], a.profile, a.region)["AccessKey"]
@@ -64,8 +73,18 @@ def main():
              "--description", "SES SMTP 자격(prod auth 메일). 값은 사람이 다루지 않는다.",
              "--secret-string", "file:///dev/stdin"], a.profile, a.region, stdin=value)
     except BaseException:
-        aws(["iam", "delete-access-key", "--user-name", a.user_name, "--access-key-id", key["AccessKeyId"]],
-            a.profile, a.region)
+        # 저장은 됐는데 응답만 잃은 경우 키를 지우면 비밀이 쓸모없어진다. 확실히 없을 때만 지운다.
+        try:
+            state = secret_state(a.secret_id, a.profile, a.region)
+        except SystemExit:
+            state = "unknown"
+        if state == "absent":
+            aws(["iam", "delete-access-key", "--user-name", a.user_name, "--access-key-id", key["AccessKeyId"]],
+                a.profile, a.region)
+            print("비밀 저장 실패: 방금 만든 접근 키를 지웠습니다.", file=sys.stderr)
+        else:
+            print(f"비밀 저장 결과가 불확실합니다(상태: {state}). 키를 지우지 않았습니다. "
+                  f"{a.secret_id} 존재와 {a.user_name}의 키 개수를 확인한 뒤 정리하세요.", file=sys.stderr)
         raise
     finally:
         key.clear()
