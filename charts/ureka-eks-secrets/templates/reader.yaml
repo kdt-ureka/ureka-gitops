@@ -28,3 +28,33 @@ spec:
         jwt:
           serviceAccountRef:
             name: {{ .Values.readerServiceAccount }}
+---
+# ESO 컨트롤러는 이 네임스페이스의 리더 계정 토큰만 발급할 수 있다(차트 기본 ClusterRole 권한은 끔, argocd/eks/external-secrets-app.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ureka-secrets-reader-token
+  namespace: {{ $env }}
+  labels:
+    {{- include "ekssecrets.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: [{{ .Values.readerServiceAccount | quote }}]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ureka-secrets-reader-token
+  namespace: {{ $env }}
+  labels:
+    {{- include "ekssecrets.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ureka-secrets-reader-token
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.esoControllerServiceAccount.name }}
+    namespace: {{ .Values.esoControllerServiceAccount.namespace }}

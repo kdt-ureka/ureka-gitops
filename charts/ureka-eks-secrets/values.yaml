@@ -7,7 +7,10 @@ projectName: ureka
 # Terraform infra/environments/eks/secrets.tf의 신뢰 조건(system:serviceaccount:<env>:<이름>)과 같아야 한다.
 readerServiceAccount: ureka-secrets-reader
 # 리더 서비스계정 토큰을 발급받아도 되는 유일한 주체(ESO 컨트롤러, argocd/eks/external-secrets-app.yaml).
-esoControllerUser: system:serviceaccount:external-secrets:external-secrets
+# Role·RoleBinding의 대상과 VAP의 허용 사용자가 이 값에서 나온다.
+esoControllerServiceAccount:
+  namespace: external-secrets
+  name: external-secrets
 refreshInterval: 1h
 
 # Secrets Manager 비밀(묶음) → 만들 Kubernetes Secret → 키: 묶음 안의 JSON 속성.

@@ -83,6 +83,28 @@ class RegisterTests(unittest.TestCase):
         self.assertIn(f'value: "{ACCOUNT}"', stdin)
         self.assertNotIn(ACCOUNT, str(raised.exception) + out.getvalue())
 
+    def test_account_is_read_from_environment_not_argv(self):
+        with patch.object(sys, "argv", ["register", "check", "--env", "dev", "--profile", "p"]), \
+                patch.dict(module.os.environ, {"UREKA_EXPECTED_ACCOUNT_ID": ""}), redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(module.main(), 1)
+        self.assertIn("UREKA_EXPECTED_ACCOUNT_ID", err.getvalue())
+        with patch.object(sys, "argv", ["register", "check", "--env", "dev", "--profile", "p",
+                                        "--expected-account-id", ACCOUNT]), redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                module.main()
+        seen = {}
+
+        class Fake:
+            def __init__(self, args):
+                seen["account"] = args.expected_account_id
+
+            def execute(self):
+                pass
+        with patch.object(sys, "argv", ["register", "check", "--env", "dev", "--profile", "p"]), \
+                patch.dict(module.os.environ, {"UREKA_EXPECTED_ACCOUNT_ID": ACCOUNT}), patch.object(module, "Register", Fake):
+            self.assertEqual(module.main(), 0)
+        self.assertEqual(seen["account"], ACCOUNT)
+
     def test_check_uses_server_dry_run(self):
         op = self.operator(action="check")
         op.exists = Mock(side_effect=lambda kind, name: not (kind == "crd" and name in module.FORBIDDEN_CRDS))

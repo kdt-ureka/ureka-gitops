@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Register the EKS dev/prod secrets Application (#63) with the approved account ID injected.
 
-The account ID never goes to Git, argv of kubectl, or the screen: it is substituted into the
-Application manifest in memory and passed to kubectl on standard input.
+The account ID never goes to Git, any argv (this tool's or kubectl's), or the screen: the approved ID is read
+from UREKA_EXPECTED_ACCOUNT_ID, independently compared with STS, substituted into the Application manifest in
+memory and passed to kubectl on standard input. Raw output of failed preflight commands is kept only in the
+local 0600 .local/eks/last-error.log (inherited Operator.run); do not share it.
 check: verify account/cluster/context/ESO/namespace and render locally (no cluster change).
 apply: same checks, then server-side apply of the Application only (Argo CD syncs the rest).
 """
@@ -87,12 +89,16 @@ def main():
     parser.add_argument("action", choices=("check", "apply"))
     parser.add_argument("--env", required=True, choices=("dev", "prod"))
     parser.add_argument("--profile", required=True)
-    parser.add_argument("--expected-account-id", required=True)
     parser.add_argument("--cluster-name", default="ureka-eks")
     parser.add_argument("--context", default="ureka-eks")
     parser.add_argument("--confirm-env")
+    args = parser.parse_args()
     try:
-        Register(parser.parse_args()).execute()
+        # Not an argument: argv is visible to other local processes and shell history.
+        args.expected_account_id = os.environ.get("UREKA_EXPECTED_ACCOUNT_ID", "")
+        if not re.fullmatch(r"[0-9]{12}", args.expected_account_id):
+            raise SafeError("환경 변수 UREKA_EXPECTED_ACCOUNT_ID에 승인 계정 ID(12자리)를 넣어 주세요(값은 출력하지 않음).")
+        Register(args).execute()
     except SafeError as error:
         print("중단:", error, file=sys.stderr)
         return 1

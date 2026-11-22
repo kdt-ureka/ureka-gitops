@@ -52,7 +52,8 @@ def all_values(secrets):
 class FakeRun:
     ARN_ERROR = "An error occurred (AccessDeniedException) ... arn:" + "aws:secretsmanager:ap-northeast-2:" + LEAK_ACCOUNT + ":secret:x"
 
-    def __init__(self, secrets, remote=None, kubectl_error=None, describe_error=None):
+    def __init__(self, secrets, remote=None, kubectl_error=None, describe_error=None, fail_write=None):
+        self.fail_write = fail_write
         self.secrets = secrets
         self.remote = remote or {}
         self.kubectl_error = kubectl_error
@@ -79,6 +80,11 @@ class FakeRun:
                 return SimpleNamespace(returncode=254, stdout="", stderr="An error occurred (ResourceNotFoundException)")
             return SimpleNamespace(returncode=0, stdout=json.dumps(self.remote[name]), stderr="")
         if sub in ("create-secret", "put-secret-value"):
+            if name == self.fail_write:
+                stderr = "An error occurred (InternalServiceError) " + self.ARN_ERROR
+                if check:  # same contract as module.Runner
+                    raise module.SafeError(f"aws 실행 실패{module.exception_name(stderr)}(원문 미출력).")
+                return SimpleNamespace(returncode=255, stdout="", stderr=stderr)
             path = command[command.index("--secret-string") + 1]
             assert path.startswith("file://")
             self.written[name] = (sub, json.loads(Path(path[7:]).read_text()))
@@ -158,11 +164,29 @@ class CopyTests(unittest.TestCase):
         self.assertIsNotNone(self.run_copy(fake))
         self.assertFalse(fake.writes())
 
-    def test_optional_chat_ai_is_skipped(self):
+    def test_missing_chat_ai_writes_nothing(self):
+        # EKS dev always wires chat-ai, so a copy without it would leave an ExternalSecret that can never be Ready.
         del self.secrets["ureka-chat-ai"]
         fake = FakeRun(self.secrets)
-        self.assertIsNone(self.run_copy(fake))
+        self.assertIn("ureka-chat-ai", self.run_copy(fake))
+        self.assertFalse([c for c in fake.calls if c[0] == "aws"])
+
+    def test_second_write_failure_then_resume_with_update_existing(self):
+        fake = FakeRun(self.secrets, fail_write="ureka/eks/dev/chat-ai")
+        error = self.run_copy(fake)
+        self.assertIn("이미 쓴 묶음: ureka/eks/dev/app", error)
+        self.assertIn("쓰지 못한 묶음: ureka/eks/dev/chat-ai", error)
         self.assertEqual(set(fake.written), {"ureka/eks/dev/app"})
+        # Plain retry refuses because app now exists; nothing is written.
+        retry = FakeRun(self.secrets, remote={"ureka/eks/dev/app": {"Name": "x"}})
+        self.assertIn("이미 있는", self.run_copy(retry))
+        self.assertFalse(retry.writes())
+        # Documented recovery: same source, --update-existing adds an app version and creates chat-ai.
+        resume = FakeRun(self.secrets, remote={"ureka/eks/dev/app": {"Name": "x"}})
+        self.assertIsNone(self.run_copy(resume, update=True))
+        self.assertEqual(resume.written["ureka/eks/dev/app"][0], "put-secret-value")
+        self.assertEqual(resume.written["ureka/eks/dev/chat-ai"][0], "create-secret")
+        self.assertEqual(resume.written["ureka/eks/dev/app"][1], fake.written["ureka/eks/dev/app"][1])
 
     def test_existing_remote_is_not_overwritten(self):
         fake = FakeRun(self.secrets, remote={"ureka/eks/dev/chat-ai": {"Name": "x"}})

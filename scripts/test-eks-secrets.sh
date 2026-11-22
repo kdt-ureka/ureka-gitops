@@ -30,7 +30,7 @@ for env in dev prod; do
   printf '%s\n' "$out" | grep -q "ureka/eks/${other}/" && fail "${env}: ${other} 경로가 렌더링됨"
   # 네임스페이스 SecretStore만, 리더 역할 이름은 자기 환경
   kinds="$(printf '%s\n' "$out" | yq ea -N 'select(.kind != null) | .kind' - | sort -u | tr '\n' ' ')"
-  [ "$kinds" = "ExternalSecret SecretStore ServiceAccount ValidatingAdmissionPolicy ValidatingAdmissionPolicyBinding " ] ||
+  [ "$kinds" = "ExternalSecret Role RoleBinding SecretStore ServiceAccount ValidatingAdmissionPolicy ValidatingAdmissionPolicyBinding " ] ||
     fail "${env}: 예상 밖 종류: ${kinds}"
   role="$(printf '%s\n' "$out" | yq ea -N 'select(.kind == "ServiceAccount") | .metadata.annotations."eks.amazonaws.com/role-arn"' -)"
   [ "$role" = "arn:aws:iam::${test_account}:role/ureka-eks-eso-${env}" ] || fail "${env}: 리더 역할 ARN이 다름"
@@ -40,6 +40,14 @@ for env in dev prod; do
     fail "${env}: 리더 보호 정책 범위가 다름"
   [ "$(printf '%s\n' "$out" | yq ea -N 'select(.kind == "ValidatingAdmissionPolicyBinding") | .spec.validationActions[]' - | sort -u)" = Deny ] ||
     fail "${env}: 리더 보호 정책이 Deny가 아님"
+  # ESO의 토큰 발급은 이 환경 리더 계정 하나로만(Role 1개·규칙 1개·resourceNames 고정)
+  rules="$(printf '%s\n' "$out" | yq ea -N -o=json -I=0 'select(.kind == "Role") | .rules' -)"
+  [ "$rules" = '[{"apiGroups":[""],"resources":["serviceaccounts/token"],"resourceNames":["ureka-secrets-reader"],"verbs":["create"]}]' ] ||
+    fail "${env}: 리더 토큰 Role 범위가 다름: ${rules}"
+  [ "$(printf '%s\n' "$out" | yq ea -N 'select(.kind == "Role") | .metadata.namespace' -)" = "$env" ] || fail "${env}: Role 네임스페이스가 다름"
+  subjects="$(printf '%s\n' "$out" | yq ea -N -o=json -I=0 'select(.kind == "RoleBinding") | .subjects' -)"
+  [ "$subjects" = '[{"kind":"ServiceAccount","name":"external-secrets","namespace":"external-secrets"}]' ] ||
+    fail "${env}: 리더 토큰 RoleBinding 대상이 ESO 컨트롤러가 아님: ${subjects}"
   # 렌더 결과에 들어간 Secret 이름·키 목록
   printf '%s\n' "$out" | yq ea -N 'select(.kind == "ExternalSecret") | .spec.target.name + "/" + .spec.data[].secretKey' - |
     sort -u >"${TMPDIR:-/tmp}/eks-secrets-${env}.keys"
@@ -65,13 +73,16 @@ helm template x "$chart" --namespace prod -f environments/eks/dev/secrets.yaml -
   fail "dev values가 prod 네임스페이스에 렌더링됨"
 render dev --set environment=stage --namespace stage >/dev/null 2>&1 && fail "dev/prod 밖 환경이 렌더링됨"
 
-# 등록용 Application: 계정 빈칸, prune 끔
+# 등록용 Application: 계정 빈칸. dev는 자동 Sync(selfHeal, prune 끔), prod는 자동 Sync 없음(수동 승인)
 for env in dev prod; do
   app="argocd/eks/secrets-${env}-app.yaml"
   [ "$(yq '.spec.source.helm.parameters[] | select(.name == "awsAccountId") | .value' "$app")" = "" ] || fail "${app}: 계정 ID가 Git에 있음"
   [ "$(yq '.spec.destination.namespace' "$app")" = "$env" ] || fail "${app}: 대상 네임스페이스가 다름"
-  [ "$(yq '.spec.syncPolicy.automated.prune' "$app")" = false ] || fail "${app}: prune이 켜져 있음(Secret 삭제 위험)"
 done
+[ "$(yq -o=json -I=0 '.spec.syncPolicy.automated' argocd/eks/secrets-dev-app.yaml)" = '{"prune":false,"selfHeal":true}' ] ||
+  fail "dev: 자동 Sync는 selfHeal만(prune 끔)이어야 함"
+[ "$(yq '.spec.syncPolicy.automated' argocd/eks/secrets-prod-app.yaml)" = null ] ||
+  fail "prod: 자동 Sync가 켜져 있음(main 변경이 승인 없이 반영됨)"
 
 # ESO 앱: 버전 고정, 클러스터 범위 기능 끔
 eso=argocd/eks/external-secrets-app.yaml
@@ -81,8 +92,12 @@ for key in processClusterExternalSecret processClusterStore processClusterGenera
   [ "$(yq ".spec.source.helm.valuesObject.${key}" "$eso")" = false ] || fail "ESO ${key}가 false가 아님"
 done
 [ "$(yq '.spec.source.helm.valuesObject.serviceAccount.name' "$eso")" = external-secrets ] || fail "ESO 서비스계정 이름이 다름"
-[ "system:serviceaccount:$(yq '.spec.destination.namespace' "$eso"):external-secrets" = "$(yq '.esoControllerUser' "$chart/values.yaml")" ] ||
+[ "$(yq '.spec.destination.namespace' "$eso")/external-secrets" = "$(yq '.esoControllerServiceAccount.namespace + "/" + .esoControllerServiceAccount.name' "$chart/values.yaml")" ] ||
   fail "리더 토큰 허용 주체가 ESO 컨트롤러와 다름"
+# 차트 기본의 클러스터 전체 토큰 발급 권한과 edit·admin 합성은 끈다(환경 Role만 남김)
+for key in rbac.serviceAccountTokenCreate rbac.aggregateToEdit rbac.aggregateToAdmin; do
+  [ "$(yq ".spec.source.helm.valuesObject.${key}" "$eso")" = false ] || fail "ESO ${key}가 false가 아님"
+done
 [ "$(yq '.spec.syncPolicy.managedNamespaceMetadata.labels."pod-security.kubernetes.io/enforce"' "$eso")" = restricted ] ||
   fail "ESO 네임스페이스가 restricted가 아님"
 

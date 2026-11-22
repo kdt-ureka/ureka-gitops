@@ -8,7 +8,8 @@ EC2 서버 안(SSM 셸)에서 root로 실행한다:
                                                                       EC2 값을 바꾼 뒤 EKS dev에 새 버전으로 맞춘다
 
 - EC2 쪽 Secret·DB 비밀번호는 읽기만 하고 바꾸지 않는다. 새 값을 만들지 않는다.
-- 만드는 비밀: ureka/eks/dev/app(서비스 값 묶음), ureka/eks/dev/chat-ai(EC2에 ureka-chat-ai가 있을 때만).
+- 만드는 비밀: ureka/eks/dev/app(서비스 값 묶음), ureka/eks/dev/chat-ai(Gemini 키). EKS dev는 두 묶음을 항상 연결하므로
+  (environments/eks/dev/secrets.yaml) EC2에 ureka-chat-ai가 없으면 아무것도 쓰지 않고 멈춘다(EC2에서 먼저 up.sh --chat-ai).
   JSON 속성 이름은 charts/ureka-eks-secrets/values.yaml의 bundles와 같다(tests/eks/test_copy_eks_dev_secrets.py가 비교).
 - 쓰기 권한은 data 스택 eks_dev_secret_copy_enabled=true 동안만 있다(읽기 권한은 없다). 복사 뒤 끈다.
 - 값은 화면·명령 인자·로그에 싣지 않는다. 임시 폴더(0700)의 파일을 aws CLI에 file://로만 넘기고 끝나면 지운다.
@@ -51,7 +52,6 @@ BUNDLES = {
     },
     "chat-ai": {"ureka-chat-ai": {"AI_MODE": "AI_MODE", "AI_API_KEY": "AI_API_KEY"}},
 }
-OPTIONAL_BUNDLES = {"chat-ai"}
 # 이름이 정해진 계정(create-secrets.sh·db-bootstrap.sql). 다른 값이면 원본이 잘못된 것이라 멈춘다.
 EXPECTED_PLAIN = {"RECOMMEND_DB_USERNAME": "content_db_recommend", "INGEST_DB_USERNAME": "content_db_ingest"}
 TAGS = ["Key=Project,Value=ureka", "Key=Stack,Value=eks-dev-secrets", "Key=ManagedBy,Value=copy_eks_dev_secrets",
@@ -93,8 +93,6 @@ def read_sources(run, bundle):
         found[name] = data
     missing = [n for n, d in found.items() if d is None]
     if missing:
-        if bundle in OPTIONAL_BUNDLES and len(missing) == len(found):
-            return None
         raise SafeError(f"EC2 dev Secret이 없습니다: {', '.join(missing)}. EC2에서 새로 만들지 말고 상태를 먼저 확인하세요.")
     return found
 
@@ -153,9 +151,6 @@ def copy(run, region, action, update_existing, workdir):
     plans = []
     for bundle in BUNDLES:
         sources = read_sources(run, bundle)
-        if sources is None:
-            print(f"{PREFIX}/{bundle}: EC2에 원본 Secret이 없어 건너뜁니다(선택 묶음).")
-            continue
         plans.append((bundle, build_bundle(bundle, sources)))
     # 모두 읽고 검사한 뒤에만 AWS를 건드린다(하나라도 틀리면 아무것도 쓰지 않음).
     states = {bundle: remote_state(run, f"{PREFIX}/{bundle}", region) for bundle, _ in plans}
@@ -164,6 +159,7 @@ def copy(run, region, action, update_existing, workdir):
         if present:
             raise SafeError("이미 있는 비밀: " + ", ".join(f"{PREFIX}/{b}" for b in present) +
                             ". 아무것도 바꾸지 않았습니다(EC2 값을 바꾼 경우에만 --update-existing).")
+    written = []
     for bundle, values in plans:
         name = f"{PREFIX}/{bundle}"
         if action == "check":
@@ -175,8 +171,14 @@ def copy(run, region, action, update_existing, workdir):
             json.dump(values, f)
         try:
             done = write_remote(run, name, region, path, states[bundle], update_existing)
+        except SafeError as error:
+            # 묶음마다 별도 API라 원자적이지 않다. 이미 쓴 것과 남은 것을 이름만 알린다(docs/eks-secrets.md '부분 실패 복구').
+            left = [f"{PREFIX}/{b}" for b, _ in plans[len(written):]]
+            raise SafeError(f"{error} 이미 쓴 묶음: {', '.join(written) or '없음'}. 쓰지 못한 묶음: {', '.join(left)}. "
+                            "임시 쓰기 권한은 켜 둔 채 원인을 확인하고 '부분 실패 복구'를 따르거나, 중단하면 권한을 끄세요.") from None
         finally:
             path.unlink(missing_ok=True)
+        written.append(name)
         print(f"{name}: 키 {len(values)}개 {done}")
         values.clear()
 

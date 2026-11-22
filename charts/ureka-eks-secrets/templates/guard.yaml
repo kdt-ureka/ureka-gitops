@@ -31,7 +31,7 @@ spec:
         (!has(object.spec.serviceAccount) || object.spec.serviceAccount != '{{ $sa }}')
       message: "secrets reader service account is reserved for External Secrets Operator"
     {{- else }}
-    - expression: "request.name != '{{ $sa }}' || request.userInfo.username == '{{ $.Values.esoControllerUser }}'"
+    - expression: "request.name != '{{ $sa }}' || request.userInfo.username == 'system:serviceaccount:{{ $.Values.esoControllerServiceAccount.namespace }}:{{ $.Values.esoControllerServiceAccount.name }}'"
       message: "only External Secrets Operator may request secrets reader tokens"
     {{- end }}
 ---
