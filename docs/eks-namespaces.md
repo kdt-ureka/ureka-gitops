@@ -60,13 +60,17 @@ kind(1.36.1)는 시험용 Pod로만 확인했고, EKS 1.37 호환은 아직 확�
 
 | | dev | prod |
 |---|---|---|
-| requests.cpu / limits.cpu | 1600m / 12 | 1600m / 12 |
+| requests.cpu / limits.cpu | 1600m / 12 | 1600m / 13 |
 | requests.memory / limits.memory | 5Gi / 9Gi | 5Gi / 9Gi |
 | pods | 20 | 20 |
 | services.loadbalancers / nodeports | 0 / 0 | 0 / 0 |
 | PVC / 저장 용량 | 2개 / 20Gi (ingest 원본·결과) | 0 |
 
 - 동시 갱신 최대치 대비 CPU 요청 94%, 메모리 요청 89%, CPU 상한 96%, 메모리 상한 88%다.
+- 데이터 계층(Redis·Mailpit, #43)도 같은 Quota에 센다. 시험은 `environments/eks/<env>/data`가 있으면 함께 렌더링한다.
+  - Recreate 전략이라 배포 중 추가 파드는 없다.
+  - #43 prod values 기준 최대치는 요청 1520m·4640Mi, 상한 12.2코어·8320Mi, 파드 18이다. 그래서 prod limits.cpu를 13으로 올렸다(94%).
+  - dev는 #43 values 기준 상한 11.2코어라 12로 둔다(93%).
 - dev는 prod와 같은 서비스·같은 values라 최대치가 같아서 Quota도 같다. dev를 더 작게 하려면 위의 #43 결정이 먼저다.
 - ingest(Job·파일 Pod, 요청 140m·384Mi, 상한 1.7코어·1.75Gi)는 지금 수동 실행이다. 배포 중에는 돌리지 않는다.
   - 평상시와 함께는 들어간다.

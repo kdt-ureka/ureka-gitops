@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # EKS dev·prod 네임스페이스(#62) 정적 시험. 클러스터 없이 돈다(CI Helm 워크플로와 로컬 공통).
 # 1) environments/eks/<env>/namespace를 kustomize로 렌더링한다(prod는 ../rbac 포함).
-# 2) 서비스 7개를 그 환경 values로 렌더링한다. EKS 서비스 values(#43)가 아직 없으면 EC2 dev values를 대신 쓴다
+# 2) 서비스 7개(+ 있으면 environments/eks/<env>/data의 Redis·Mailpit)를 그 환경 values로 렌더링한다. EKS 서비스 values(#43)가 아직 없으면 EC2 dev values를 대신 쓴다
 #    (같은 이미지·같은 자원 값을 그대로 옮기는 흐름이라 대용으로 쓴다). #43이 파일을 만들면 자동으로 그 값을 본다.
 # 3) tests/namespaces/check_eks_namespaces.py: Pod Security 라벨·Quota 안에 카나리 최대치·LimitRange·RBAC 최소 권한.
 # 4) 시험이 헛돌지 않는지: 값 하나씩 망가뜨린 입력은 모두 실패해야 한다(test_check_eks_namespaces.py).
@@ -27,6 +27,11 @@ for env in dev prod; do
     helm template "${file%.yaml}" charts/ureka-backend -n "$env" -f "$base" -f "$values" \
       --set "image.registry=${test_registry}" | to_jsonl >> "$work/${env}-workloads.jsonl"
   done
+  # 데이터 계층(Redis·Mailpit, #43)이 있으면 같은 Quota에 함께 센다(DB는 RDS라 클러스터 밖).
+  if [ -f "environments/eks/${env}/data/kustomization.yaml" ]; then
+    echo "== ${env}: environments/eks/${env}/data"
+    kubectl kustomize "environments/eks/${env}/data" | to_jsonl >> "$work/${env}-workloads.jsonl"
+  fi
 done
 
 status=0
