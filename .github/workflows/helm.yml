@@ -49,6 +49,9 @@ jobs:
       - name: EC2 dev NetworkPolicy matches the allow table
         # 기본 거부 + 서비스별 허용(+ ingest·관측 정책 합집합)을 계산해 tests/networkpolicy/expected.json과 모든 조합이 같은지 본다. python3 표준 라이브러리·yq.
         run: bash scripts/test-dev-networkpolicy.sh
+      - name: EKS dev/prod namespaces fit quota and keep prod RBAC read-only
+        # Pod Security 라벨(EC2 dev와 같음)·서비스 7개 카나리 최대치가 Quota 안·LimitRange·prod RBAC 최소 권한, 망가뜨린 입력은 실패. python3 표준 라이브러리·yq.
+        run: bash scripts/test-eks-namespaces.sh
       - name: EC2 ingest manual load script
         # 가짜 kubectl로 prepare·store(sha256 대조)·run sample/full 렌더링·격리 요약·임시 수신기(127.0.0.1, 경로 고정)를 본다.
         run: bash scripts/test-ec2-ingest.sh

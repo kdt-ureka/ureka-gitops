@@ -1,0 +1,24 @@
+# EKS dev 상한(시험용). t3.large 2대 기준 계산은 docs/eks-namespaces.md.
+# 서비스 7개(auth 2개) 평상시 요청 790m·약 2.4Gi. 최대는 모든 앱이 동시에 갱신될 때
+# (Deployment surge 25% 올림 = 각 1개, auth 카나리 1개, chat 마이그레이션 Job): 요청 1510m·4544Mi, 상한 11.5코어·8064Mi, 파드 16.
+# #43 dev values + 데이터 계층(Redis·Mailpit, Recreate라 surge 없음) 기준: 요청 1420m·4128Mi, 상한 11.2코어·7552Mi, 파드 17.
+# dev는 prod와 같은 서비스라 동시 갱신 최대치가 비슷하다. 더 줄이려면 #43에서 dev 배포를 직렬화하거나 surge를 0으로 두고 다시 계산한다.
+# ingest(Job·파일 Pod, PVC 2개)는 수동 실행이며 배포 중에는 돌리지 않는다. 자동·예약 적재를 붙이면 #43에서 직렬화한다.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: dev
+spec:
+  hard:
+    requests.cpu: 1600m
+    requests.memory: 5Gi
+    limits.cpu: "12"
+    limits.memory: 9Gi
+    pods: "20"
+    # 외부 공개는 #64 ALB Ingress(target-type ip)로만 한다. LB·NodePort Service는 만들 수 없다.
+    services.loadbalancers: "0"
+    services.nodeports: "0"
+    # ingest 원본·결과 PVC(EC2: 2Gi + 1Gi)
+    persistentvolumeclaims: "2"
+    requests.storage: 20Gi

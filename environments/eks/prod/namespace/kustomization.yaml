@@ -1,0 +1,8 @@
+# prod는 네임스페이스와 사람 권한(../rbac)을 한 앱으로 묶는다(Argo CD가 Namespace를 먼저 만든다).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - resourcequota.yaml
+  - limitrange.yaml
+  - ../rbac

@@ -1,0 +1,47 @@
+# prod 사람 권한(#62). 원칙: 사람은 prod를 직접 바꾸지 않는다. 변경은 Git → Argo CD만.
+# 그룹은 EKS access entry(STANDARD, kubernetes_groups)로 IAM 역할과 연결한다. 연결(Terraform)은 별도 변경: docs/eks-namespaces.md
+# Kubernetes RBAC은 허용만 더한다. 클러스터 관리자 access entry(비상용)는 이 Role과 관계없이 모든 권한을 가진다.
+#
+# auth 카나리 승격·중단 권한은 여기 두지 않는다(교차 검토 필수 수정).
+# Rollout patch는 필드를 좁힐 수 없어 이미지·Pod 템플릿·Secret 참조까지 바꿀 수 있기 때문이다.
+# #43에서 사용자별 Argo CD 권한으로 해당 앱의 Rollout 동작(promote·abort 등)만 연다. 그 전까지는 관리자(비상용)만 한다.
+---
+# 팀원 조회용. Secret·exec·attach·port-forward·로그·proxy는 없다(로그에는 사용자 대화 등 개인 정보가 있을 수 있다).
+# ServiceAccount도 뺀다(IRSA 역할 ARN 주석이 보인다. 운영 조회에 필요 없음).
+# Pod spec·ConfigMap은 평문 값을 그대로 보여 준다. 자격 정보는 Secret 참조(ESO, #63)로만 넣는다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prod-viewer
+  namespace: prod
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, configmaps, events, persistentvolumeclaims, resourcequotas, limitranges]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets, statefulsets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [argoproj.io]
+    resources: [rollouts, analysisruns, analysistemplates, experiments]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [get, list, watch]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]

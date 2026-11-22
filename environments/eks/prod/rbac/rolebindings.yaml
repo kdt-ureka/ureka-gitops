@@ -1,0 +1,15 @@
+# 그룹 이름은 EKS access entry의 kubernetes_groups와 같아야 한다("system:"으로 시작할 수 없다).
+# 플랫폼 담당도 Kubernetes에서는 이 조회 그룹만 쓴다. 카나리 승격·중단은 #43 Argo CD 권한으로 연다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prod-viewers
+  namespace: prod
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prod-viewer
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: ureka-prod-viewers

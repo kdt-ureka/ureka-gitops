@@ -1,0 +1,20 @@
+# 컨테이너 하나의 기본값·최대값(dev·prod 같음). 계산 근거: docs/eks-namespaces.md
+# - 기본값: resources를 적지 않은 컨테이너(임시 점검 Pod 등)도 ResourceQuota에 걸리지 않고 작게 뜨게 한다.
+# - 최대값: 지금 가장 큰 컨테이너는 1코어·768Mi(auth·content·ops), ingest Job은 1Gi. 이보다 크면 생성이 거부된다.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: dev-container-limits
+  namespace: dev
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 256Mi
+      max:
+        cpu: "1"
+        memory: 1Gi

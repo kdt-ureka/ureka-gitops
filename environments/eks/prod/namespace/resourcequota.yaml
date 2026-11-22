@@ -1,0 +1,22 @@
+# EKS prod 상한(공개). t3.large 2대 기준 계산은 docs/eks-namespaces.md.
+# 서비스 7개(auth 2개) 평상시 요청 790m·약 2.4Gi. 최대는 모든 앱이 동시에 갱신될 때
+# (Deployment surge 25% 올림 = 각 1개, auth 카나리 1개, chat 마이그레이션 Job): 요청 1510m·4544Mi, 상한 11.5코어·8064Mi, 파드 16.
+# #43 prod values + 데이터 계층(Redis·Mailpit, Recreate라 surge 없음) 기준: 요청 1520m·4640Mi, 상한 12.2코어·8320Mi, 파드 18.
+# 그래서 limits.cpu는 13이다(12면 넘친다).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: prod-quota
+  namespace: prod
+spec:
+  hard:
+    requests.cpu: 1600m
+    requests.memory: 5Gi
+    limits.cpu: "13"
+    limits.memory: 9Gi
+    pods: "20"
+    # 외부 공개는 #64 ALB Ingress(target-type ip)로만 한다. LB·NodePort Service는 만들 수 없다.
+    services.loadbalancers: "0"
+    services.nodeports: "0"
+    # prod에는 아직 볼륨이 없다. content를 prod에 재적재(ingest)하기로 정하면 이 값을 PR로 올린다.
+    persistentvolumeclaims: "0"
