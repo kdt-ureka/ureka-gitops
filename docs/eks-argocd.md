@@ -8,7 +8,7 @@
 
 1. EKS 노드·기본 Pod Ready, 기존 RDS 가동·노드 SG 접근 허용 확인.
 2. 아래 코드의 보안/교차 검토·PR·CI·리뷰·병합 후 설치 도구 check → 직접 install.
-3. #63에서 기존 서비스 Secret 원본 보존과 Secrets Manager→ESO·최소 IRSA 권한을 준비.
+3. #63에서 기존 서비스 Secret 원본 보존과 Secrets Manager→ESO·최소 IRSA 권한을 준비([EKS 비밀값](eks-secrets.md)).
 4. EKS 전용 AppProject·root 앱·서비스 values·DB/Redis 연결·네임스페이스 정책을 검토.
 5. 서비스별 마이그레이션·Ready·내부 호출을 확인한 뒤 전체 Git 동기화와 되돌리기를 시험.
 
