@@ -1,0 +1,105 @@
+{{- if not (has .Release.Namespace (list "dev" "prod")) }}
+{{- fail "networkpolicy namespace must be dev or prod" }}
+{{- end }}
+{{- if and .Values.alb.enabled (ne .Release.Namespace "prod") }}
+{{- fail "ALB ingress is prod only" }}
+{{- end }}
+{{- if .Values.alb.enabled }}
+{{- if or (empty .Values.alb.sourceCidrs) (gt (len .Values.alb.sourceCidrs) 8) }}
+{{- fail "ALB requires 1..8 approved private subnet CIDRs (injected, never committed)" }}
+{{- end }}
+{{- range .Values.alb.sourceCidrs }}
+{{- $parts := splitList "/" . }}
+{{- if ne (len $parts) 2 }}{{ fail "invalid ALB CIDR" }}{{ end }}
+{{- $octets := splitList "." (first $parts) }}
+{{- if ne (len $octets) 4 }}{{ fail "ALB CIDRs must be private IPv4 subnets" }}{{ end }}
+{{- range $octets }}
+{{- if not (regexMatch "^(0|[1-9][0-9]{0,2})$" .) }}{{ fail "invalid ALB IPv4 octet" }}{{ end }}
+{{- if gt (int .) 255 }}{{ fail "invalid ALB IPv4 octet" }}{{ end }}
+{{- end }}
+{{- $prefix := last $parts }}
+{{- if not (regexMatch "^(1[6-9]|2[0-9]|3[0-2])$" $prefix) }}{{ fail "ALB subnet prefix must be /16 through /32" }}{{ end }}
+{{- $private := or (eq (first $octets) "10") (and (eq (first $octets) "172") (ge (int (index $octets 1)) 16) (le (int (index $octets 1)) 31)) (and (eq (first $octets) "192") (eq (index $octets 1) "168")) }}
+{{- if not $private }}{{ fail "ALB source must be RFC1918; public CIDRs are not allowed" }}{{ end }}
+{{- end }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress: []
+{{- /* Same-namespace service calls. No Traefik on EKS; dev uses port-forward. */}}
+{{- $rules := list
+  (dict "target" "ureka-auth" "port" 8080 "sources" (list "ureka-frontend"))
+  (dict "target" "ureka-chat" "port" 8080 "sources" (list "ureka-frontend" "ureka-auth"))
+  (dict "target" "ureka-content" "port" 8080 "sources" (list "ureka-frontend" "ureka-auth" "ureka-chat" "ureka-chat-worker" "ureka-recommend"))
+  (dict "target" "ureka-ops" "port" 8080 "sources" (list "ureka-frontend"))
+  (dict "target" "ureka-recommend" "port" 8000 "sources" (list "ureka-chat" "ureka-chat-worker"))
+  (dict "target" "redis" "port" 6379 "sources" (list "ureka-auth" "ureka-content"))
+  (dict "target" "mailpit" "port" 1025 "sources" (list "ureka-auth")) }}
+{{- range $rules }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-{{ .target }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: {{ .target }}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range .sources }}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: {{ . }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: {{ .port }}}]
+{{- end }}
+{{- if .Values.metrics.enabled }}
+{{- $targets := list (list "ureka-auth" 9091) (list "ureka-content" 9091) }}
+{{- if .Values.metrics.chatEnabled }}{{ $targets = append $targets (list "ureka-chat" 8080) }}{{ end }}
+{{- range $targets }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: metrics-{{ first . }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: {{ first . }}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: obs-prometheus}
+      ports: [{protocol: TCP, port: {{ last . }}}]
+{{- end }}
+{{- end }}
+{{- if .Values.alb.enabled }}
+{{- range list "ureka-frontend" "ureka-auth" "ureka-chat" "ureka-content" "ureka-ops" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alb-{{ . }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: {{ . }}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range $.Values.alb.sourceCidrs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 8080}]
+{{- end }}
+{{- end }}

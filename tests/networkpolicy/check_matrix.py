@@ -9,9 +9,11 @@ NetworkPolicy 의미(ingress만):
 - from 항목에 namespaceSelector·podSelector가 같이 있으면 AND. podSelector만 있으면 정책과 같은 네임스페이스.
 - from을 빼거나 빈 목록이면 모든 출발지, ports를 빼거나 빈 목록이면 모든 포트.
 - podSelector {}는 그 네임스페이스의 모든 Pod, namespaceSelector {}는 모든 네임스페이스.
-지원하지 않는 형식(matchExpressions, ipBlock, 이름 포트, endPort, 빈 peer {})은 잘못 계산하지 않게
+ipBlock은 EKS 기대 표의 allowIpBlock=true일 때만 지원한다(기본 EC2 경로는 거부).
+지원하지 않는 형식(matchExpressions, 이름 포트, endPort, 빈 peer {})은 잘못 계산하지 않게
 비교 전에 정책 전체를 검사해 실패로 처리한다(빈 peer는 API 서버도 거절한다: "must specify a peer").
 """
+import ipaddress
 import json
 import sys
 
@@ -32,7 +34,7 @@ def match_labels(selector, labels, what):
     return all(labels.get(k) == v for k, v in (selector.get("matchLabels") or {}).items())
 
 
-def validate(policies):
+def validate(policies, allow_ipblock=False):
     """비교 전에 모든 정책의 모든 분기를 검사한다(선택되지 않는 분기도 빠뜨리지 않게)."""
     for pol in policies:
         name = pol["metadata"]["name"]
@@ -42,6 +44,17 @@ def validate(policies):
             for peer in rule.get("from") or []:
                 if not peer:
                     fail(f"{name}: 빈 peer {{}}는 지원하지 않는다(API도 거절)")
+                if allow_ipblock and "ipBlock" in peer:
+                    if set(peer) != {"ipBlock"} or set(peer["ipBlock"]) - {"cidr", "except"}:
+                        fail(f"{name}: invalid ipBlock peer")
+                    try:
+                        network = ipaddress.ip_network(peer["ipBlock"]["cidr"])
+                        for exception in peer["ipBlock"].get("except", []):
+                            if not ipaddress.ip_network(exception).subnet_of(network):
+                                fail(f"{name}: ipBlock except outside CIDR")
+                    except (ValueError, KeyError, TypeError):
+                        fail(f"{name}: invalid ipBlock CIDR")
+                    continue
                 if set(peer) - {"namespaceSelector", "podSelector"}:
                     fail(f"{name}: 지원하지 않는 from 항목(ipBlock 등): {peer}")
                 for key in ("namespaceSelector", "podSelector"):
@@ -53,6 +66,15 @@ def validate(policies):
 
 
 def peer_matches(peer, src, policy_ns, name):
+    if "ipBlock" in peer:
+        if not src.get("ip"):
+            return False
+        ip = ipaddress.ip_address(src["ip"])
+        block = peer["ipBlock"]
+        return ip in ipaddress.ip_network(block["cidr"]) and not any(
+            ip in ipaddress.ip_network(x) for x in block.get("except", []))
+    if src.get("external"):
+        return False
     ns_sel = peer.get("namespaceSelector")
     pod_sel = peer.get("podSelector")
     ns_labels = {"kubernetes.io/metadata.name": src["namespace"]}
@@ -72,11 +94,11 @@ def port_matches(ports, port, name):
     return False
 
 
-def allowed(policies, src, target_labels, port):
+def allowed(policies, src, target_labels, port, target_namespace="dev"):
     selecting = []
     for pol in policies:
         spec = pol["spec"]
-        if pol["metadata"].get("namespace") != "dev":
+        if pol["metadata"].get("namespace") != target_namespace:
             continue
         if "Ingress" not in spec.get("policyTypes", ["Ingress"]):
             continue
@@ -88,7 +110,7 @@ def allowed(policies, src, target_labels, port):
         name = pol["metadata"]["name"]
         for rule in pol["spec"].get("ingress") or []:
             peers = rule.get("from")
-            peer_ok = True if not peers else any(peer_matches(p, src, "dev", name) for p in peers)
+            peer_ok = True if not peers else any(peer_matches(p, src, target_namespace, name) for p in peers)
             if peer_ok and port_matches(rule.get("ports"), port, name):
                 return True
     return False
@@ -102,7 +124,7 @@ def main():
         print(f"::error::시나리오가 없다: {scenario} (있는 것: {scenarios})")
         sys.exit(1)
     allow = set()
-    for s in scenarios[: scenarios.index(scenario) + 1]:
+    for s in (scenarios[: scenarios.index(scenario) + 1] if exp.get("cumulative", True) else [scenario]):
         allow |= {tuple(x) for x in exp["allow"][s]}
     policies = []
     for path in policy_files:
@@ -113,7 +135,7 @@ def main():
                 if doc and doc.get("kind") == "NetworkPolicy":
                     policies.append(doc)
     try:
-        validate(policies)
+        validate(policies, allow_ipblock=exp.get("allowIpBlock", False))
     except Unsupported as e:
         print(f"::error::{e}")
         sys.exit(1)
@@ -127,7 +149,7 @@ def main():
         for target, ports in exp["targets"].items():
             for port in ports:
                 checked += 1
-                got = allowed(policies, src, {"app.kubernetes.io/name": target}, port)
+                got = allowed(policies, src, {"app.kubernetes.io/name": target}, port, exp.get("namespace", "dev"))
                 want = (src_name, target, port) in allow
                 if got != want:
                     errors.append(f"{src_name} → {target}:{port} 계산={'허용' if got else '차단'}, 표={'허용' if want else '차단'}")
