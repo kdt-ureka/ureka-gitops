@@ -35,6 +35,9 @@ env:
     value: http://ureka-content
   - name: RECOMMEND_BASE_URL
     value: http://ureka-recommend
+  # dev 임시 수용: 전체 15초 중 마무리 2초. 운영값은 실측 뒤 chat 담당과 확정한다.
+  - name: RECOMMEND_COMPLETION_RESERVE_SECONDS
+    value: "2"
   - name: API_DOCS_ENABLED
     value: "false"
   # AI는 선택. Secret ureka-chat-ai(AI_MODE=gemini, AI_API_KEY)가 있을 때만 켜진다(create-secrets.sh --chat-ai).

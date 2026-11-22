@@ -6,8 +6,8 @@
 image:
   requireRegistry: true
   repository: ureka/recommend
-  tag: sha-be3038ae1ff49e8ed7327f77ba65e7b6ed9d03e4
-  digest: sha256:b93e8f89b46209801406a825cc4d9f9435859a23385b06aa92e355fab71f1da7
+  tag: sha-f5c02c3f8a93edbd962934ead302ccf73c320262
+  digest: sha256:368a64e5e1fd8bac5c04442943c80d7632701f67b2881caccd997d14bc1862df
   pullPolicy: IfNotPresent
 
 # kind 측정값 기준 그대로. EC2 x86에서 다시 잰다.
