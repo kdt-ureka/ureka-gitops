@@ -83,3 +83,26 @@ variable "create_github_oidc_provider" {
   description = "Create the account-level GitHub OIDC provider. Set false if it already exists (one per account)."
   default     = true
 }
+
+variable "ses_enabled" {
+  description = "prod 메일 발송용 SES 도메인 인증·DKIM·SMTP 전용 IAM 사용자를 만든다."
+  type        = bool
+  default     = false
+}
+
+variable "mail_domain" {
+  description = "SES로 인증할 도메인(Route 53 공개 호스팅 영역이 있어야 한다)."
+  type        = string
+  default     = "magonjal.com"
+}
+
+variable "mail_from_address" {
+  description = "auth가 보내는 발신 주소. SMTP 사용자 정책이 이 주소만 허용한다."
+  type        = string
+  default     = "no-reply@magonjal.com"
+
+  validation {
+    condition     = endswith(var.mail_from_address, "@${var.mail_domain}")
+    error_message = "발신 주소는 인증한 도메인(mail_domain)의 주소여야 합니다."
+  }
+}

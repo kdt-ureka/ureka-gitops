@@ -330,3 +330,47 @@ run "rejects_invalid_organization_id" {
 
   expect_failures = [var.github_organization_id]
 }
+
+# SES(prod 메일): 기본은 꺼짐. 켜면 DKIM 3개·MAIL FROM·DMARC와 발신 주소 한정 정책이 생긴다.
+run "ses_disabled_by_default" {
+  command = plan
+  assert {
+    condition     = length(aws_sesv2_email_identity.domain) == 0 && length(aws_iam_user.ses_smtp) == 0
+    error_message = "ses_enabled 기본값은 false여야 합니다."
+  }
+}
+
+run "ses_enabled_domain_dkim_and_scoped_sender" {
+  command = plan
+  variables {
+    ses_enabled = true
+  }
+  override_data {
+    target = data.aws_route53_zone.mail[0]
+    values = { zone_id = "Z0000000000TEST" }
+  }
+  override_resource {
+    target          = aws_sesv2_email_identity.domain[0]
+    override_during = plan
+    values = {
+      arn                     = "arn:aws:ses:ap-northeast-2:123456789012:identity/magonjal.com"
+      dkim_signing_attributes = { tokens = ["t1", "t2", "t3"], next_signing_key_length = "RSA_2048_BIT" }
+    }
+  }
+  assert {
+    condition     = length(aws_route53_record.dkim) == 3
+    error_message = "DKIM CNAME은 3개여야 합니다."
+  }
+  assert {
+    condition     = aws_route53_record.dmarc[0].records == toset(["v=DMARC1; p=none"])
+    error_message = "DMARC는 관찰(p=none)로 시작하고 보고 주소를 두지 않습니다."
+  }
+  assert {
+    condition     = contains(data.aws_iam_policy_document.ses_smtp[0].statement[0].actions, "ses:SendRawEmail") && length(data.aws_iam_policy_document.ses_smtp[0].statement[0].actions) == 1
+    error_message = "SMTP 사용자는 SendRawEmail만 할 수 있어야 합니다."
+  }
+  assert {
+    condition     = contains(flatten([for c in data.aws_iam_policy_document.ses_smtp[0].statement[0].condition : c.values]), "no-reply@magonjal.com")
+    error_message = "SMTP 사용자는 정해진 발신 주소로만 보낼 수 있어야 합니다."
+  }
+}
