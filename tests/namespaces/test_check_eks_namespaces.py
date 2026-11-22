@@ -125,28 +125,49 @@ class MutationTest(unittest.TestCase):
         self.mutate("prod-ns.jsonl", self.edit("Role", add, "prod-viewer"))
         self.assertFails("읽기 외 권한")
 
-    def test_operator_any_rollout(self):
+    def test_viewer_rollout_patch_even_scoped(self):
+        # 교차 검토 필수 1: 이름을 ureka-auth로 좁혀도 Rollout patch는 이미지·템플릿 변경이라 허용하지 않는다.
+        def add(o):
+            o["rules"].append({"apiGroups": ["argoproj.io"], "resources": ["rollouts", "rollouts/status"],
+                               "resourceNames": ["ureka-auth"], "verbs": ["get", "patch"]})
+        self.mutate("prod-ns.jsonl", self.edit("Role", add, "prod-viewer"))
+        self.assertFails("읽기 외 권한")
+
+    def test_operator_group_readded(self):
+        def add(objs):
+            objs.append({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
+                         "metadata": {"name": "op", "namespace": "prod"},
+                         "rules": [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get"]}]})
+            objs.append({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+                         "metadata": {"name": "op", "namespace": "prod"},
+                         "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "op"},
+                         "subjects": [{"kind": "Group", "name": "ureka-prod-rollout-operators"}]})
+            return objs
+        self.mutate("prod-ns.jsonl", add)
+        self.assertFails("권한 그룹")
+
+    def test_viewer_serviceaccounts(self):
+        def add(o):
+            o["rules"].append({"apiGroups": [""], "resources": ["serviceaccounts"], "verbs": ["get"]})
+        self.mutate("prod-ns.jsonl", self.edit("Role", add, "prod-viewer"))
+        self.assertFails("금지 자원")
+
+    def test_viewer_ephemeral_containers(self):
+        def add(o):
+            o["rules"].append({"apiGroups": [""], "resources": ["pods/ephemeralcontainers"], "verbs": ["patch"]})
+        self.mutate("prod-ns.jsonl", self.edit("Role", add, "prod-viewer"))
+        self.assertFails("금지 자원")
+
+    def test_quota_misses_deployment_surge(self):
+        # 교차 검토 필수 2: 카나리+Job만 센 옛 최대치(3104Mi)는 넘지만 전체 동시 갱신(4544Mi)은 못 담는 값.
         self.mutate("prod-ns.jsonl", self.edit(
-            "Role", lambda o: o["rules"][0].pop("resourceNames"), "prod-auth-rollout-operator"))
-        self.assertFails("읽기 외 권한")
+            "ResourceQuota", lambda o: o["spec"]["hard"].update({"requests.memory": "3200Mi"})))
+        self.assertFails("requests.memory")
 
-    def test_operator_update_verb(self):
-        def add(o):
-            o["rules"][0]["verbs"].append("update")
-        self.mutate("prod-ns.jsonl", self.edit("Role", add, "prod-auth-rollout-operator"))
-        self.assertFails("읽기 외 권한")
-
-    def test_operator_update_deployments(self):
-        def add(o):
-            o["rules"].append({"apiGroups": ["apps"], "resources": ["deployments"], "verbs": ["patch"]})
-        self.mutate("prod-ns.jsonl", self.edit("Role", add, "prod-auth-rollout-operator"))
-        self.assertFails("읽기 외 권한")
-
-    def test_operator_without_status_patch(self):
-        def drop(o):
-            o["rules"][0]["resources"] = ["rollouts"]
-        self.mutate("prod-ns.jsonl", self.edit("Role", drop, "prod-auth-rollout-operator"))
-        self.assertFails("rollouts/status patch")
+    def test_quota_limits_cpu_misses_surge(self):
+        self.mutate("dev-ns.jsonl", self.edit(
+            "ResourceQuota", lambda o: o["spec"]["hard"].update({"limits.cpu": "9"})))
+        self.assertFails("limits.cpu")
 
     def test_cluster_role_binding(self):
         def add(objs):
@@ -163,13 +184,16 @@ class MutationTest(unittest.TestCase):
         self.mutate("prod-ns.jsonl", self.edit("RoleBinding", rename, "prod-viewers"))
         self.assertFails("system:")
 
-    def test_rollout_renamed(self):
-        self.mutate("prod-workloads.jsonl", self.edit(
-            "Rollout", lambda o: o["metadata"].update({"name": "ureka-auth-v2"})))
-        self.assertFails("resourceNames")
-
 
 class QuantityTest(unittest.TestCase):
+    def test_surge_pods(self):
+        dep = {"kind": "Deployment", "spec": {"replicas": 1}}
+        self.assertEqual(c.surge_pods(dep), 1)  # 기본 25% 올림
+        self.assertEqual(c.surge_pods({"kind": "Deployment", "spec": {"replicas": 2, "strategy": {"type": "Recreate"}}}), 0)
+        self.assertEqual(c.surge_pods({"kind": "Deployment", "spec": {"replicas": 4, "strategy": {"rollingUpdate": {"maxSurge": 2}}}}), 2)
+        self.assertEqual(c.surge_pods({"kind": "Deployment", "spec": {"replicas": 2, "strategy": {"rollingUpdate": {"maxSurge": "0%"}}}}), 0)
+        self.assertEqual(c.surge_pods({"kind": "Rollout", "spec": {"replicas": 2, "strategy": {"canary": {"steps": []}}}}), 1)
+
     def test_cpu(self):
         self.assertEqual(c.cpu_m("1"), 1000)
         self.assertEqual(c.cpu_m("1500m"), 1500)

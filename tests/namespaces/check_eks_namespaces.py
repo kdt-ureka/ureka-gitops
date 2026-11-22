@@ -7,10 +7,10 @@
 
 검사:
 1. Pod Security restricted 라벨이 EC2 dev와 같다.
-2. 서비스 평상시·카나리 최대치(새 파드 1개 더 + 마이그레이션 Job)가 ResourceQuota 안에 들어간다.
+2. 서비스 평상시·최대치(모든 앱 동시 갱신 surge + auth 카나리 + 마이그레이션 Job)가 ResourceQuota 안에 들어간다.
 3. 모든 컨테이너가 LimitRange 최대치 이하이고, LimitRange 기본값이 최대치 이하다.
 4. LB·NodePort Service 0, 두 환경 Quota 요청 합 + 시스템 몫이 노드 2대 추정 용량 안에 들어간다.
-5. prod RBAC: 사람 그룹은 읽기 전용, 플랫폼 그룹은 ureka-auth Rollout patch와 로그 조회만.
+5. prod RBAC: 사람 그룹은 읽기 전용 하나뿐(쓰기·Secret·로그·SA 없음). 카나리 승격·중단은 #43 Argo CD 권한으로 연다.
 """
 
 from __future__ import annotations
@@ -35,14 +35,13 @@ EXPECTED_SERVICES = {
 PSA_PREFIX = "pod-security.kubernetes.io/"
 
 VIEWER_GROUP = "ureka-prod-viewers"
-OPERATOR_GROUP = "ureka-prod-rollout-operators"
 READ_VERBS = {"get", "list", "watch"}
 # 사람 그룹에 절대 주지 않는 자원(값 노출·컨테이너 진입·우회 경로).
 FORBIDDEN_RESOURCES = {
     "secrets", "pods/exec", "pods/attach", "pods/portforward", "pods/proxy",
-    "services/proxy", "nodes/proxy", "serviceaccounts/token", "*",
+    "services/proxy", "nodes/proxy", "serviceaccounts", "serviceaccounts/token",
+    "pods/log", "pods/ephemeralcontainers", "*",
 }
-CANARY_ROLLOUT = "ureka-auth"
 
 
 def cpu_m(value) -> int:
@@ -135,8 +134,29 @@ def pod_spec(obj: dict) -> dict:
     return obj["spec"]["template"]["spec"]
 
 
+def surge_pods(obj: dict) -> int:
+    """배포 중 잠시 더 뜨는 파드 수. 렌더링된 전략을 읽는다(값이 없으면 Kubernetes·Argo Rollouts 기본값)."""
+    replicas = int(obj["spec"].get("replicas", 1))
+    strategy = obj["spec"].get("strategy") or {}
+    if obj["kind"] == "Rollout":
+        # 트래픽 라우팅 없는 canary: canary.maxSurge 기본 25%(올림). 새 파드가 먼저 뜬 뒤 옛 파드를 줄인다.
+        surge = (strategy.get("canary") or {}).get("maxSurge", "25%")
+    else:
+        if strategy.get("type") == "Recreate":
+            return 0
+        surge = (strategy.get("rollingUpdate") or {}).get("maxSurge", "25%")
+    if isinstance(surge, str) and surge.endswith("%"):
+        return math.ceil(replicas * int(surge[:-1]) / 100)
+    return int(surge)
+
+
 def workload_usage(workloads: list[dict], limitrange: dict) -> tuple[Usage, Usage, set[str]]:
-    """평상시와 최대(카나리 새 파드 + 마이그레이션 Job) 사용량."""
+    """평상시와 최대 사용량.
+
+    최대 = 모든 Deployment·Rollout이 동시에 갱신될 때(각자 surge 파드) + 마이그레이션 Job.
+    이미지 흐름(EC2 dev → EKS dev → EKS prod)은 한 PR에 여러 서비스 이미지를 바꿀 수 있고,
+    auth 카나리가 수동 pause로 멈춘 동안 다른 앱이 자동 동기화될 수 있어 동시 갱신을 기준으로 잡는다.
+    """
     steady, peak = Usage(), Usage()
     names = set()
     for obj in workloads:
@@ -145,11 +165,7 @@ def workload_usage(workloads: list[dict], limitrange: dict) -> tuple[Usage, Usag
             names.add(obj["metadata"]["name"])
             replicas = int(obj["spec"].get("replicas", 1))
             steady.add_pod(pod_spec(obj), replicas, limitrange)
-            extra = 0
-            if kind == "Rollout":
-                # 트래픽 라우팅 없는 canary: maxSurge 기본 25%(올림). 새 파드가 먼저 뜬 뒤 옛 파드를 줄인다.
-                extra = max(1, math.ceil(replicas * 0.25))
-            peak.add_pod(pod_spec(obj), replicas + extra, limitrange)
+            peak.add_pod(pod_spec(obj), replicas + surge_pods(obj), limitrange)
         elif kind == "Job":
             # Argo CD PreSync 마이그레이션 Job은 배포 중에만 있다(최대치에만 넣는다).
             peak.add_pod(pod_spec(obj), 1, limitrange)
@@ -220,7 +236,7 @@ def check_quota(env: str, ns_objs: list[dict], workloads: list[dict]) -> tuple[l
     if missing:
         errors.append(f"{env}: 렌더링 결과에 서비스가 없다: {sorted(missing)}")
     print(f"[{env}] 평상시 {steady}")
-    print(f"[{env}] 최대(카나리+마이그레이션) {peak}")
+    print(f"[{env}] 최대(전체 동시 갱신+카나리+마이그레이션) {peak}")
     checks = [
         ("requests.cpu", peak.req_cpu, cpu_m(quota["requests.cpu"])),
         ("requests.memory", peak.req_mem, mem_mi(quota["requests.memory"])),
@@ -232,7 +248,7 @@ def check_quota(env: str, ns_objs: list[dict], workloads: list[dict]) -> tuple[l
         pct = 100 * used / hard if hard else float("inf")
         print(f"[{env}]   {key}: 최대 {used:.0f} / 상한 {hard:.0f} ({pct:.0f}%)")
         if used > hard:
-            errors.append(f"{env}: 카나리 최대치 {key} {used:.0f}가 ResourceQuota {hard:.0f}를 넘는다")
+            errors.append(f"{env}: 배포 중 최대치 {key} {used:.0f}가 ResourceQuota {hard:.0f}를 넘는다")
     return errors, quota
 
 
@@ -251,7 +267,7 @@ def check_cluster_fit(quotas: dict[str, dict]) -> list[str]:
     return errors
 
 
-def check_rbac(prod_objs: list[dict], prod_workloads: list[dict]) -> list[str]:
+def check_rbac(prod_objs: list[dict]) -> list[str]:
     errors = []
     for o in prod_objs:
         if o["kind"] in ("ClusterRole", "ClusterRoleBinding"):
@@ -273,8 +289,8 @@ def check_rbac(prod_objs: list[dict], prod_workloads: list[dict]) -> list[str]:
                 errors.append(f"그룹 이름은 system:으로 시작할 수 없다(EKS access entry): {s['name']}")
             group_rules.setdefault(s["name"], []).extend(roles[ref["name"]].get("rules") or [])
 
-    if set(group_rules) != {VIEWER_GROUP, OPERATOR_GROUP}:
-        errors.append(f"권한 그룹이 예상과 다르다: {sorted(group_rules)}")
+    if set(group_rules) != {VIEWER_GROUP}:
+        errors.append(f"권한 그룹이 예상과 다르다(prod 사람 그룹은 {VIEWER_GROUP} 하나): {sorted(group_rules)}")
 
     def rule_items(rule):
         for g in rule.get("apiGroups") or []:
@@ -289,29 +305,13 @@ def check_rbac(prod_objs: list[dict], prod_workloads: list[dict]) -> list[str]:
             for g, r in rule_items(rule):
                 if r in FORBIDDEN_RESOURCES:
                     errors.append(f"{group}: 금지 자원 {g}/{r}")
-                if verbs <= READ_VERBS and r != "pods/log":
-                    continue
-                if r == "pods/log" and verbs == {"get"}:
-                    if group == VIEWER_GROUP:
-                        errors.append(f"{VIEWER_GROUP}에 pods/log가 있다(prod 로그는 플랫폼 담당만)")
-                    continue
-                if (g == "argoproj.io" and r in ("rollouts", "rollouts/status") and "patch" in verbs
-                        and verbs <= {"get", "patch"}
-                        and rule.get("resourceNames") == [CANARY_ROLLOUT] and group == OPERATOR_GROUP):
-                    continue
-                errors.append(f"{group}: 읽기 외 권한 {g}/{r} {sorted(verbs)} {rule.get('resourceNames')}")
+                elif not verbs <= READ_VERBS:
+                    # 사람은 prod를 직접 바꾸지 않는다. 쓰기 동사는 예외 없이 실패(Rollout patch 포함).
+                    errors.append(f"{group}: 읽기 외 권한 {g}/{r} {sorted(verbs)} {rule.get('resourceNames')}")
 
-    op = group_rules.get(OPERATOR_GROUP, [])
-    for sub in ("rollouts", "rollouts/status"):
-        if not any(("argoproj.io", sub) in set(rule_items(r)) and "patch" in r.get("verbs", []) for r in op):
-            errors.append(f"{OPERATOR_GROUP}에 {sub} patch가 없다(승격·중단 불가)")
     viewer = group_rules.get(VIEWER_GROUP, [])
     if not any(("argoproj.io", "rollouts") in set(rule_items(r)) and "get" in r.get("verbs", []) for r in viewer):
         errors.append(f"{VIEWER_GROUP}가 Rollout을 볼 수 없다")
-
-    rollouts = [o["metadata"]["name"] for o in prod_workloads if o.get("kind") == "Rollout"]
-    if rollouts != [CANARY_ROLLOUT]:
-        errors.append(f"prod Rollout이 {CANARY_ROLLOUT} 하나가 아니다: {rollouts} (RBAC resourceNames와 맞춘다)")
     return errors
 
 
@@ -328,7 +328,7 @@ def run(workdir: str | Path) -> list[str]:
         errors += errs
         quotas[env] = quota
         if env == "prod":
-            errors += check_rbac(ns, wl)
+            errors += check_rbac(ns)
         elif any(o["kind"] in ("Role", "RoleBinding") for o in ns):
             errors.append("dev 네임스페이스 앱에 RBAC이 있다(이번 범위는 prod만)")
     if all("requests.cpu" in q and "requests.memory" in q for q in quotas.values()):

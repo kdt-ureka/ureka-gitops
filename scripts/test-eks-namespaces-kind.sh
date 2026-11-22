@@ -96,14 +96,14 @@ metadata: {name: v, namespace: NS}
 spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 1Gi}}}'
 expect_reject "prod: PVC" 'exceeded quota' -- k apply --dry-run=server -f - <<<"${pvc//NS/prod}"
 expect_allow "dev: PVC 1Gi(ingest용)" -- k apply --dry-run=server -f - <<<"${pvc//NS/dev}"
-# prod 메모리 요청 4608Mi: 1Gi 요청 Pod 4개는 들어가고 5번째는 거부(실제 생성, 끝나면 지운다).
-for i in 1 2 3 4; do
+# prod 메모리 요청 5Gi: 1Gi 요청 Pod 5개는 들어가고 6번째는 거부(실제 생성, 끝나면 지운다).
+for i in 1 2 3 4 5; do
   k apply -f - >/dev/null <<<"$(pod "q$i" prod "${restricted_container}
       resources: {requests: {cpu: 50m, memory: 1Gi}, limits: {cpu: 100m, memory: 1Gi}}")"
 done
-expect_reject "prod: 메모리 요청 누적 5Gi" 'exceeded quota: prod-quota' -- k apply -f - <<<"$(pod q5 prod "${restricted_container}
+expect_reject "prod: 메모리 요청 누적 6Gi" 'exceeded quota: prod-quota' -- k apply -f - <<<"$(pod q6 prod "${restricted_container}
       resources: {requests: {cpu: 50m, memory: 1Gi}, limits: {cpu: 100m, memory: 1Gi}}")"
-k -n prod delete pod q1 q2 q3 q4 --wait=false >/dev/null
+k -n prod delete pod q1 q2 q3 q4 q5 --wait=false >/dev/null
 
 echo "== RBAC (kubectl auth can-i)"
 # can <기대 yes|no> <그룹> <ns> <동사> <자원> [추가 인자]
@@ -113,44 +113,40 @@ can() {
   got="$(k auth can-i "$@" -n "$ns" --as "tester" --as-group "$group" 2>/dev/null || true)"
   if [ "$got" = "$want" ]; then ok "${group} ${ns}: $* → ${got}"; else ng "${group} ${ns}: $* → ${got:-오류} (기대 ${want})"; fi
 }
-V=ureka-prod-viewers; O=ureka-prod-rollout-operators
+V=ureka-prod-viewers
 can yes "$V" prod get pods
 can yes "$V" prod list rollouts.argoproj.io
 can yes "$V" prod watch events
+can yes "$V" prod get configmaps
 can no "$V" prod get secrets
+can no "$V" prod get serviceaccounts
+can no "$V" prod create serviceaccounts --subresource=token
 can no "$V" prod get pods --subresource=log
 can no "$V" prod create pods --subresource=exec
 can no "$V" prod create pods --subresource=portforward
+can no "$V" prod patch pods --subresource=ephemeralcontainers
 can no "$V" prod delete pods
+can no "$V" prod get rollouts.argoproj.io/ureka-auth --subresource=status
 can no "$V" prod patch rollouts.argoproj.io/ureka-auth
+can no "$V" prod patch rollouts.argoproj.io/ureka-auth --subresource=status
 can no "$V" prod patch deployments.apps
 can no "$V" dev get pods
 can no "$V" prod create rolebindings.rbac.authorization.k8s.io
-can yes "$O" prod get rollouts.argoproj.io/ureka-auth
-can yes "$O" prod patch rollouts.argoproj.io/ureka-auth
-can yes "$O" prod patch rollouts.argoproj.io/ureka-auth --subresource=status
-can no "$O" prod patch rollouts.argoproj.io/ureka-content
-can no "$O" prod update rollouts.argoproj.io/ureka-auth
-can no "$O" prod delete rollouts.argoproj.io/ureka-auth
-can no "$O" prod create rollouts.argoproj.io
-can no "$O" prod patch deployments.apps/ureka-content
-can yes "$O" prod get pods --subresource=log
-can no "$O" prod get secrets
-can no "$O" prod create pods --subresource=exec
-can no "$O" dev patch rollouts.argoproj.io/ureka-auth
-can no "$O" prod create roles.rbac.authorization.k8s.io
-can no "$O" prod escalate roles.rbac.authorization.k8s.io
+# 교차 검토 필수 1: 카나리 운영자 그룹은 Kubernetes 권한이 없다(승격·중단은 #43 Argo CD 권한).
+O=ureka-prod-rollout-operators
+can no "$O" prod get pods
+can no "$O" prod patch rollouts.argoproj.io/ureka-auth
+can no "$O" prod patch rollouts.argoproj.io/ureka-auth --subresource=status
+can no "$O" prod get pods --subresource=log
 
-echo "== 승격·중단 흉내(실제 patch, 시험용 Rollout 객체)"
-for n in ureka-auth ureka-content; do
-  printf 'apiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata: {name: %s, namespace: prod}\nspec: {paused: true}\n' "$n" | k apply -f - >/dev/null
+echo "== 사람 그룹의 Rollout 직접 변경 거부(실제 patch, 시험용 Rollout 객체)"
+printf 'apiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata: {name: ureka-auth, namespace: prod}\nspec: {paused: true}\n' | k apply -f - >/dev/null
+for g in "$V" "$O"; do
+  expect_reject "${g}: ureka-auth 이미지 변경(spec patch)" 'forbidden' -- k -n prod patch rollout ureka-auth --type merge -p '{"spec":{"template":{"spec":{"containers":[{"name":"c","image":"x"}]}}}}' --as tester --as-group "$g"
+  expect_reject "${g}: ureka-auth 승격(spec patch)" 'forbidden' -- k -n prod patch rollout ureka-auth --type merge -p '{"spec":{"paused":false}}' --as tester --as-group "$g"
+  expect_reject "${g}: ureka-auth 중단(status patch)" 'forbidden' -- k -n prod patch rollout ureka-auth --subresource=status --type merge -p '{"status":{"abort":true}}' --as tester --as-group "$g"
 done
-as_op=(--as tester --as-group "$O")
-expect_allow "operator: ureka-auth 승격(spec patch)" -- k -n prod patch rollout ureka-auth --type merge -p '{"spec":{"paused":false}}' "${as_op[@]}"
-expect_allow "operator: ureka-auth 중단(status patch)" -- k -n prod patch rollout ureka-auth --subresource=status --type merge -p '{"status":{"abort":true}}' "${as_op[@]}"
-expect_reject "operator: ureka-content patch" 'forbidden' -- k -n prod patch rollout ureka-content --type merge -p '{"spec":{"paused":false}}' "${as_op[@]}"
-expect_reject "viewer: ureka-auth patch" 'forbidden' -- k -n prod patch rollout ureka-auth --type merge -p '{"spec":{"paused":true}}' --as tester --as-group "$V"
-k -n prod delete rollout ureka-auth ureka-content >/dev/null
+k -n prod delete rollout ureka-auth >/dev/null
 
 echo "== 결과: 통과 ${pass}, 실패 ${fail}"
 [ "$fail" -eq 0 ]
