@@ -1,0 +1,84 @@
+# Manual data-only copy. Never referenced by Argo CD. scripts/eks/copy_prod_content.py owns lifecycle.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: content-copy-prod
+  namespace: prod
+  labels:
+    app.kubernetes.io/name: content-copy-prod
+    app.kubernetes.io/part-of: ureka
+    # 실행 표시. 도구가 실행마다 새 값으로 바꾼다. 정리는 자기 실행 표시가 붙은 자원만 지운다.
+    ureka.io/bootstrap-run: RUN_ID
+spec:
+  # 실패하면 다시 만들지 않는다. 도구가 로그를 보여 주고 마스터 Secret을 지운다.
+  backoffLimit: 0
+  activeDeadlineSeconds: 1200
+  # 도구가 끝나면 Job을 바로 지운다. 도구가 비정상 종료한 경우의 안전망으로만 10분 뒤 자동 삭제한다.
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: content-copy-prod
+        app.kubernetes.io/part-of: ureka
+        ureka.io/bootstrap-run: RUN_ID
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: copy
+          # kind·EC2 dev bootstrap과 같은 이미지(psql 18, \getenv 지원). 서버 pgvector 버전은 RDS가 정한다.
+          image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:5895949dfcdf308eb0cd31c950c93c14895c77f33fbedfecf1fa511ab1d4bcd2
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/copy/run-copy.sh"]
+          env:
+            # RDS 엔드포인트. 도구가 data 스택 output으로 바꿔 넣는다. 이 파일을 직접 apply하면 이름을 못 찾아 실패한다.
+            - name: PGHOST
+              value: RDS_ENDPOINT
+            - name: PGDATABASE
+              value: content_db_prod
+            # RDS는 TLS만 받는다(rds.force_ssl=1). 서버 인증서 확인(verify-full)은 하지 않는다(EC2 dev와 같음, 이미지에 RDS CA 번들 없음).
+            - name: PGSSLMODE
+              value: require
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: content-copy-prod-master
+                  key: PGUSER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: content-copy-prod-master
+                  key: PGPASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: copy
+              mountPath: /copy
+              readOnly: true
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: copy
+          configMap:
+            name: content-copy-prod
