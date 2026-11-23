@@ -190,7 +190,8 @@ dev에서 한다. prod에는 사람이 Sync를 눌러야 반영되므로 같은 
 - Redis·Mailpit·서비스·Rollouts 컨트롤러가 EKS 1.37 Pod Security restricted를 통과하는지(렌더링으로는 보안 설정 확인)
 - 노드가 ECR에서 이미지를 받는지(노드 역할 `AmazonEC2ContainerRegistryPullOnly`), RDS DNS 이름 풀이·접속
 - 실제 메모리·CPU 사용량, 노드 2대에 두 환경이 다 들어가는지
-- prod 메일: **사용성 테스트는 가입 흐름 포함·원격 공개 링크로 확정**됐다. 공개 전 SES(magonjal.com) 실제 메일이 필요하다(CN 후속).
+- prod 메일: **사용성 테스트는 가입 흐름 포함·원격 공개 링크로 확정**됐다. 공개 전 SES 실제 메일이 필요하다.
+  SES 도메인·SMTP 사용자는 #92([ses.md](ses.md))에서 만들었고, prod auth 연결(SMTP 설정·`ureka/eks/prod/ses-smtp` ExternalSecret)은 후속이다.
   지금 prod Mailpit은 메일을 받기만 해서 실제 사용자는 가입 인증 메일을 받지 못한다. 이번 Mailpit은 임시 구성이며, 외부 사용성 시험·공개 가능 판정이 아니다.
 
 ## 검사 (클러스터·AWS 불필요)

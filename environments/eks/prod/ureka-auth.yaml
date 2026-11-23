@@ -33,7 +33,8 @@ rollout:
     - pause: {}
 
 # prod 논리 DB·계정(#63 이름 규칙). 쿠키는 공개 주소가 https라 Secure로 보낸다(#64 ALB·인증서 전에는 localhost 포트 포워딩으로만 확인).
-# 메일: 지금은 dev와 같이 클러스터 안 Mailpit(받기만, 밖으로 안 보냄). 공개 전 SES(magonjal.com) 실제 메일 필요 — CN 후속.
+# 메일: 지금은 dev와 같이 클러스터 안 Mailpit(받기만, 밖으로 안 보냄). 공개 전 SES(#92, docs/ses.md)로 바꾸는 연결은 후속
+# (base env에 MAIL_USERNAME·MAIL_PASSWORD 참조·MAIL_FROM 추가, #63 ExternalSecret에 ureka/eks/prod/ses-smtp, 여기 envOverrides로 SMTP 주소·587·인증·STARTTLS).
 envOverrides:
   DB_URL: jdbc:postgresql://postgres:5432/auth_db_prod
   DB_USERNAME: auth_db_prod_app
