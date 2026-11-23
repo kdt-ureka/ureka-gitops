@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local EKS operator. AWS mutations happen only in the explicit apply command."""
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -8,11 +9,27 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
 STACK = ROOT / "infra/environments/eks"
 ARTIFACTS = ROOT / ".local/eks"
+
+@contextlib.contextmanager
+def cli_input_json(payload):
+    """aws CLI v2는 `--cli-input-json file:///dev/stdin`을 읽지 못한다(Invalid JSON received).
+    그래서 0600 임시 파일(.local/eks, 0700)에 써서 `file://` 경로로 넘기고, 호출이 끝나면 바로 지운다."""
+    ARTIFACTS.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, path = tempfile.mkstemp(prefix="cli-input-", suffix=".json", dir=ARTIFACTS)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(payload, handle)
+        yield ["--cli-input-json", "file://" + path]
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(path)
+
 MAX_AGE = 3600
 
 
@@ -89,12 +106,12 @@ class Operator:
         return result.stdout
 
     def aws(self, *args, payload=None):
-        # payload: 계정 ID가 든 ARN 같은 입력을 명령 인자(다른 프로세스·셸 기록에 보임) 대신 표준 입력 JSON으로 넘긴다.
-        extra = ["--cli-input-json", "file:///dev/stdin"] if payload is not None else []
-        command = ["aws", *args, *extra, "--profile", self.args.profile, "--region", "ap-northeast-2", "--output", "json"]
+        # payload: 계정 ID가 든 ARN 같은 입력을 명령 인자(다른 프로세스·셸 기록에 보임) 대신 비공개 임시 파일 JSON으로 넘긴다.
+        base = ["aws", *args, "--profile", self.args.profile, "--region", "ap-northeast-2", "--output", "json"]
         if payload is None:
-            return json.loads(self.run(command))
-        return json.loads(self.run(command, stdin=json.dumps(payload)))
+            return json.loads(self.run(base))
+        with cli_input_json(payload) as extra:
+            return json.loads(self.run(base + extra))
 
     def identity(self):
         identity = self.aws("sts", "get-caller-identity")

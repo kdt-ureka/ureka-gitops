@@ -7,6 +7,8 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -123,14 +125,37 @@ class SafetyTests(unittest.TestCase):
         self.operator.aws = self.alb_aws([{"Key": "elbv2.k8s.aws/cluster", "Value": "another-cluster"}])
         self.operator.cleanup_gate()
 
-    def test_aws_payload_goes_to_stdin_not_argv(self):
+    def test_aws_payload_goes_to_private_temp_file_not_argv(self):
         calls = []
-        self.operator.run = lambda command, stdin=None: calls.append((command, stdin)) or "{}"
+
+        def fake_run(command, stdin=None):
+            path = command[command.index("--cli-input-json") + 1][len("file://"):]
+            calls.append((command, stdin, path, os.stat(path).st_mode & 0o777, Path(path).read_text()))
+            return "{}"
+
+        self.operator.run = fake_run
         self.operator.aws("elbv2", "describe-tags", payload={"ResourceArns": ["arn:aws:x:000000000000:y"]})
-        command, stdin = calls[0]
+        command, stdin, path, mode, body = calls[0]
         self.assertFalse(any("000000000000" in part for part in command))
-        self.assertIn("file:///dev/stdin", command)
-        self.assertIn("000000000000", stdin)
+        self.assertFalse(any("/dev/stdin" in part for part in command))
+        self.assertIsNone(stdin)
+        self.assertEqual(mode, 0o600)
+        self.assertEqual(Path(path).parent, self.root)
+        self.assertIn("000000000000", body)
+        self.assertFalse(Path(path).exists())  # 호출 뒤 바로 삭제
+
+    def test_temp_input_file_is_removed_when_command_fails(self):
+        seen = []
+
+        def failing_run(command, stdin=None):
+            seen.append(command[command.index("--cli-input-json") + 1][len("file://"):])
+            raise op.SafeError("실패")
+
+        self.operator.run = failing_run
+        with self.assertRaises(op.SafeError):
+            self.operator.aws("elbv2", "describe-tags", payload={"ResourceArns": ["x"]})
+        self.assertFalse(Path(seen[0]).exists())
+
 
     def test_destroy_requires_explicit_cleanup_confirmation(self):
         self.args.confirm_cleanup = None
@@ -298,6 +323,25 @@ class SafetyTests(unittest.TestCase):
             self.operator.run_live(["synthetic"], self.root / "apply.log")
         process.send_signal.assert_not_called()
         self.assertEqual(process.wait.call_count, 2)
+
+
+@unittest.skipUnless(shutil.which("aws"), "aws CLI 없음")
+class RealCliInputTests(unittest.TestCase):
+    """가짜 aws만으로는 CLI가 입력을 실제로 받아들이는지 알 수 없다(11/23 file:///dev/stdin 사고).
+    요청은 닫힌 로컬 주소로 보내 실패시키고, 입력 해석 단계(ParamValidation)를 통과하는지만 본다."""
+
+    def test_cli_input_json_temp_file_is_accepted_by_real_cli(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(op, "ARTIFACTS", Path(tmp)):
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp, "AWS_ACCESS_KEY_ID": "AKIAEXAMPLE",
+                   "AWS_SECRET_ACCESS_KEY": "example", "AWS_MAX_ATTEMPTS": "1", "AWS_PAGER": ""}
+            with op.cli_input_json({"SecretId": "arn:aws:secretsmanager:ap-northeast-2:000000000000:secret:x"}) as extra:
+                result = subprocess.run(["aws", "secretsmanager", "describe-secret", *extra, "--region", "ap-northeast-2",
+                                         "--endpoint-url", "http://127.0.0.1:9", "--cli-connect-timeout", "1"],
+                                        env=env, capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)  # 닫힌 주소라 실패가 정상
+        self.assertNotIn("ParamValidation", result.stderr)
+        self.assertNotIn("Invalid JSON", result.stderr)
+        self.assertIn("127.0.0.1", result.stderr)  # 입력 해석을 지나 실제 요청 단계까지 갔다
 
 
 if __name__ == "__main__":

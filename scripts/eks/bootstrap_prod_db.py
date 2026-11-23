@@ -14,7 +14,7 @@
 - 다른 실행이 잠금을 갖고 있으면 아무것도 지우지 않고 멈춘다. 잠금이 30분보다 오래됐고 그 실행이 끝났다고 확인한 경우에만
   --recover-stale-lock으로 넘겨받는다(resourceVersion으로 원자적 교체). 잔여물은 잠금을 가진 실행만 지운다.
 - 비밀번호 원문은 DB 서버로 가지 않는다(해시만). 값·해시·ARN은 화면·명령 인자·Git·로그 파일에 싣지 않는다.
-  Secret·ConfigMap·Job은 kubectl 표준 입력으로만 넘기고, ARN은 aws 표준 입력(--cli-input-json)으로만 넘긴다.
+  Secret·ConfigMap·Job은 kubectl 표준 입력으로만 넘기고, ARN은 0600 임시 파일(--cli-input-json file://)로만 넘기고 바로 지운다.
 - SQL은 kind·EC2 dev와 같은 environments/kind/data/db-bootstrap.sql이고 DB_SUFFIX=_prod로 prod 이름만 만든다.
 - ESO 리더에는 마스터 비밀 권한을 주지 않는다. 마스터 비밀은 이 도구를 실행하는 CN SSO만 읽는다.
 - 한계: SIGKILL·PC 종료·클러스터 불통이면 정리하지 못한다. 다음 실행이 시작할 때 남은 것을 먼저 지운다
@@ -34,7 +34,7 @@ import sys
 import time
 import uuid
 
-from operate import Operator, SafeError, ROOT
+from operate import Operator, SafeError, ROOT, cli_input_json
 from bootstrap_argocd import verify_destination
 
 NS = "prod"
@@ -192,11 +192,21 @@ class ProdDbBootstrap(Operator):
             raise SafeError("data output endpoint가 RDS 엔드포인트 형식이 아닙니다.")
         return arn, host
 
+    def probe_master(self, arn):
+        """check에서 apply와 같은 입력 경로(--cli-input-json)를 실제 aws CLI로 한 번 지나 본다. 값은 읽지 않는다(describe만)."""
+        base = ["aws", "secretsmanager", "describe-secret", "--profile", self.args.profile,
+                "--region", "ap-northeast-2", "--output", "json"]
+        with cli_input_json({"SecretId": arn}) as extra:
+            described = json.loads(self.quiet(base + extra).stdout)
+        if described.get("OwningService") != "rds" or described.get("DeletedDate"):
+            raise SafeError("마스터 비밀이 RDS 관리 비밀이 아니거나 삭제 예정입니다(값은 출력하지 않음).")
+
     def read_secret(self, secret_id=None, arn=None):
         base = ["aws", "secretsmanager", "get-secret-value", "--profile", self.args.profile,
                 "--region", "ap-northeast-2", "--output", "json"]
-        if arn:  # ARN(계정 ID)은 명령 인자에 싣지 않는다
-            result = self.quiet(base + ["--cli-input-json", "file:///dev/stdin"], stdin=json.dumps({"SecretId": arn}))
+        if arn:  # ARN(계정 ID)은 명령 인자에 싣지 않는다(비공개 임시 파일)
+            with cli_input_json({"SecretId": arn}) as extra:
+                result = self.quiet(base + extra)
         else:
             result = self.quiet(base + ["--secret-id", secret_id])
         return json.loads(json.loads(result.stdout)["SecretString"])
@@ -333,10 +343,11 @@ class ProdDbBootstrap(Operator):
         job_manifest(host, "0" * 32)  # 자리 확인만
         manifest = host
         if self.args.action == "check":
+            self.probe_master(arn)
             held = self.lease()
             lock = "없음" if held is None else f"있음(경과 {int((lock_age(held) or 0) // 60)}분, 다른 실행 중이면 apply는 멈춤)"
             print("확인 완료(변경 없음): 대상 EKS·prod 네임스페이스·data output·prod 묶음 형식. "
-                  f"마스터 비밀은 읽지 않았습니다. 실행 잠금: {lock}.")
+                  f"마스터 비밀은 존재·입력 경로만 확인하고 값은 읽지 않았습니다. 실행 잠금: {lock}.")
             return 0
 
         # 1) 클러스터 단위 실행 잠금. 다른 실행이 갖고 있으면 아무것도 지우지 않는다.

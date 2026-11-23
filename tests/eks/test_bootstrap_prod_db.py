@@ -4,7 +4,9 @@ import base64
 import importlib.util
 import io
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 import subprocess
 import sys
@@ -38,6 +40,10 @@ def bundle(**over):
     return values
 
 
+def reads_master(c):
+    return c[0] == "aws" and "get-secret-value" in c and "--cli-input-json" in c
+
+
 RUN_RE = re.compile(r'ureka.io/bootstrap-run: "?([0-9a-f]+)"?')
 
 
@@ -57,6 +63,7 @@ class FakeCluster:
         self.lease_version = 1
         self.labels = {"pod-security.kubernetes.io/enforce": "restricted"} if namespace_labels is None else namespace_labels
         self.calls, self.stdins, self.created, self.deleted = [], [], [], []
+        self.input_files = []
 
     def __call__(self, command, stdin=None, check=True):
         self.calls.append(list(command))
@@ -79,7 +86,17 @@ class FakeCluster:
             return (0, "enabled\n", "") if self.history else (1, "", "")
         if c[0] == "aws":
             if "--cli-input-json" in c:
-                assert json.loads(stdin) == {"SecretId": ARN}
+                assert stdin is None and ARN not in " ".join(c)
+                path = c[c.index("--cli-input-json") + 1]
+                assert path.startswith("file://") and "/dev/stdin" not in path
+                path = path[len("file://"):]
+                assert os.stat(path).st_mode & 0o777 == 0o600
+                with open(path) as handle:
+                    assert json.load(handle) == {"SecretId": ARN}
+                self.input_files.append(path)
+                if "describe-secret" in c:
+                    return 0, json.dumps({"Name": "rds!db-test", "OwningService": "rds", "ARN": ARN}), ""
+                assert "get-secret-value" in c
                 return 0, json.dumps({"SecretString": json.dumps({"username": "ureka_master", "password": MASTER_PW}),
                                       "ARN": ARN}), ""
             assert c[c.index("--secret-id") + 1] == "ureka/eks/prod/app"
@@ -148,6 +165,15 @@ class FakeCluster:
 
 
 class BootstrapTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.artifacts = patch.object(sys.modules["operate"], "ARTIFACTS", Path(self.tmp.name))
+        self.artifacts.start()
+
+    def tearDown(self):
+        self.artifacts.stop()
+        self.tmp.cleanup()
+
     def operator(self, fake, action="apply", confirm="prod", recover=False):
         op = module.ProdDbBootstrap.__new__(module.ProdDbBootstrap)
         op.args = SimpleNamespace(action=action, confirm_env=confirm, profile="p", cluster_name="ureka-eks",
@@ -218,7 +244,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertNotIn("noise line", printed)
         # 마스터 비밀은 잠금을 잡은 뒤에만 읽는다
         lock_at = next(i for i, c in enumerate(fake.calls) if c[0] == "kubectl" and c[6] == "create")
-        master_at = next(i for i, c in enumerate(fake.calls) if "--cli-input-json" in c)
+        master_at = next(i for i, c in enumerate(fake.calls) if reads_master(c))
         self.assertLess(lock_at, master_at)
         self.assertIn('"kind": "Lease"', fake.stdins[lock_at])
 
@@ -294,7 +320,7 @@ class BootstrapTests(unittest.TestCase):
         rc, error, printed = self.execute(fake)
         self.assertEqual(rc, 3)
         self.assertIn("마스터 비밀을 읽지 않고", printed)
-        self.assertFalse(any("--cli-input-json" in c for c in fake.calls))
+        self.assertFalse(any(reads_master(c) for c in fake.calls))
         self.assertEqual(fake.created, [])
         self.assertIsNone(fake.lease)
 
@@ -312,7 +338,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(fake.objects, resources)
             self.assertEqual(fake.deleted, [])
             self.assertEqual(fake.lease["holderIdentity"], a)
-            self.assertFalse(any("--cli-input-json" in c for c in fake.calls))
+            self.assertFalse(any(reads_master(c) for c in fake.calls))
 
     def test_two_overlapping_runs_share_one_cluster(self):
         """A가 Job을 기다리는 동안 B가 시작해도 A의 자원은 그대로이고, A는 끝까지 자기 자원만 정리한다."""
@@ -367,7 +393,7 @@ class BootstrapTests(unittest.TestCase):
         fake.lease_json = lambda: original().replace('"resourceVersion": "7"', '"resourceVersion": "6"')
         rc, error, _ = self.execute(fake, recover=True)
         self.assertIn("넘겨받지 못했습니다", error)
-        self.assertFalse(any("--cli-input-json" in c for c in fake.calls))
+        self.assertFalse(any(reads_master(c) for c in fake.calls))
 
     def test_lock_age(self):
         now = 1_800_000_000
@@ -378,11 +404,29 @@ class BootstrapTests(unittest.TestCase):
         fake = FakeCluster()
         rc, error, printed = self.execute(fake, action="check", confirm=None)
         self.assertEqual((rc, error), (0, None))
-        self.assertFalse(any("--cli-input-json" in c for c in fake.calls))
+        self.assertFalse(any(reads_master(c) for c in fake.calls))
+        # apply와 같은 입력 경로를 describe-secret으로 한 번 지나 본다(값은 읽지 않음)
+        self.assertTrue(any(c[0] == "aws" and "describe-secret" in c for c in fake.calls))
+        self.assertTrue(fake.input_files and not any(os.path.exists(f) for f in fake.input_files))
         self.assertFalse(any(c[0] == "kubectl" and c[6] in ("create", "delete") for c in fake.calls))
         self.assertIn("변경 없음", printed)
         self.assertIn("실행 잠금: 없음", printed)
         self.assertIsNone(fake.lease)
+
+    def test_check_stops_when_master_is_not_rds_managed(self):
+        fake = FakeCluster()
+        original = fake.handle
+
+        def handle(c, stdin):
+            if c[0] == "aws" and "describe-secret" in c:
+                return 0, json.dumps({"Name": "other", "ARN": ARN}), ""
+            return original(c, stdin)
+
+        fake.handle = handle
+        rc, error, printed = self.execute(fake, action="check", confirm=None)
+        self.assertIsNone(rc)
+        self.assertIn("RDS 관리 비밀", error)
+        self.assertNotIn(LEAK, printed)
 
     def test_apply_requires_confirm_env(self):
         fake = FakeCluster()
@@ -394,7 +438,7 @@ class BootstrapTests(unittest.TestCase):
         fake = FakeCluster(app=bundle(RECOMMEND_DB_USERNAME="content_db_recommend"))
         rc, error, _ = self.execute(fake)
         self.assertIn("prod 계정 이름", error)
-        self.assertFalse(any("--cli-input-json" in c for c in fake.calls))
+        self.assertFalse(any(reads_master(c) for c in fake.calls))
         self.assertEqual(fake.created, [])
 
     def test_missing_or_shared_password_stops(self):

@@ -44,7 +44,7 @@ apex(`magonjal.com`)와 `www`는 지금 공개하지 않습니다. 레코드·�
   - 인증서는 ARN 대신 Ingress `tls.hosts`로 ACM에서 찾습니다.
   - WAF는 이름(`ureka-eks-public`)으로, SG도 이름으로 지정합니다.
   - 컨트롤러 역할 ARN의 계정 ID만 등록 스크립트가 메모리에서 넣습니다.
-  - 등록·확인 스크립트는 계정 ID가 든 ALB ARN을 AWS CLI 명령 인자가 아니라 표준 입력 JSON으로 넘깁니다. 단 VPC ID·SG 이름은 인자로 갑니다.
+  - 등록·확인 스크립트는 계정 ID가 든 ALB ARN을 AWS CLI 명령 인자가 아니라 0600 임시 JSON 파일(`--cli-input-json file://`, 호출 뒤 삭제)로 넘깁니다. 단 VPC ID·SG 이름은 인자로 갑니다.
 - **강제 설정은 Ingress가 아니라 클래스에 둡니다.** 컨트롤러의 IngressClassParams가 `alb` 클래스를 쓰는 모든 Ingress에 강제합니다.
   - prod 네임스페이스에서만 쓸 수 있음
   - 인터넷용 ALB 하나(group `ureka-prod`), 대상 ip
@@ -241,7 +241,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://ureka.magonjal.com/API/ADMIN/V1
 ```sh
 (cd infra/environments/eks && terraform init -backend=false && terraform test)   # mock provider
 bash scripts/test-eks-public.sh          # 공개 Ingress 렌더링·값 대조 + 컨트롤러 차트 실제 렌더 → CRD 스키마 검사(차트 내려받음)
-python3 -m unittest discover -s tests/eks # 등록·확인 스크립트, destroy ALB 검사, ARN 표준 입력
+python3 -m unittest discover -s tests/eks # 등록·확인 스크립트, destroy ALB 검사, ARN 임시 파일 입력
 bash scripts/check-forbidden-files.sh
 ```
 

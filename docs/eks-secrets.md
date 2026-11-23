@@ -232,9 +232,9 @@ python3 scripts/eks/bootstrap_prod_db.py check --profile ureka-admin
 python3 scripts/eks/bootstrap_prod_db.py apply --profile ureka-admin --confirm-env prod
 ```
 
-- check: CLI history 꺼짐·승인 계정·ACTIVE EKS·kubectl 컨텍스트 `ureka-eks`·prod 네임스페이스 restricted·data output 형식·prod 묶음(속성·계정 이름·비밀번호 겹침) 확인. 마스터 비밀은 읽지 않는다. 변경 없음.
+- check: CLI history 꺼짐·승인 계정·ACTIVE EKS·kubectl 컨텍스트 `ureka-eks`·prod 네임스페이스 restricted·data output 형식·prod 묶음(속성·계정 이름·비밀번호 겹침) 확인, 마스터 비밀은 apply와 같은 입력 경로로 `describe-secret`만 해 존재·RDS 소유를 본다(값은 읽지 않음). 변경 없음.
 - apply: **클러스터 실행 잠금**(prod Lease `db-bootstrap-prod-lock`, create라 동시에 하나만 성공) → 잠금 안에서 이전 실행 잔여물 삭제 확인
-  → RDS 마스터 비밀 읽기(ARN은 aws 표준 입력으로만) → prod 네임스페이스에 임시
+  → RDS 마스터 비밀 읽기(ARN은 0600 임시 파일 `--cli-input-json file://`로만, 호출 뒤 바로 삭제. aws CLI v2는 `file:///dev/stdin`을 이 옵션에서 읽지 못한다) → prod 네임스페이스에 임시
   `db-bootstrap-prod-accounts`(SCRAM 해시 6개)·ConfigMap·`db-bootstrap-prod-master` → Job `db-bootstrap-prod`(`environments/eks/prod/db-bootstrap/job.yaml`,
   restricted 충족, `DB_SUFFIX=_prod`) → 완료 대기(최대 10분) → 로그 요약(확인 줄·오류 줄만, 해시는 가림)
   → **성공·실패·Ctrl+C·SIGTERM 모두** 이번 실행 표시(`ureka.io/bootstrap-run` 라벨)가 붙은 Job·Pod·Secret 2개·ConfigMap만 삭제·없어졌는지 확인
@@ -309,7 +309,7 @@ bash scripts/check-forbidden-files.sh
 - VAP의 TokenRequest 거부가 실제 apiserver에서 동작하는지(위 5번 시험)
 - ESO 컨트롤러 egress(Secrets Manager·STS, NAT 경유)는 #49 NetworkPolicy에서 허용 목록에 넣는다
 - ESO 차트 이미지 취약점 검사, 실제 메모리 사용량
-- prod 시드: 실제 `get-random-password`·`create-secret`(표준 입력 `file:///dev/stdin`)이 운영 PC aws CLI v2에서 되는지
+- prod 시드: `create-secret --secret-string file:///dev/stdin`은 운영 PC aws CLI v2에서 동작 확인(11/23). `--cli-input-json`은 같은 방식이 안 되어 임시 파일로 바꿨다
 - prod bootstrap: 실제 RDS(마스터는 슈퍼유저 아님)에서 `_prod` 두 번째 벌 생성, prod 네임스페이스 restricted에서 Job 실행, 노드 → RDS 5432,
   RDS의 `postgres` DB CONNECT 회수 여부(dev와 같은 한계), prod 앱 Flyway가 `content_db_prod_*` 역할을 만드는지
 - auth가 `ureka-auth-mail`을 실제로 읽는 연결(#43 후속)과 SES 발송
