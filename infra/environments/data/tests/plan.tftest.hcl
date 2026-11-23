@@ -1,6 +1,12 @@
 # AWS 자격 없이 실행한다: terraform test (mock provider, plan만)
 # 계정 ID는 테스트용 123456789012만 쓴다.
 mock_provider "aws" {
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "123456789012"
+    }
+  }
+
   mock_data "aws_vpc" {
     defaults = {
       id = "vpc-0123456789abcdef0"
@@ -183,4 +189,32 @@ run "rejects_eks_cidr_instead_of_sg" {
   command = plan
   variables { eks_node_security_group_ids = ["0.0.0.0/0"] }
   expect_failures = [var.eks_node_security_group_ids]
+}
+
+run "eks_dev_copy_write_is_off_by_default" {
+  command = apply
+
+  assert {
+    condition     = length(aws_iam_role_policy.ec2_copy_eks_dev_secrets) == 0
+    error_message = "The EC2 host must not have EKS dev secret write access unless explicitly enabled for a copy."
+  }
+}
+
+run "eks_dev_copy_write_is_scoped_when_enabled" {
+  command = apply
+
+  variables {
+    eks_dev_secret_copy_enabled = true
+  }
+
+  assert {
+    condition = (
+      length(jsondecode(aws_iam_role_policy.ec2_copy_eks_dev_secrets[0].policy).Statement) == 1 &&
+      toset(jsondecode(aws_iam_role_policy.ec2_copy_eks_dev_secrets[0].policy).Statement[0].Action) == toset([
+        "secretsmanager:CreateSecret", "secretsmanager:DescribeSecret", "secretsmanager:PutSecretValue", "secretsmanager:TagResource",
+      ]) &&
+      jsondecode(aws_iam_role_policy.ec2_copy_eks_dev_secrets[0].policy).Statement[0].Resource == ["arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ureka/eks/dev/*"]
+    )
+    error_message = "Copy access is write-only (no GetSecretValue) and limited to ureka/eks/dev/*."
+  }
 }

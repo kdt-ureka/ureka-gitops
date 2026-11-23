@@ -116,6 +116,11 @@ outputs가 없거나 적용이 실패했으면 자동 삭제·재시도를 하�
 정한다. 출력이 없다는 이유로 수동 삭제하지 않는다. 담당자와 상태를 확인한 뒤 새 plan을
 검토하며, outputs가 없어 도구의 삭제 검사를 통과할 수 없으면 별도 검토한 수동 복구 절차를 따른다.
 
+## EKS 비밀 연결 등록 (#63)
+
+`register_secrets_app.py check|apply --env dev|prod`는 승인 계정 ID를 `argocd/eks/secrets-<env>-app.yaml`의 빈칸에
+메모리에서 넣어 kubectl 표준 입력으로만 등록한다. 절차와 선행 조건은 [EKS 비밀값](../../docs/eks-secrets.md).
+
 ## 안전 시험
 
 ```sh

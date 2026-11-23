@@ -85,3 +85,9 @@ variable "eks_node_security_group_ids" {
     error_message = "Supply zero or one reviewed EKS node security group ID."
   }
 }
+
+variable "eks_dev_secret_copy_enabled" {
+  type        = bool
+  default     = false
+  description = "#63: temporarily let the EC2 dev host write ureka/eks/dev/* (copy script only). Turn on, copy, turn off; never read."
+}

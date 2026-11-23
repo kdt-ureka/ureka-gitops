@@ -9,6 +9,9 @@ mock_provider "aws" {
   mock_resource "aws_iam_openid_connect_provider" {
     defaults = { arn = "arn:aws:iam::123456789012:oidc-provider/oidc.eks.ap-northeast-2.amazonaws.com/id/TEST" }
   }
+  mock_data "aws_caller_identity" {
+    defaults = { account_id = "123456789012" }
+  }
   mock_data "aws_vpc" {
     defaults = { id = "vpc-0123456789abcdef0" }
   }
@@ -88,6 +91,37 @@ run "iam_addons_logs_and_recreation" {
   assert {
     condition     = aws_eks_cluster.this.upgrade_policy[0].support_type == "STANDARD" && !aws_eks_cluster.this.deletion_protection && toset(aws_eks_cluster.this.enabled_cluster_log_types) == toset(["audit"]) && aws_cloudwatch_log_group.cluster.retention_in_days == 7
     error_message = "Use standard support, audit only, seven-day retention, no destroy protection."
+  }
+}
+run "eso_readers_are_environment_scoped" {
+  command = apply
+  assert {
+    condition     = toset(keys(aws_iam_role.eso_reader)) == toset(["dev", "prod"]) && toset(keys(aws_iam_role_policy.eso_reader)) == toset(["dev", "prod"])
+    error_message = "Exactly one ESO reader role per environment."
+  }
+  assert {
+    condition = alltrue([for env, role in aws_iam_role.eso_reader :
+      length(jsondecode(role.assume_role_policy).Statement) == 1 &&
+      jsondecode(role.assume_role_policy).Statement[0].Action == "sts:AssumeRoleWithWebIdentity" &&
+      jsondecode(role.assume_role_policy).Statement[0].Principal.Federated == aws_iam_openid_connect_provider.this.arn &&
+      jsondecode(role.assume_role_policy).Statement[0].Condition.StringEquals["${local.oidc_host}:sub"] == "system:serviceaccount:${env}:ureka-secrets-reader" &&
+      jsondecode(role.assume_role_policy).Statement[0].Condition.StringEquals["${local.oidc_host}:aud"] == "sts.amazonaws.com" &&
+      length(keys(jsondecode(role.assume_role_policy).Statement[0].Condition)) == 1
+    ])
+    error_message = "ESO reader trust must be exactly <env>:ureka-secrets-reader with the STS audience (StringEquals only)."
+  }
+  assert {
+    condition = alltrue([for env, p in aws_iam_role_policy.eso_reader :
+      length(jsondecode(p.policy).Statement) == 1 &&
+      jsondecode(p.policy).Statement[0].Effect == "Allow" &&
+      jsondecode(p.policy).Statement[0].Action == ["secretsmanager:GetSecretValue"] &&
+      jsondecode(p.policy).Statement[0].Resource == ["arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ureka/eks/${env}/*"]
+    ])
+    error_message = "ESO reader may only GetSecretValue under its own ureka/eks/<env>/ path."
+  }
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.eso_reader["dev"].policy).Statement[0].Resource != jsondecode(aws_iam_role_policy.eso_reader["prod"].policy).Statement[0].Resource
+    error_message = "dev and prod readers must not share a secret path."
   }
 }
 run "rejects_world_open_api" {

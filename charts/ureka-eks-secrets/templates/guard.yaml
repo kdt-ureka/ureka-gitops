@@ -1,0 +1,51 @@
+{{- $env := include "ekssecrets.env" . }}
+{{- $sa := .Values.readerServiceAccount }}
+# 리더 서비스계정을 ESO 밖에서 쓰지 못하게 막는다(#63 "다른 Pod가 그 권한을 못 쓰는지").
+# pods:  이 네임스페이스에서 그 계정으로 Pod를 만들 수 없다(앱·디버그 Pod가 IRSA 토큰을 받지 못함).
+# token: 그 계정 토큰(TokenRequest)은 ESO 컨트롤러만 받을 수 있다(serviceaccounts/token 권한이 있는 다른 주체 차단).
+# IRSA 신뢰 조건은 계정 이름까지 묶여 있어, 다른 계정의 토큰으로는 역할을 맡을 수 없다(Terraform 테스트).
+{{- range $kind := list "pods" "token" }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ureka-secrets-reader-{{ $kind }}-{{ $env }}
+  labels:
+    {{- include "ekssecrets.labels" $ | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        {{- if eq $kind "pods" }}
+        resources: ["pods"]
+        {{- else }}
+        resources: ["serviceaccounts/token"]
+        {{- end }}
+  validations:
+    {{- if eq $kind "pods" }}
+    - expression: >-
+        (!has(object.spec.serviceAccountName) || object.spec.serviceAccountName != '{{ $sa }}') &&
+        (!has(object.spec.serviceAccount) || object.spec.serviceAccount != '{{ $sa }}')
+      message: "secrets reader service account is reserved for External Secrets Operator"
+    {{- else }}
+    - expression: "request.name != '{{ $sa }}' || request.userInfo.username == 'system:serviceaccount:{{ $.Values.esoControllerServiceAccount.namespace }}:{{ $.Values.esoControllerServiceAccount.name }}'"
+      message: "only External Secrets Operator may request secrets reader tokens"
+    {{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: ureka-secrets-reader-{{ $kind }}-{{ $env }}
+  labels:
+    {{- include "ekssecrets.labels" $ | nindent 4 }}
+spec:
+  policyName: ureka-secrets-reader-{{ $kind }}-{{ $env }}
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ $env }}
+{{- end }}

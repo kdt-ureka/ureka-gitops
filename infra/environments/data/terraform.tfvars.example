@@ -6,3 +6,6 @@ allowed_account_ids = ["000000000000"]
 
 # Set locally after EKS apply; clear and apply BEFORE EKS destroy.
 eks_node_security_group_ids = []
+
+# #63: EKS dev 비밀 복사 동안만 true(docs/eks-secrets.md). 복사 뒤 false로 되돌려 apply한다.
+# eks_dev_secret_copy_enabled = false

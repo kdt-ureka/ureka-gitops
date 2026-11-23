@@ -1,0 +1,60 @@
+{{- $env := include "ekssecrets.env" . }}
+{{- $account := include "ekssecrets.account" . }}
+# 환경 리더 서비스계정. Pod는 이 계정을 쓰지 않는다(아래 guard가 거부). ESO만 TokenRequest로 토큰을 받는다.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.readerServiceAccount }}
+  namespace: {{ $env }}
+  labels:
+    {{- include "ekssecrets.labels" . | nindent 4 }}
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::{{ $account }}:role/{{ .Values.projectName }}-eks-eso-{{ $env }}
+automountServiceAccountToken: false
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: ureka-aws-secrets
+  namespace: {{ $env }}
+  labels:
+    {{- include "ekssecrets.labels" . | nindent 4 }}
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: {{ .Values.awsRegion }}
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: {{ .Values.readerServiceAccount }}
+---
+# ESO 컨트롤러는 이 네임스페이스의 리더 계정 토큰만 발급할 수 있다(차트 기본 ClusterRole 권한은 끔, argocd/eks/external-secrets-app.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ureka-secrets-reader-token
+  namespace: {{ $env }}
+  labels:
+    {{- include "ekssecrets.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: [{{ .Values.readerServiceAccount | quote }}]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ureka-secrets-reader-token
+  namespace: {{ $env }}
+  labels:
+    {{- include "ekssecrets.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ureka-secrets-reader-token
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.esoControllerServiceAccount.name }}
+    namespace: {{ .Values.esoControllerServiceAccount.namespace }}

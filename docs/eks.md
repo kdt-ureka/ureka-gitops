@@ -71,7 +71,7 @@ plan 검토: subnet Tier/AZ, private route의 중복 소유권 없음, 관리자
 2. 노드 2대 Ready, CNI/CSI/CoreDNS/kube-proxy 정상, private IP만 있는지 확인. 관리 API는 허용 /32 밖에서 차단되는지 확인한다.
 3. `terraform output -raw node_security_group_id`를 **data의 비공개 tfvars** `eks_node_security_group_ids`에 한 개 넣는다. `data`에서 plan/apply한다. RDS SG description은 교체 방지를 위해 기존 문자열을 유지했다. 실제 허용 범위는 inline ingress가 정한다. RDS가 정지 중이면 CN이 별도 운영 절차로 켠다. SG 변경에 DB 교체가 없어야 한다.
 4. 기존 EC2의 5432 규칙은 유지한다. 같은 RDS SG의 inline 규칙은 data가 단독 소유하며 EKS에는 외부 rule 리소스를 만들지 않는다. EKS VPC CNI Pod는 노드 SG를 사용한다. Security Groups for Pods로 전환 시 재검토한다.
-5. #43 Argo CD 설치, #63 ESO/업무 IAM, StorageClass와 앱 설정을 연결한다. #49에서 기존 NetworkPolicy를 EKS VPC CNI 기준으로 재시험한다. 이 초안만으로 서비스가 배포되지는 않는다.
+5. #43 Argo CD 설치, #63 ESO/업무 IAM([eks-secrets.md](eks-secrets.md)), StorageClass와 앱 설정을 연결한다. #49에서 기존 NetworkPolicy를 EKS VPC CNI 기준으로 재시험한다. 이 초안만으로 서비스가 배포되지는 않는다.
 
 ## 끄기 (검토 후 CN 실행)
 

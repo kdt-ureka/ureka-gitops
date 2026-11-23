@@ -52,6 +52,9 @@ jobs:
       - name: EKS dev/prod namespaces fit quota and keep prod RBAC read-only
         # Pod Security 라벨(EC2 dev와 같음)·서비스 7개 카나리 최대치가 Quota 안·LimitRange·prod RBAC 최소 권한, 망가뜨린 입력은 실패. python3 표준 라이브러리·yq.
         run: bash scripts/test-eks-namespaces.sh
+      - name: EKS secrets wiring matches app Secret names and stays per environment
+        # charts/ureka-eks-secrets를 dev·prod로 렌더링해 앱이 읽는 모든 secretKeyRef를 만드는지, 원격 경로·리더 보호·ESO 설정을 본다(#63).
+        run: bash scripts/test-eks-secrets.sh
       - name: EC2 ingest manual load script
         # 가짜 kubectl로 prepare·store(sha256 대조)·run sample/full 렌더링·격리 요약·임시 수신기(127.0.0.1, 경로 고정)를 본다.
         run: bash scripts/test-ec2-ingest.sh
