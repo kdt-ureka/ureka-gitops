@@ -123,9 +123,13 @@ class CopyTests(unittest.TestCase):
         return error
 
     def test_bundles_match_chart_values(self):
+        # 복사 대상은 EKS dev가 켜는 묶음뿐이다(prod 전용 ses-smtp 등은 복사하지 않는다).
         out = subprocess.run(["yq", "-o=json", ".bundles", str(ROOT / "charts/ureka-eks-secrets/values.yaml")],
                              check=True, capture_output=True, text=True).stdout
-        self.assertEqual(json.loads(out), module.BUNDLES)
+        enabled = subprocess.run(["yq", "-o=json", ".enabledBundles", str(ROOT / "environments/eks/dev/secrets.yaml")],
+                                 check=True, capture_output=True, text=True).stdout
+        chart = json.loads(out)
+        self.assertEqual({b: chart[b] for b in json.loads(enabled)}, module.BUNDLES)
 
     def test_creates_both_bundles_with_exact_values(self):
         fake = FakeRun(self.secrets)

@@ -16,7 +16,8 @@ refreshInterval: 1h
 # Secrets Manager 비밀(묶음) → 만들 Kubernetes Secret → 키: 묶음 안의 JSON 속성.
 # 묶음 이름은 <projectName>/eks/<environment>/<묶음>. 같은 값(JWT 공개키·내부 토큰)은 속성 하나를 여러 Secret이 같이 쓴다.
 # Secret 이름·키는 scripts/kind/create-secrets.sh가 만드는 것과 같다(앱 values의 secretKeyRef를 바꾸지 않기 위해).
-# 이 표를 바꾸면 scripts/ec2/copy_eks_dev_secrets.py의 MAPPING도 같이 바꾼다(tests/eks/test_secret_mapping.py가 비교).
+# dev가 켜는 묶음(app, chat-ai)을 바꾸면 scripts/ec2/copy_eks_dev_secrets.py의 BUNDLES도 같이 바꾼다
+# (tests/eks/test_copy_eks_dev_secrets.py가 비교). app 속성은 prod 시드 scripts/eks/seed_prod_secrets.py와도 같아야 한다.
 bundles:
   app:
     ureka-auth-secrets:
@@ -49,6 +50,13 @@ bundles:
     ureka-chat-ai:
       AI_MODE: AI_MODE
       AI_API_KEY: AI_API_KEY
+  # prod auth 실제 메일(SES SMTP, gitops#91). 원격 비밀 ureka/eks/prod/ses-smtp는 scripts/ses/create-smtp-secret.py가 만든다.
+  # prod만 켠다(dev는 Mailpit). 서비스 Secret과 따로 둔다: SMTP 자격은 교체 주기·담당이 다르고, ExternalSecret 하나가 Secret 하나를 소유한다.
+  # auth가 이 Secret을 읽으려면 auth values에 MAIL_USERNAME·MAIL_PASSWORD 참조가 필요하다(#43 후속, docs/eks-secrets.md 'prod 메일').
+  ses-smtp:
+    ureka-auth-mail:
+      MAIL_USERNAME: MAIL_USERNAME
+      MAIL_PASSWORD: MAIL_PASSWORD
 
 # 이 환경에서 실제로 연결할 묶음. 원격 비밀이 아직 없는 묶음은 빼 둔다(ExternalSecret이 오류 상태로 남지 않게).
 enabledBundles: [app, chat-ai]

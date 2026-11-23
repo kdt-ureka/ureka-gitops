@@ -1,0 +1,88 @@
+# EKS prod 논리 DB·계정을 같은 RDS에 만드는 Job(#63 후속). Argo CD가 관리하지 않는다(어느 Application도 이 폴더를 가리키지 않는다).
+# scripts/eks/bootstrap_prod_db.py만 만든다: 실행 잠금(Lease) → 임시 Secret 2개(마스터·해시) + ConfigMap → 이 Job → 완료 대기 → 자기 자원 삭제·확인 → 잠금 해제.
+# SQL·본문은 kind·EC2 dev와 같은 environments/kind/data/db-bootstrap.sql·run-bootstrap.sh이고, DB_SUFFIX=_prod로 prod 이름만 만든다.
+# 실행 계정은 RDS 마스터(rds_superuser, 슈퍼유저 아님): SQL의 is_superuser=f 경로로 돈다.
+# prod 네임스페이스는 Pod Security restricted다(#62). 아래 보안 설정은 restricted를 충족한다(tests/eks/test_bootstrap_prod_db.py).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-bootstrap-prod
+  namespace: prod
+  labels:
+    app.kubernetes.io/name: db-bootstrap-prod
+    app.kubernetes.io/part-of: ureka
+    # 실행 표시. 도구가 실행마다 새 값으로 바꾼다. 정리는 자기 실행 표시가 붙은 자원만 지운다.
+    ureka.io/bootstrap-run: RUN_ID
+spec:
+  # 실패하면 다시 만들지 않는다. 도구가 로그를 보여 주고 마스터 Secret을 지운다.
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  # 도구가 끝나면 Job을 바로 지운다. 도구가 비정상 종료한 경우의 안전망으로만 10분 뒤 자동 삭제한다.
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-bootstrap-prod
+        app.kubernetes.io/part-of: ureka
+        ureka.io/bootstrap-run: RUN_ID
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: psql
+          # kind·EC2 dev bootstrap과 같은 이미지(psql 18, \getenv 지원). 서버 pgvector 버전은 RDS가 정한다.
+          image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:5895949dfcdf308eb0cd31c950c93c14895c77f33fbedfecf1fa511ab1d4bcd2
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "/bootstrap/run-bootstrap.sh"]
+          env:
+            # RDS 엔드포인트. 도구가 data 스택 output으로 바꿔 넣는다. 이 파일을 직접 apply하면 이름을 못 찾아 실패한다.
+            - name: PGHOST
+              value: RDS_ENDPOINT
+            - name: PGDATABASE
+              value: postgres
+            # RDS는 TLS만 받는다(rds.force_ssl=1). 서버 인증서 확인(verify-full)은 하지 않는다(EC2 dev와 같음, 이미지에 RDS CA 번들 없음).
+            - name: PGSSLMODE
+              value: require
+            # prod 이름(auth_db_prod, auth_db_prod_app ...)만 만들고 바꾼다. dev DB·계정은 건드리지 않는다.
+            - name: DB_SUFFIX
+              value: _prod
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: db-bootstrap-prod-master
+                  key: PGUSER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-bootstrap-prod-master
+                  key: PGPASSWORD
+          # prod 계정 비밀번호의 SCRAM-SHA-256 해시 6개(원문 없음). 변수 이름은 dev와 같다.
+          envFrom:
+            - secretRef:
+                name: db-bootstrap-prod-accounts
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+              readOnly: true
+      volumes:
+        - name: bootstrap
+          configMap:
+            name: db-bootstrap-prod

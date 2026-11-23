@@ -66,6 +66,17 @@ while read -r ref; do
 done <<<"$refs"
 [ "$status" != "$before" ] || echo "앱 secretKeyRef $(wc -l <<<"$refs" | tr -d ' ')개 모두 ExternalSecret과 일치"
 
+# prod 메일(SES SMTP): prod만 ureka-auth-mail을 만들고, 원격 키는 ureka/eks/prod/ses-smtp다. dev는 Mailpit이라 만들지 않는다.
+for key in MAIL_USERNAME MAIL_PASSWORD; do
+  grep -qxF "ureka-auth-mail/${key}" "${TMPDIR:-/tmp}/eks-secrets-prod.keys" || fail "prod에 ureka-auth-mail/${key}가 없음"
+done
+grep -q '^ureka-auth-mail/' "${TMPDIR:-/tmp}/eks-secrets-dev.keys" && fail "dev에 ureka-auth-mail이 렌더링됨(dev는 Mailpit)"
+[ "$(render prod | yq ea -N 'select(.kind == "ExternalSecret" and .spec.target.name == "ureka-auth-mail") | .spec.data[].remoteRef.key' - | sort -u)" = "ureka/eks/prod/ses-smtp" ] ||
+  fail "prod ureka-auth-mail의 원격 키가 ureka/eks/prod/ses-smtp가 아님"
+# 메일 자격은 서비스 묶음(app)에 섞지 않는다(시드가 만들지 않는 값, 교체 주기가 다름).
+[ "$(yq '.bundles.app | to_entries | map(.value | to_entries | map(.value)) | flatten | map(select(test("^MAIL_"))) | length' "$chart/values.yaml")" = 0 ] ||
+  fail "app 묶음에 MAIL_ 속성이 있음"
+
 # 실패해야 하는 경우
 render dev --set awsAccountId= >/dev/null 2>&1 && fail "계정 ID 빈칸인데 렌더링됨"
 render dev --set awsAccountId=12345 >/dev/null 2>&1 && fail "계정 ID 형식이 틀렸는데 렌더링됨"
