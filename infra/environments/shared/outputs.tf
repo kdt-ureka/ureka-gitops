@@ -16,3 +16,13 @@ output "github_oidc_provider_arn" {
   description = "GitHub Actions OIDC provider ARN trusted by the publisher roles."
   value       = local.github_oidc_provider_arn
 }
+
+output "ses_smtp_user_name" {
+  description = "SMTP 자격을 만들 IAM 사용자 이름(scripts/ses/create-smtp-secret.py 입력)."
+  value       = var.ses_enabled ? aws_iam_user.ses_smtp[0].name : null
+}
+
+output "ses_smtp_endpoint" {
+  description = "auth MAIL_HOST 값."
+  value       = var.ses_enabled ? "email-smtp.${var.aws_region}.amazonaws.com" : null
+}

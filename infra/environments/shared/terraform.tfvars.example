@@ -3,3 +3,6 @@ allowed_account_ids = ["000000000000"]
 
 # 계정에 GitHub OIDC provider가 이미 있으면 false
 # create_github_oidc_provider = true
+
+# prod 메일(SES). 도메인 인증·DKIM 레코드와 SMTP 전용 IAM 사용자를 만든다.
+ses_enabled = true
