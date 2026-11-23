@@ -101,6 +101,7 @@ python3 scripts/eks/operate.py destroy-plan \
 `--confirm-cleanup`은 실제 클러스터 이름으로, 앱·LB·PVC 정리를 직접 확인했다는 뜻이다.
 도구는 노드 SG를 인바운드에서 참조하는 외부 SG가 남으면 거부한다(노드 자체·클러스터 SG 제외).
 **LB·PVC·데이터 정리 자체를 자동으로 수행하거나 완료를 보증하지는 않는다.**
+다만 이 클러스터 컨트롤러가 만든 ALB(`elbv2.k8s.aws/cluster` 태그)가 남아 있으면 destroy plan 전에 멈춘다([공개 입구](../../docs/eks-public.md)).
 생성된 삭제 plan을 검토한 뒤 같은 `apply` 명령에 새 경로·확인값과
 `--confirm-cleanup ureka-eks`를 추가한다. 적용 직전 같은 SG 참조를 다시 확인한다.
 
