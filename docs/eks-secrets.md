@@ -233,15 +233,25 @@ python3 scripts/eks/bootstrap_prod_db.py apply --profile ureka-admin --confirm-e
 ```
 
 - check: CLI history 꺼짐·승인 계정·ACTIVE EKS·kubectl 컨텍스트 `ureka-eks`·prod 네임스페이스 restricted·data output 형식·prod 묶음(속성·계정 이름·비밀번호 겹침) 확인. 마스터 비밀은 읽지 않는다. 변경 없음.
-- apply: 이전 실행 잔여물 삭제 확인 → RDS 마스터 비밀 읽기(ARN은 aws 표준 입력으로만) → prod 네임스페이스에 임시
+- apply: **클러스터 실행 잠금**(prod Lease `db-bootstrap-prod-lock`, create라 동시에 하나만 성공) → 잠금 안에서 이전 실행 잔여물 삭제 확인
+  → RDS 마스터 비밀 읽기(ARN은 aws 표준 입력으로만) → prod 네임스페이스에 임시
   `db-bootstrap-prod-accounts`(SCRAM 해시 6개)·ConfigMap·`db-bootstrap-prod-master` → Job `db-bootstrap-prod`(`environments/eks/prod/db-bootstrap/job.yaml`,
   restricted 충족, `DB_SUFFIX=_prod`) → 완료 대기(최대 10분) → 로그 요약(확인 줄·오류 줄만, 해시는 가림)
-  → **성공·실패·Ctrl+C 모두** Job·Pod·Secret 2개·ConfigMap 삭제·없어졌는지 확인. 비밀번호 원문은 DB 서버로 가지 않는다(해시만).
+  → **성공·실패·Ctrl+C·SIGTERM 모두** 이번 실행 표시(`ureka.io/bootstrap-run` 라벨)가 붙은 Job·Pod·Secret 2개·ConfigMap만 삭제·없어졌는지 확인
+  (정리 중에는 Ctrl+C·SIGTERM을 무시) → 잠금 해제. 비밀번호 원문은 DB 서버로 가지 않는다(해시만).
+- 종료 코드: 0 성공, 1 실패(정리 완료), **3 정리 실패**(마스터 비밀번호가 클러스터에 남았을 수 있음. CREATE 거부·시간 초과·중단 같은 다른 오류와 겹쳐도 3), 130 중단(정리 완료).
 - 성공 출력: `check environment suffix _prod, content db content_db_prod`, `check vector …`, `정리 확인: … 없음`.
 - 종료 코드 3("경고: 지우지 못한 자원"): 마스터 비밀번호가 클러스터에 남았을 수 있다. 출력된 자원을 바로 지우고
   `kubectl --context ureka-eks -n prod get job,pod,secret,configmap | grep db-bootstrap-prod`가 비었는지 본다.
-  SIGKILL·PC 종료·클러스터 불통으로 도구가 정리하지 못했을 때도 같은 명령으로 확인한다(다음 apply도 시작할 때 먼저 지운다).
+  SIGKILL·PC 종료·클러스터 불통으로 도구가 정리하지 못했을 때도 같은 명령으로 확인한다(다음 apply가 잠금을 잡은 뒤 먼저 지운다).
 - 여러 번 실행해도 같은 상태가 된다(비밀번호 해시는 매번 다시 넣는다). dev DB·계정은 건드리지 않는다(postgres·template1 CONNECT 회수는 공통).
+- **동시 실행·잠금**: 다른 실행이 잠금을 갖고 있으면 아무것도 지우지 않고 멈춘다(다른 PC·셸에서 겹쳐 실행해도 상대 Job·Secret을 지우지 않는다).
+  도구가 SIGKILL 등으로 잠금을 남겼다면 `kubectl --context ureka-eks -n prod get lease db-bootstrap-prod-lock -o yaml`로 시각을 보고,
+  그 실행이 끝났음을 확인한 뒤 **30분이 지난 경우에만** `apply … --recover-stale-lock`으로 넘겨받는다(읽은 resourceVersion으로 교체해, 두 복구가 겹쳐도 하나만 성공).
+  그 뒤 시작 정리가 남은 Job·Secret을 지운다. 잠금 해제만 실패하면 경고하고 종료 코드 1(다음 실행이 멈추므로 위 명령으로 확인).
+- 임시 마스터 Secret의 접근 통제는 prod RBAC(#62: 사람은 조회만, Secret·로그·exec 없음)에 기댄다. prod에 Pod 템플릿·Secret 쓰기 권한을 주는 변경은 이 Secret 접근 범위도 함께 검토한다.
+- 환경 경계 시험은 정상 bootstrap 경로의 결과다. 다른 주체가 미리 만든 prod 역할·교차 GRANT를 지우지는 않는다(역할은 인스턴스 전체 공유,
+  content 앱 계정은 CREATEROLE). 실제 RDS 첫 적용 전에 `_prod` 역할이 이미 있는지, 멤버십이 예상과 같은지 확인한다.
 - 마스터 비밀은 이 도구를 실행하는 CN SSO만 읽는다. ESO 리더 역할(`ureka/eks/prod/*`)에는 RDS 관리 비밀(`rds!…`)이 들어가지 않는다.
 
 ### 3. prod 비밀 앱 등록·수동 Sync
@@ -256,7 +266,9 @@ python3 scripts/eks/bootstrap_prod_db.py apply --profile ureka-admin --confirm-e
 - 처음이 아닌 Sync(main 변경 반영)는 바뀐 항목이 그 PR의 의도와 같은지 본다. 속성 매핑이 바뀌면 앱 재시작이 필요할 수 있다.
 
 Sync 뒤(값 없이): `kubectl --context ureka-eks -n prod get secretstore,externalsecret`에서 SecretStore `Valid`, ExternalSecret 8개 `SecretSynced`,
-`get secret`에 같은 이름 8개. `ureka-auth-mail`만 실패하면 SES 비밀이 아직 없는 것이다(앱 기동에는 영향 없음, 만든 뒤 1시간 안에 다시 읽거나 ExternalSecret 새로 고침).
+`get secret`에 같은 이름 8개. `ureka-auth-mail`만 실패하면 SES 비밀이 아직 없는 것이다. **지금은** auth가 이 Secret을 참조하지 않아 앱 기동에 영향이 없지만,
+아래 'prod 메일'의 #43 후속으로 auth가 필수(optional 아님) `secretKeyRef`로 참조하면 Secret이 없을 때 auth Pod가 뜨지 않는다(CreateContainerConfigError).
+그래서 순서는 **SES 비밀 생성(`docs/ses.md` 3번) → 이 3번에서 `ureka-auth-mail` SecretSynced 확인 → auth가 참조하는 values 병합 → 4번 prod 앱 Sync**다.
 권한 시험은 위 5번을 prod로 한다(정책 이름 `…-prod`).
 
 ### 4. prod 앱 Sync (#43)
@@ -270,6 +282,7 @@ ExternalSecret `ureka-auth-mail`(키 `MAIL_USERNAME`·`MAIL_PASSWORD`)은 prod�
 `MAIL_USERNAME`·`MAIL_PASSWORD`(이 Secret 참조)·`MAIL_FROM`은 base env에 없어 지금 차트의 `envOverrides`로 넣을 수 없다.
 `MAIL_HOST`·`MAIL_PORT`·`MAIL_SMTP_AUTH`·`MAIL_STARTTLS`는 base에 있어 prod `envOverrides`로 바꾼다(값은 `docs/ses.md` 5번).
 base에 추가하면 EC2 dev auth가 새 Pod 스펙으로 카나리 배포(50%에서 멈춤)되므로, prod values에서만 env를 더하는 방법을 #43에서 정한다.
+그 values를 병합·Sync하기 전에 `ureka-auth-mail`이 SecretSynced여야 한다(위 3번 순서). 필수 참조라 Secret이 없으면 auth Pod가 시작하지 않는다.
 #49 NetworkPolicy가 prod에 들어가면 auth → SES SMTP(587) egress와 bootstrap Job → RDS(5432) egress를 허용 목록에 넣는다.
 
 ### prod 값 교체

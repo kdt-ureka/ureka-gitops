@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import io
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -37,15 +38,25 @@ def bundle(**over):
     return values
 
 
+RUN_RE = re.compile(r'ureka.io/bootstrap-run: "?([0-9a-f]+)"?')
+
+
 class FakeCluster:
-    def __init__(self, app=None, job_result="ok", leftovers=(), stuck=(), namespace_labels=None, history=False):
+    """objects: "종류/이름" → 실행 표시 라벨. 여러 실행(operator)이 같은 가짜 클러스터를 같이 쓸 수 있다."""
+
+    def __init__(self, app=None, job_result="ok", leftovers=None, stuck=(), namespace_labels=None, history=False,
+                 lease=None, fail_create=None):
         self.app = app or bundle()
         self.history = history
         self.job_result = job_result
-        self.objects = {k: {} for k in leftovers}
+        self.objects = dict(leftovers or {})
+        self.bodies = {}
         self.stuck = set(stuck)  # 지워지지 않는 자원(kind/name)
+        self.fail_create = fail_create  # 이 종류/이름 create는 Forbidden으로 실패
+        self.lease = lease  # {"holderIdentity": ..., "acquireTime": ...}
+        self.lease_version = 1
         self.labels = {"pod-security.kubernetes.io/enforce": "restricted"} if namespace_labels is None else namespace_labels
-        self.calls, self.stdins, self.created = [], [], []
+        self.calls, self.stdins, self.created, self.deleted = [], [], [], []
 
     def __call__(self, command, stdin=None, check=True):
         self.calls.append(list(command))
@@ -54,6 +65,11 @@ class FakeCluster:
         if check and code:
             raise module.SafeError(f"{command[0]} 실패")
         return SimpleNamespace(returncode=code, stdout=out, stderr=err)
+
+    def lease_json(self):
+        return json.dumps({"apiVersion": "coordination.k8s.io/v1", "kind": "Lease",
+                           "metadata": {"name": module.LOCK, "namespace": "prod", "resourceVersion": str(self.lease_version)},
+                           "spec": dict(self.lease)})
 
     def handle(self, c, stdin):
         if c[0] == "terraform":
@@ -72,31 +88,55 @@ class FakeCluster:
         verb, rest = c[6], c[7:]
         if verb == "get" and rest[0] == "namespace":
             return 0, json.dumps({"metadata": {"labels": self.labels}}), ""
-        if verb == "create":
+        if verb in ("create", "replace"):
             if "kind: Job" in stdin:
-                key, obj = f"job/{module.JOB}", stdin
+                key, run, body = f"job/{module.JOB}", RUN_RE.search(stdin).group(1), stdin
             else:
                 obj = json.loads(stdin)
                 key = f"{obj['kind'].lower()}/{obj['metadata']['name']}"
+                run, body = obj["metadata"].get("labels", {}).get(module.RUN_LABEL, ""), obj
+            if key == "lease/" + module.LOCK:
+                if verb == "create":
+                    if self.lease is not None:
+                        return 1, "", "Error from server (AlreadyExists)"
+                elif obj["metadata"].get("resourceVersion") != str(self.lease_version):
+                    return 1, "", "Error from server (Conflict)"
+                self.lease = dict(obj["spec"])
+                self.lease_version += 1
+                return 0, "", ""
+            if key == self.fail_create:
+                return 1, "", "Error from server (Forbidden)"
             if key in self.objects:
                 return 1, "", "Error from server (AlreadyExists)"
-            self.objects[key] = obj
+            self.objects[key], self.bodies[key] = run, body
             self.created.append(key)
             return 0, f"{key} created", ""
-        if verb == "get" and rest[0] == "job" and "json" in rest:
-            status = {"ok": {"succeeded": 1}, "failed": {"failed": 1}, "timeout": {}}[self.job_result]
-            return 0, json.dumps({"status": status}), ""
+        if verb == "get" and rest[0] == "lease":
+            if self.lease is None:
+                return 1, "", "Error from server (NotFound)"
+            return 0, self.lease_json(), ""
+        if verb == "get" and rest[0] == "job" and rest[1] == module.JOB and f"job/{module.JOB}" in self.objects \
+                and "json" in rest and self.job_result != "label-only":
+            if self.job_result == "interrupt":
+                self.job_result = "label-only"
+                raise KeyboardInterrupt
+            status = {"ok": {"succeeded": 1}, "failed": {"failed": 1}, "timeout": {}, "label-only": {}}[self.job_result]
+            return 0, json.dumps({"status": status, "metadata": {"labels": {module.RUN_LABEL: self.objects[f"job/{module.JOB}"]}}}), ""
         if verb == "get" and rest[0] == "pod":
             return 0, "", ""
         if verb == "get":
             key = f"{rest[0]}/{rest[1]}"
             if key in self.objects:
-                return 0, key, ""
+                return 0, json.dumps({"metadata": {"labels": {module.RUN_LABEL: self.objects[key]}}}), ""
             return 1, "", f'Error from server (NotFound): {rest[0]} "{rest[1]}" not found'
         if verb == "delete":
             key = f"{rest[0]}/{rest[1]}"
-            if key not in self.stuck:
-                self.objects.pop(key, None)
+            if key == "lease/" + module.LOCK:
+                self.lease = None
+                return 0, "", ""
+            if key not in self.stuck and key in self.objects:
+                self.objects.pop(key)
+                self.deleted.append(key)
             return 0, "", ""
         if verb == "wait":
             return 0, "", ""
@@ -108,10 +148,11 @@ class FakeCluster:
 
 
 class BootstrapTests(unittest.TestCase):
-    def operator(self, fake, action="apply", confirm="prod"):
+    def operator(self, fake, action="apply", confirm="prod", recover=False):
         op = module.ProdDbBootstrap.__new__(module.ProdDbBootstrap)
         op.args = SimpleNamespace(action=action, confirm_env=confirm, profile="p", cluster_name="ureka-eks",
-                                  context="ureka-eks", expected_account_id=ACCOUNT, max_wait=1, poll=0)
+                                  context="ureka-eks", expected_account_id=ACCOUNT, max_wait=1, poll=0,
+                                  recover_stale_lock=recover)
         op.env = {}
         op.identity = Mock(return_value={"Account": ACCOUNT})
         op.aws = Mock(return_value={"cluster": {"arn": f"arn:aws:eks:ap-northeast-2:{ACCOUNT}:cluster/ureka-eks",
@@ -129,6 +170,8 @@ class BootstrapTests(unittest.TestCase):
                 rc, error = op.execute(), None
             except module.SafeError as e:
                 rc, error = None, str(e)
+            except KeyboardInterrupt:
+                rc, error = None, "KeyboardInterrupt"
         printed = out.getvalue() + err.getvalue() + (error or "")
         secrets = [MASTER_PW, LEAK] + [v for k, v in fake.app.items() if "PASSWORD" in k and v]
         for value in secrets:
@@ -138,53 +181,53 @@ class BootstrapTests(unittest.TestCase):
         self.assertNotIn("SCRAM-SHA-256$4096", printed)
         return rc, error, printed
 
-    def created_secret(self, fake, name):
-        data = fake.objects_snapshot[f"secret/{name}"]["data"]
-        return {k: base64.b64decode(v).decode() for k, v in data.items()}
-
     def test_apply_creates_runs_and_cleans_up(self):
         fake = FakeCluster()
-        snapshot = {}
-        original = fake.handle
-
-        def keep(c, stdin):  # 지워지기 전 내용을 남긴다
-            result = original(c, stdin)
-            if c[0] == "kubectl" and c[6] == "create":
-                snapshot.update(fake.objects)
-            return result
-        fake.handle = keep
         rc, error, printed = self.execute(fake)
         self.assertEqual((rc, error), (0, None), printed)
-        # 해시 Secret → ConfigMap → 마스터 Secret → Job 순서
+        # 해시 Secret → ConfigMap → 마스터 Secret → Job 순서, 모두 같은 실행 표시
         self.assertEqual(fake.created, [f"secret/{module.ACCOUNTS_SECRET}", f"configmap/{module.CONFIGMAP}",
                                         f"secret/{module.MASTER_SECRET}", f"job/{module.JOB}"])
-        # 모두 지워졌다
+        runs = {RUN_RE.search(b).group(1) if isinstance(b, str) else b["metadata"]["labels"][module.RUN_LABEL]
+                for b in fake.bodies.values()}
+        self.assertEqual(len(runs), 1)
+        self.assertRegex(runs.pop(), r"^[0-9a-f]{32}$")
+        # 모두 지워졌고 잠금도 풀렸다
         self.assertEqual(fake.objects, {})
+        self.assertIsNone(fake.lease)
         self.assertIn("정리 확인", printed)
         # 해시는 각 비밀번호의 SCRAM verifier다(원문 없음)
-        hashes = {k: base64.b64decode(v).decode() for k, v in snapshot[f"secret/{module.ACCOUNTS_SECRET}"]["data"].items()}
+        accounts = fake.bodies[f"secret/{module.ACCOUNTS_SECRET}"]
+        hashes = {k: base64.b64decode(v).decode() for k, v in accounts["data"].items()}
         self.assertEqual(set(hashes), set(module.HASHES.values()))
         for prop, var in module.HASHES.items():
             salt = base64.b64decode(hashes[var].split(":")[1].split("$")[0])
             self.assertEqual(hashes[var], module.scram(fake.app[prop], salt))
-            self.assertNotIn(fake.app[prop], json.dumps(snapshot[f"secret/{module.ACCOUNTS_SECRET}"]))
-        master = {k: base64.b64decode(v).decode() for k, v in snapshot[f"secret/{module.MASTER_SECRET}"]["data"].items()}
+            self.assertNotIn(fake.app[prop], json.dumps(accounts))
+        master = {k: base64.b64decode(v).decode() for k, v in fake.bodies[f"secret/{module.MASTER_SECRET}"]["data"].items()}
         self.assertEqual(master, {"PGUSER": "ureka_master", "PGPASSWORD": MASTER_PW})
-        job = snapshot[f"job/{module.JOB}"]
+        job = fake.bodies[f"job/{module.JOB}"]
         self.assertIn(f"value: {HOST}\n", job)
         self.assertNotIn("RDS_ENDPOINT", job)
-        cm = snapshot[f"configmap/{module.CONFIGMAP}"]["data"]
+        self.assertNotIn("RUN_ID", job)
+        cm = fake.bodies[f"configmap/{module.CONFIGMAP}"]["data"]
         self.assertEqual(cm["db-bootstrap.sql"], module.SQL_FILE.read_text())
         # 로그 요약: 확인·오류 줄만, 해시는 가림
         self.assertIn("check environment suffix _prod", printed)
         self.assertIn("SCRAM-SHA-256$<생략>", printed)
         self.assertNotIn("noise line", printed)
+        # 마스터 비밀은 잠금을 잡은 뒤에만 읽는다
+        lock_at = next(i for i, c in enumerate(fake.calls) if c[0] == "kubectl" and c[6] == "create")
+        master_at = next(i for i, c in enumerate(fake.calls) if "--cli-input-json" in c)
+        self.assertLess(lock_at, master_at)
+        self.assertIn('"kind": "Lease"', fake.stdins[lock_at])
 
     def test_job_failure_still_cleans_up(self):
         fake = FakeCluster(job_result="failed")
         rc, error, printed = self.execute(fake)
         self.assertEqual(rc, 1)
         self.assertEqual(fake.objects, {})
+        self.assertIsNone(fake.lease)
         self.assertIn("실패", printed)
 
     def test_timeout_still_cleans_up(self):
@@ -193,6 +236,13 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(fake.objects, {})
 
+    def test_interrupt_cleans_up_and_reraises(self):
+        fake = FakeCluster(job_result="interrupt")
+        rc, error, printed = self.execute(fake)
+        self.assertEqual(error, "KeyboardInterrupt")
+        self.assertEqual(fake.objects, {})
+        self.assertIsNone(fake.lease)
+
     def test_cleanup_failure_is_loud(self):
         fake = FakeCluster(stuck=[f"secret/{module.MASTER_SECRET}"])
         rc, _, printed = self.execute(fake)
@@ -200,18 +250,129 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn(f"secret/{module.MASTER_SECRET}", printed)
         self.assertIn("경고", printed)
 
-    def test_leftovers_are_removed_before_reading_master(self):
-        fake = FakeCluster(leftovers=[f"secret/{module.MASTER_SECRET}", f"job/{module.JOB}"])
+    def test_cleanup_failure_wins_over_other_errors(self):
+        """실행 오류와 정리 실패가 겹치면 3(자격 잔존)을 돌려준다(검토 P2-2)."""
+        stuck = [f"secret/{module.MASTER_SECRET}"]
+        cases = {
+            "Job CREATE 거부": FakeCluster(stuck=stuck, fail_create=f"job/{module.JOB}"),
+            "시간 초과": FakeCluster(stuck=stuck, job_result="timeout"),
+            "Job 실패": FakeCluster(stuck=stuck, job_result="failed"),
+            "Ctrl+C/SIGTERM": FakeCluster(stuck=stuck, job_result="interrupt"),
+        }
+        for name, fake in cases.items():
+            with self.subTest(name):
+                rc, error, printed = self.execute(fake)
+                self.assertEqual((rc, error), (3, None), printed)
+                self.assertIn(f"secret/{module.MASTER_SECRET}", printed)
+                self.assertIn(f"secret/{module.MASTER_SECRET}", fake.objects)  # 실제로 남아 있는 경우
+                self.assertIsNone(fake.lease)  # 잠금은 풀어 다음 실행이 시작 정리를 할 수 있게
+
+    def test_interrupt_during_cleanup_is_ignored(self):
+        fake = FakeCluster()
+        op = self.operator(fake)
+        seen = []
+        original = op.cleanup
+
+        def cleanup(run_id):
+            seen.append((module.signal.getsignal(module.signal.SIGINT), module.signal.getsignal(module.signal.SIGTERM)))
+            return original(run_id)
+        op.cleanup = cleanup
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), patch.object(module.time, "sleep"):
+            self.assertEqual(op.execute(), 0)
+        self.assertEqual(seen[-1], (module.signal.SIG_IGN, module.signal.SIG_IGN))
+        self.assertNotEqual(module.signal.getsignal(module.signal.SIGINT), module.signal.SIG_IGN)  # 끝나면 되돌림
+
+    def test_leftovers_of_finished_run_are_removed_under_lock(self):
+        old = "b" * 32
+        fake = FakeCluster(leftovers={f"secret/{module.MASTER_SECRET}": old, f"job/{module.JOB}": old})
         rc, _, _ = self.execute(fake)
         self.assertEqual(rc, 0)
+        self.assertIn(f"secret/{module.MASTER_SECRET}", fake.deleted)
 
-    def test_undeletable_leftover_stops_before_master(self):
-        fake = FakeCluster(leftovers=[f"job/{module.JOB}"], stuck=[f"job/{module.JOB}"])
-        rc, error, _ = self.execute(fake)
-        self.assertIsNone(rc)
-        self.assertIn("마스터 비밀을 읽지 않고", error)
+    def test_undeletable_leftover_stops_before_master_with_code_3(self):
+        fake = FakeCluster(leftovers={f"job/{module.JOB}": "b" * 32}, stuck=[f"job/{module.JOB}"])
+        rc, error, printed = self.execute(fake)
+        self.assertEqual(rc, 3)
+        self.assertIn("마스터 비밀을 읽지 않고", printed)
         self.assertFalse(any("--cli-input-json" in c for c in fake.calls))
         self.assertEqual(fake.created, [])
+        self.assertIsNone(fake.lease)
+
+    def test_active_run_is_never_touched(self):
+        """다른 실행 A가 잠금을 갖고 있으면 B는 아무것도 지우지 않고 멈춘다(검토 P2-1)."""
+        a = "a" * 32
+        resources = {f"job/{module.JOB}": a, f"secret/{module.MASTER_SECRET}": a,
+                     f"secret/{module.ACCOUNTS_SECRET}": a, f"configmap/{module.CONFIGMAP}": a}
+        lease = {"holderIdentity": a, "acquireTime": module.micro_time()}
+        for recover in (False, True):  # 새 잠금은 --recover-stale-lock으로도 넘겨받지 않는다
+            fake = FakeCluster(leftovers=resources, lease=dict(lease))
+            rc, error, _ = self.execute(fake, recover=recover)
+            self.assertIsNone(rc)
+            self.assertIn("다른 bootstrap 실행" if not recover else "넘겨받지 않습니다", error)
+            self.assertEqual(fake.objects, resources)
+            self.assertEqual(fake.deleted, [])
+            self.assertEqual(fake.lease["holderIdentity"], a)
+            self.assertFalse(any("--cli-input-json" in c for c in fake.calls))
+
+    def test_two_overlapping_runs_share_one_cluster(self):
+        """A가 Job을 기다리는 동안 B가 시작해도 A의 자원은 그대로이고, A는 끝까지 자기 자원만 정리한다."""
+        fake = FakeCluster(job_result="label-only")  # A의 Job은 끝나지 않은 채로 B가 끼어든다
+        a, b = self.operator(fake), self.operator(fake)
+        b_results = []
+        original_wait = a.wait_job
+
+        def wait_with_b():
+            snapshot = dict(fake.objects)
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(out):
+                try:
+                    b_results.append(b.execute())
+                except module.SafeError as error:
+                    b_results.append(str(error))
+            self.assertEqual(fake.objects, snapshot, "B가 A의 자원을 바꿨습니다")
+            return "ok"
+        a.wait_job = wait_with_b
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), patch.object(module.time, "sleep"):
+            self.assertEqual(a.execute(), 0)
+        self.assertIn("다른 bootstrap 실행", b_results[0])
+        self.assertEqual(fake.objects, {})
+        self.assertIsNone(fake.lease)
+
+    def test_final_cleanup_skips_resources_of_another_run(self):
+        fake = FakeCluster(leftovers={f"secret/{module.MASTER_SECRET}": "c" * 32})
+        op = self.operator(fake)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), patch.object(module.time, "sleep"):
+            failed, foreign = op.cleanup("d" * 32)
+        self.assertEqual(failed, [])
+        self.assertEqual(foreign, [f"secret/{module.MASTER_SECRET}"])
+        self.assertIn(f"secret/{module.MASTER_SECRET}", fake.objects)
+
+    def test_stale_lock_needs_flag_and_is_taken_atomically(self):
+        old = {"holderIdentity": "e" * 32, "acquireTime": module.micro_time(module.time.time() - 3600)}
+        fake = FakeCluster(lease=dict(old))
+        rc, error, _ = self.execute(fake)
+        self.assertIn("다른 bootstrap 실행", error)
+        self.assertEqual(fake.lease["holderIdentity"], "e" * 32)
+        fake = FakeCluster(lease=dict(old))
+        rc, error, printed = self.execute(fake, recover=True)
+        self.assertEqual((rc, error), (0, None), printed)
+        self.assertTrue(any(c[0] == "kubectl" and c[6] == "replace" for c in fake.calls))
+        self.assertIsNone(fake.lease)
+
+    def test_stale_lock_takeover_conflict_stops(self):
+        old = {"holderIdentity": "e" * 32, "acquireTime": module.micro_time(module.time.time() - 3600)}
+        fake = FakeCluster(lease=dict(old))
+        fake.lease_version = 7  # get 뒤 누군가 바꾼 것처럼 replace의 resourceVersion이 맞지 않게
+        original = fake.lease_json
+        fake.lease_json = lambda: original().replace('"resourceVersion": "7"', '"resourceVersion": "6"')
+        rc, error, _ = self.execute(fake, recover=True)
+        self.assertIn("넘겨받지 못했습니다", error)
+        self.assertFalse(any("--cli-input-json" in c for c in fake.calls))
+
+    def test_lock_age(self):
+        now = 1_800_000_000
+        self.assertEqual(module.lock_age({"spec": {"acquireTime": module.micro_time(now - 120)}}, now), 120)
+        self.assertIsNone(module.lock_age({"spec": {}}, now))
 
     def test_check_reads_no_master_and_creates_nothing(self):
         fake = FakeCluster()
@@ -220,6 +381,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertFalse(any("--cli-input-json" in c for c in fake.calls))
         self.assertFalse(any(c[0] == "kubectl" and c[6] in ("create", "delete") for c in fake.calls))
         self.assertIn("변경 없음", printed)
+        self.assertIn("실행 잠금: 없음", printed)
+        self.assertIsNone(fake.lease)
 
     def test_apply_requires_confirm_env(self):
         fake = FakeCluster()

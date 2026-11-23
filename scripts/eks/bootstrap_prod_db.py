@@ -5,10 +5,14 @@
   python3 scripts/eks/bootstrap_prod_db.py check --profile ureka-admin                        변경 없음
   python3 scripts/eks/bootstrap_prod_db.py apply --profile ureka-admin --confirm-env prod     Job 실행
 
-순서: 대상 확인(승인 계정·ACTIVE EKS·kubectl 컨텍스트·prod 네임스페이스 restricted) → 이전 실행 잔여물 삭제 확인
+순서: 대상 확인(승인 계정·ACTIVE EKS·kubectl 컨텍스트·prod 네임스페이스 restricted)
       → data 스택 output(마스터 비밀 ARN·RDS 엔드포인트) → ureka/eks/prod/app 읽기 → 비밀번호 6개의 SCRAM 해시 계산
-      → [apply만] 마스터 비밀 읽기 → prod에 임시 Secret 2개(마스터·해시)·ConfigMap·Job → 완료 대기 → 로그 요약
-      → 성공·실패·Ctrl+C 모두: Job·Pod·Secret 2개·ConfigMap을 지우고 사라졌는지 확인(못 지우면 경고, 종료 코드 3).
+      → [apply만] 클러스터 실행 잠금(prod Lease db-bootstrap-prod-lock, create라 하나만 성공) → 잠금 안에서 이전 실행 잔여물 삭제 확인
+      → 마스터 비밀 읽기 → prod에 임시 Secret 2개(마스터·해시)·ConfigMap·Job(모두 이번 실행 표시 라벨) → 완료 대기 → 로그 요약
+      → 성공·실패·Ctrl+C·SIGTERM 모두: 이번 실행 표시가 붙은 Job·Pod·Secret 2개·ConfigMap만 지우고 사라졌는지 확인 → 잠금 해제.
+종료 코드: 0 성공, 1 실패(정리 완료), 3 정리 실패(마스터 비밀번호가 클러스터에 남았을 수 있음, 다른 오류와 겹쳐도 3), 130 중단(정리 완료).
+- 다른 실행이 잠금을 갖고 있으면 아무것도 지우지 않고 멈춘다. 잠금이 30분보다 오래됐고 그 실행이 끝났다고 확인한 경우에만
+  --recover-stale-lock으로 넘겨받는다(resourceVersion으로 원자적 교체). 잔여물은 잠금을 가진 실행만 지운다.
 - 비밀번호 원문은 DB 서버로 가지 않는다(해시만). 값·해시·ARN은 화면·명령 인자·Git·로그 파일에 싣지 않는다.
   Secret·ConfigMap·Job은 kubectl 표준 입력으로만 넘기고, ARN은 aws 표준 입력(--cli-input-json)으로만 넘긴다.
 - SQL은 kind·EC2 dev와 같은 environments/kind/data/db-bootstrap.sql이고 DB_SUFFIX=_prod로 prod 이름만 만든다.
@@ -18,6 +22,7 @@
 """
 import argparse
 import base64
+import calendar
 import hashlib
 import hmac
 import json
@@ -27,6 +32,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 
 from operate import Operator, SafeError, ROOT
 from bootstrap_argocd import verify_destination
@@ -57,6 +63,9 @@ ARN_RE = re.compile(r"arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:rds![A-
 HOST_RE = re.compile(r"[a-z0-9-]+\.[a-z0-9]+\.[a-z0-9-]+\.rds\.amazonaws\.com")
 SCRAM_RE = re.compile(r"SCRAM-SHA-256\$[^\s']*")
 MAX_WAIT = 600
+LOCK = "db-bootstrap-prod-lock"
+RUN_LABEL = "ureka.io/bootstrap-run"
+STALE_LOCK_SECONDS = 1800  # Job 최대 10분 + 대기·정리. 이보다 오래된 잠금만 복구 대상
 
 
 def scram(password, salt=None):
@@ -84,31 +93,50 @@ def account_hashes(bundle):
     return hashes
 
 
-def secret_manifest(name, data):
+def labels(run_id):
+    return {"app.kubernetes.io/part-of": "ureka", "app.kubernetes.io/name": JOB, RUN_LABEL: run_id}
+
+
+def secret_manifest(name, data, run_id):
     return json.dumps({
         "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
-        "metadata": {"name": name, "namespace": NS,
-                     "labels": {"app.kubernetes.io/part-of": "ureka", "app.kubernetes.io/name": JOB}},
+        "metadata": {"name": name, "namespace": NS, "labels": labels(run_id)},
         "data": {k: base64.b64encode(v.encode()).decode() for k, v in data.items()},
     })
 
 
-def configmap_manifest():
+def configmap_manifest(run_id):
     return json.dumps({
         "apiVersion": "v1", "kind": "ConfigMap",
-        "metadata": {"name": CONFIGMAP, "namespace": NS,
-                     "labels": {"app.kubernetes.io/part-of": "ureka", "app.kubernetes.io/name": JOB}},
+        "metadata": {"name": CONFIGMAP, "namespace": NS, "labels": labels(run_id)},
         "data": {"db-bootstrap.sql": SQL_FILE.read_text(), "run-bootstrap.sh": RUN_FILE.read_text()},
     })
 
 
-def job_manifest(host):
+def job_manifest(host, run_id):
     if not HOST_RE.fullmatch(host or ""):
         raise SafeError("RDS 엔드포인트 형식이 아닙니다.")
+    if not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        raise SafeError("실행 표시 형식이 아닙니다.")
     source = JOB_FILE.read_text()
-    if source.count(PLACEHOLDER) != 1:
-        raise SafeError("job.yaml의 PGHOST 자리를 찾지 못했습니다.")
+    run_line = f"{RUN_LABEL}: RUN_ID\n"
+    if source.count(PLACEHOLDER) != 1 or source.count(run_line) != 2:
+        raise SafeError("job.yaml의 PGHOST·실행 표시 자리를 찾지 못했습니다.")
+    source = source.replace(run_line, f'{RUN_LABEL}: "{run_id}"\n')
     return source.replace(PLACEHOLDER, f"            - name: PGHOST\n              value: {host}\n")
+
+
+def micro_time(now=None):
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime(now if now is not None else time.time()))
+
+
+def lock_age(lease, now=None):
+    """Lease acquireTime 기준 경과 초. 읽을 수 없으면 None."""
+    try:
+        acquired = calendar.timegm(time.strptime(lease["spec"]["acquireTime"][:19], "%Y-%m-%dT%H:%M:%S"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (now if now is not None else time.time()) - acquired
 
 
 def safe_log(text):
@@ -173,41 +201,114 @@ class ProdDbBootstrap(Operator):
             result = self.quiet(base + ["--secret-id", secret_id])
         return json.loads(json.loads(result.stdout)["SecretString"])
 
-    # --- 클러스터 자원 -----------------------------------------------------------
-    def gone(self, kind, name):
-        result = self.quiet(self.k("get", kind, name, "-o", "name"), check=False)
+    # --- 실행 잠금 ---------------------------------------------------------------
+    def lease(self):
+        result = self.quiet(self.k("get", "lease", LOCK, "-o", "json"), check=False)
+        if result.returncode:
+            if "(NotFound)" in result.stderr:
+                return None
+            raise SafeError("실행 잠금(Lease)을 조회하지 못했습니다(권한·연결). 멈춥니다.")
+        return json.loads(result.stdout)
+
+    def acquire_lock(self):
+        body = {"apiVersion": "coordination.k8s.io/v1", "kind": "Lease",
+                "metadata": {"name": LOCK, "namespace": NS, "labels": labels(self.run_id)},
+                "spec": {"holderIdentity": self.run_id, "acquireTime": micro_time(),
+                         "leaseDurationSeconds": STALE_LOCK_SECONDS}}
+        result = self.quiet(self.k("create", "-f", "-"), stdin=json.dumps(body), check=False)
         if result.returncode == 0:
+            return
+        if "AlreadyExists" not in (result.stderr or ""):
+            raise SafeError("실행 잠금(Lease)을 만들지 못했습니다(권한·연결). 아무것도 바꾸지 않았습니다.")
+        held = self.lease()
+        if held is None:
+            raise SafeError("실행 잠금이 방금 풀렸습니다. 다시 실행하세요.")
+        age = lock_age(held)
+        age_text = "알 수 없음" if age is None else f"{int(age // 60)}분"
+        if not self.args.recover_stale_lock:
+            raise SafeError(f"다른 bootstrap 실행이 잠금을 갖고 있습니다(경과 {age_text}). 아무것도 지우지 않고 멈춥니다. "
+                            "그 실행이 끝났는지 확인하세요(docs/eks-secrets.md '동시 실행·잠금').")
+        if age is None or age < STALE_LOCK_SECONDS:
+            raise SafeError(f"잠금이 {STALE_LOCK_SECONDS // 60}분보다 오래되지 않아(경과 {age_text}) 넘겨받지 않습니다.")
+        # 읽은 resourceVersion으로 교체한다. 그 사이 누가 바꿨으면 Conflict로 실패한다(두 복구가 겹쳐도 하나만 성공).
+        held["spec"].update({"holderIdentity": self.run_id, "acquireTime": micro_time()})
+        held["metadata"].setdefault("labels", {})[RUN_LABEL] = self.run_id
+        result = self.quiet(self.k("replace", "-f", "-"), stdin=json.dumps(held), check=False)
+        if result.returncode:
+            raise SafeError("오래된 잠금을 넘겨받지 못했습니다(그 사이 다른 실행이 바꿈). 아무것도 지우지 않고 멈춥니다.")
+        print(f"오래된 잠금(경과 {age_text})을 넘겨받았습니다.", file=sys.stderr)
+
+    def release_lock(self):
+        try:
+            held = self.lease()
+        except SafeError:
             return False
-        return "(NotFound)" in result.stderr
+        if held is None:
+            return True
+        if held.get("spec", {}).get("holderIdentity") != self.run_id:
+            return True  # 남의 잠금(복구로 넘어감)은 건드리지 않는다
+        self.quiet(self.k("delete", "lease", LOCK, "--ignore-not-found"), check=False)
+        try:
+            return self.lease() is None
+        except SafeError:
+            return False
 
-    def delete_and_confirm(self, kind, name):
+    # --- 클러스터 자원 -----------------------------------------------------------
+    def label_of(self, kind, name):
+        """없으면 None, 있으면 실행 표시 라벨 값(없으면 ''). 조회 실패는 SafeError."""
+        result = self.quiet(self.k("get", kind, name, "-o", "json"), check=False)
+        if result.returncode:
+            if "(NotFound)" in result.stderr:
+                return None
+            raise SafeError("조회 실패")
+        return (json.loads(result.stdout).get("metadata", {}).get("labels") or {}).get(RUN_LABEL, "")
+
+    def delete_and_confirm(self, kind, name, run_id):
+        """run_id가 있으면 그 실행 표시가 붙은 것만 지운다. 결과: 'gone' | 'failed' | 'foreign'."""
         for attempt in range(1, 4):
-            self.quiet(self.k("delete", kind, name, "--ignore-not-found", "--wait=true", "--timeout=60s",
-                              *(["--cascade=foreground"] if kind == "job" else [])), check=False)
-            if self.gone(kind, name):
-                return True
+            try:
+                owner = self.label_of(kind, name)
+            except SafeError:
+                owner = "?"
+            if owner is None:
+                return "gone"
+            if run_id is not None and owner != run_id and owner != "?":
+                return "foreign"
+            if owner != "?":
+                self.quiet(self.k("delete", kind, name, "--ignore-not-found", "--wait=true", "--timeout=60s",
+                                  *(["--cascade=foreground"] if kind == "job" else [])), check=False)
             time.sleep(attempt * 2)
-        return False
+        try:
+            return "gone" if self.label_of(kind, name) is None else "failed"
+        except SafeError:
+            return "failed"
 
-    def pods_gone(self):
-        self.quiet(self.k("wait", "--for=delete", "pod", "-l", f"job-name={JOB}", "--timeout=60s"), check=False)
-        result = self.quiet(self.k("get", "pod", "-l", f"job-name={JOB}", "-o", "name"), check=False)
+    def pods_gone(self, run_id):
+        selector = f"{RUN_LABEL}={run_id}" if run_id else f"job-name={JOB}"
+        self.quiet(self.k("wait", "--for=delete", "pod", "-l", selector, "--timeout=60s"), check=False)
+        result = self.quiet(self.k("get", "pod", "-l", selector, "-o", "name"), check=False)
         if result.returncode:
             return None  # 알 수 없음
         return not result.stdout.strip()
 
-    def cleanup(self):
-        """Job·Pod를 먼저 지우고(마스터 비밀번호를 env로 들고 있는 Pod) Secret·ConfigMap을 지운다. 실패 목록을 돌려준다."""
-        failed = []
-        if not self.delete_and_confirm("job", JOB):
-            failed.append(f"job/{JOB}")
-        pods = self.pods_gone()
-        if pods is not True:
-            failed.append(f"pod -l job-name={JOB}" + (" (조회 실패)" if pods is None else ""))
-        for kind, name in (("secret", MASTER_SECRET), ("secret", ACCOUNTS_SECRET), ("configmap", CONFIGMAP)):
-            if not self.delete_and_confirm(kind, name):
+    def cleanup(self, run_id):
+        """Job·Pod를 먼저 지우고(마스터 비밀번호를 env로 들고 있는 Pod) Secret·ConfigMap을 지운다.
+        run_id가 있으면 그 실행의 자원만(종료 정리), None이면 이름이 같은 것 모두(잠금을 가진 실행의 시작 정리).
+        (지우지 못한 것, 남의 실행 표시라 건드리지 않은 것)을 돌려준다."""
+        failed, foreign = [], []
+        for kind, name in (("job", JOB), ("pods", None), ("secret", MASTER_SECRET), ("secret", ACCOUNTS_SECRET),
+                           ("configmap", CONFIGMAP)):
+            if kind == "pods":
+                pods = self.pods_gone(run_id)
+                if pods is not True:
+                    failed.append(f"pod -l job-name={JOB}" + (" (조회 실패)" if pods is None else ""))
+                continue
+            state = self.delete_and_confirm(kind, name, run_id)
+            if state == "failed":
                 failed.append(f"{kind}/{name}")
-        return failed
+            elif state == "foreign":
+                foreign.append(f"{kind}/{name}")
+        return failed, foreign
 
     def wait_job(self):
         deadline = time.monotonic() + self.args.max_wait
@@ -229,57 +330,88 @@ class ProdDbBootstrap(Operator):
         self.preflight()
         arn, host = self.data_outputs()
         hashes = account_hashes(self.read_secret(secret_id=APP_SECRET))
-        manifest = job_manifest(host)
+        job_manifest(host, "0" * 32)  # 자리 확인만
+        manifest = host
         if self.args.action == "check":
+            held = self.lease()
+            lock = "없음" if held is None else f"있음(경과 {int((lock_age(held) or 0) // 60)}분, 다른 실행 중이면 apply는 멈춤)"
             print("확인 완료(변경 없음): 대상 EKS·prod 네임스페이스·data output·prod 묶음 형식. "
-                  "마스터 비밀은 읽지 않았습니다.")
+                  f"마스터 비밀은 읽지 않았습니다. 실행 잠금: {lock}.")
             return 0
 
-        # 0) 이전 실행이 남긴 것을 먼저 지운다. 남아 있으면 마스터 비밀을 읽지 않고 멈춘다.
-        leftovers = self.cleanup()
-        if leftovers:
-            raise SafeError("이전 실행이 남긴 자원을 지우지 못했습니다: " + ", ".join(leftovers) + ". 마스터 비밀을 읽지 않고 멈춥니다.")
-
-        result, rc = None, 0
+        # 1) 클러스터 단위 실행 잠금. 다른 실행이 갖고 있으면 아무것도 지우지 않는다.
+        self.run_id = uuid.uuid4().hex
+        self.acquire_lock()
+        rc, pending, residue, foreign, lock_ok = 0, None, [], [], False
         try:
-            master = self.read_secret(arn=arn)
-            user, password = master.get("username", ""), master.get("password", "")
-            master = None
-            if not user or not password:
-                raise SafeError("마스터 비밀에 username·password가 없습니다(값은 출력하지 않음).")
-            # 해시 Secret을 먼저, 마스터 Secret은 Job 바로 앞에 만든다. create라 같은 이름이 있으면 덮어쓰지 않고 실패한다.
-            self.quiet(self.k("create", "-f", "-"), stdin=secret_manifest(ACCOUNTS_SECRET, hashes))
-            self.quiet(self.k("create", "-f", "-"), stdin=configmap_manifest())
-            self.quiet(self.k("create", "-f", "-"), stdin=secret_manifest(MASTER_SECRET, {"PGUSER": user, "PGPASSWORD": password}))
-            user = password = None
-            self.quiet(self.k("create", "-f", "-"), stdin=manifest)
-            print(f"Job {JOB} 실행 중(최대 {self.args.max_wait // 60}분)...", flush=True)
-            result = self.wait_job()
-            logs = self.quiet(self.k("logs", f"job/{JOB}", "--tail=50"), check=False).stdout
-            summary = safe_log(logs)
-            if summary:
-                print(summary)
-            if result == "ok":
-                print(f"{JOB} 완료. 임시 Secret·Job을 지웁니다.")
-            elif result == "failed":
-                print(f"{JOB} 실패. 위 요약을 확인하세요. 임시 Secret·Job을 지웁니다.", file=sys.stderr)
-                rc = 1
-            else:
-                print(f"{self.args.max_wait}초 안에 끝나지 않았습니다. 임시 Secret·Job을 지웁니다.", file=sys.stderr)
-                rc = 1
+            # 2) 잠금 안에서만: 이전(끝난) 실행이 남긴 것을 지운다. 못 지우면 마스터 비밀을 읽지 않고 멈춘다.
+            leftovers, _ = self.cleanup(None)
+            if leftovers:
+                residue = leftovers
+                raise SafeError("이전 실행이 남긴 자원을 지우지 못했습니다: " + ", ".join(leftovers) + ". 마스터 비밀을 읽지 않고 멈춥니다.")
+            rc = self.run_job(arn, manifest, hashes)
+        except BaseException as error:  # SafeError·KeyboardInterrupt(SIGTERM 포함)·형식 오류: 정리 뒤 다시 올린다
+            pending = error
         finally:
             hashes.clear()
-            failed = self.cleanup()
-            if failed:
-                print("경고: 지우지 못한 자원(마스터 비밀번호가 남았을 수 있음): " + ", ".join(failed) +
-                      f". kubectl --context {self.args.context} -n {NS} delete <종류> <이름> 후 get으로 없어졌는지 확인하세요.",
-                      file=sys.stderr)
-                rc = 3
-            else:
-                print("정리 확인: Job·Pod·임시 Secret 2개·ConfigMap 없음.")
+            previous = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGINT, signal.SIGTERM)}
+            try:
+                if not residue:
+                    residue, foreign = self.cleanup(self.run_id)
+                lock_ok = self.release_lock()
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
+        if foreign:
+            print("경고: 이번 실행 표시가 아닌 자원은 지우지 않았습니다: " + ", ".join(foreign) +
+                  ". 다른 실행이 잠금을 넘겨받았는지 확인하세요.", file=sys.stderr)
+        if not lock_ok:
+            print(f"경고: 실행 잠금(lease/{LOCK})을 풀지 못했습니다. 다음 실행이 멈춥니다. "
+                  f"kubectl --context {self.args.context} -n {NS} get lease {LOCK}로 확인하세요.", file=sys.stderr)
+        if residue:
+            # 정리 실패는 다른 오류보다 우선한다: 호출자가 '자격 잔존'(3)을 일반 실패와 구별할 수 있게.
+            if pending is not None:
+                print("중단:", pending if isinstance(pending, SafeError) else "중단 요청 또는 예상 밖 오류", file=sys.stderr)
+            print("경고: 지우지 못한 자원(마스터 비밀번호가 남았을 수 있음): " + ", ".join(residue) +
+                  f". kubectl --context {self.args.context} -n {NS} delete <종류> <이름> 후 get으로 없어졌는지 확인하세요.",
+                  file=sys.stderr)
+            return 3
+        print("정리 확인: Job·Pod·임시 Secret 2개·ConfigMap 없음.")
+        if pending is not None:
+            raise pending
+        if not lock_ok and rc == 0:
+            rc = 1
         if rc == 0:
             print("다음(docs/eks-secrets.md): prod 비밀 앱 등록 → ExternalSecret Ready → prod 앱 Sync(Flyway가 스키마를 만든다).")
         return rc
+
+    def run_job(self, arn, manifest, hashes):
+        master = self.read_secret(arn=arn)
+        user, password = master.get("username", ""), master.get("password", "")
+        master = None
+        if not user or not password:
+            raise SafeError("마스터 비밀에 username·password가 없습니다(값은 출력하지 않음).")
+        # 해시 Secret을 먼저, 마스터 Secret은 Job 바로 앞에 만든다. create라 같은 이름이 있으면 덮어쓰지 않고 실패한다.
+        self.quiet(self.k("create", "-f", "-"), stdin=secret_manifest(ACCOUNTS_SECRET, hashes, self.run_id))
+        self.quiet(self.k("create", "-f", "-"), stdin=configmap_manifest(self.run_id))
+        self.quiet(self.k("create", "-f", "-"),
+                   stdin=secret_manifest(MASTER_SECRET, {"PGUSER": user, "PGPASSWORD": password}, self.run_id))
+        user = password = None
+        self.quiet(self.k("create", "-f", "-"), stdin=job_manifest(manifest, self.run_id))
+        print(f"Job {JOB} 실행 중(최대 {self.args.max_wait // 60}분)...", flush=True)
+        result = self.wait_job()
+        logs = self.quiet(self.k("logs", f"job/{JOB}", "--tail=50"), check=False).stdout
+        summary = safe_log(logs)
+        if summary:
+            print(summary)
+        if result == "ok":
+            print(f"{JOB} 완료. 임시 Secret·Job을 지웁니다.")
+            return 0
+        if result == "failed":
+            print(f"{JOB} 실패. 위 요약을 확인하세요. 임시 Secret·Job을 지웁니다.", file=sys.stderr)
+        else:
+            print(f"{self.args.max_wait}초 안에 끝나지 않았습니다. 임시 Secret·Job을 지웁니다.", file=sys.stderr)
+        return 1
 
 
 def interrupt(*_):
@@ -294,6 +426,8 @@ def main(argv=None):
     parser.add_argument("--cluster-name", default="ureka-eks")
     parser.add_argument("--context", default="ureka-eks")
     parser.add_argument("--confirm-env")
+    parser.add_argument("--recover-stale-lock", action="store_true",
+                        help="30분보다 오래된 실행 잠금을 넘겨받는다(그 실행이 끝났는지 확인한 뒤에만)")
     parser.add_argument("--max-wait", type=int, default=MAX_WAIT, help=argparse.SUPPRESS)
     parser.add_argument("--poll", type=int, default=5, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
