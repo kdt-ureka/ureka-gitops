@@ -13,6 +13,13 @@ env:
     value: jdbc:postgresql://postgres:5432/auth_db
   - name: DB_USERNAME
     value: auth_db_app
+  # DB 커넥션 풀 긴급 상한: Spring 기본(최대 10, 최소 유휴도 10)이면 파드마다 접속을 10개씩 쥐고 있어
+  # 다른 클라이언트·예약 자리와 합치면 RDS(db.t4g.micro, 약 80개) 한도를 넘는다(11/23 prod 기동 때 접속 거부).
+  # 파드당 최대 4, 최소 유휴 1(부하 뒤에는 최대 4까지 유지될 수 있음). 부하 시험(S9) 때 서비스별로 다시 잰다.
+  - name: SPRING_DATASOURCE_HIKARI_MAXIMUMPOOLSIZE
+    value: "4"
+  - name: SPRING_DATASOURCE_HIKARI_MINIMUMIDLE
+    value: "1"
   - name: DB_PASSWORD
     valueFrom:
       secretKeyRef:
