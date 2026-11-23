@@ -3,6 +3,7 @@
 이 문서는 CN 담당이 검토 후 실행할 절차다. 초안 작성 시 실제 AWS 조회·plan·apply·부팅 시간 측정은 하지 않았다.
 일상적인 EKS plan·apply·상태·destroy는 저장소의 [공통 운영 도구](../scripts/eks/README.md)를 사용한다.
 클러스터 생성 후 Argo CD는 [EKS 설치·앱 연결 절차](eks-argocd.md)를 따른다.
+prod 공개 입구(ALB·인증서·WAF, `ureka.magonjal.com`)는 [EKS prod 공개 입구](eks-public.md)를 따른다.
 아래 Terraform 명령은 내부 동작 설명·문제 진단용이며, 공통 도구의 검토 절차를 생략하는 용도가 아니다.
 network/data의 선후행 작업은 별도다. 운영 도구 추가 전 저장한 plan은 인계 근거로 보존하고,
 도구 추가·리뷰·병합 뒤 새 plan을 만들어 검토한다.
@@ -76,7 +77,7 @@ plan 검토: subnet Tier/AZ, private route의 중복 소유권 없음, 관리자
 ## 끄기 (검토 후 CN 실행)
 
 1. 필요한 관측 데이터·DB를 백업/보존한다. EKS 재생성으로 local PVC 데이터는 복구되지 않는다.
-2. Argo CD 자동 동기화/자원 재생성을 멈추고 앱·Ingress·LoadBalancer Service를 삭제한다. ALB/NLB·target group·컨트롤러가 만든 SG/ENI가 실제 제거될 때까지 컨트롤러를 살려 둔다. PVC는 백업·reclaimPolicy 확인 후 삭제, EBS 삭제/잔존을 확인한다.
+2. Argo CD 자동 동기화/자원 재생성을 멈추고 앱·Ingress·LoadBalancer Service를 삭제한다. 공개 입구를 켰다면 [eks-public.md 끄기 순서](eks-public.md#끄기-순서-하나로-고정)대로 `ureka-prod-public-ingress`를 먼저 지운다. ALB/NLB·target group·컨트롤러가 만든 SG/ENI가 실제 제거될 때까지 컨트롤러를 살려 둔다. PVC는 백업·reclaimPolicy 확인 후 삭제, EBS 삭제/잔존을 확인한다.
 3. data의 `eks_node_security_group_ids=[]`로 복원하고 **data만 plan/apply**해 외부 SG 참조를 먼저 제거한다. 생략하면 EKS node SG 삭제가 DependencyViolation으로 막힌다.
 4. EKS에서 `AWS_PROFILE=ureka-admin terraform plan -destroy -out=eks-destroy.tfplan` 검토 후 `AWS_PROFILE=ureka-admin terraform apply eks-destroy.tfplan`. 애드온→노드→클러스터 순서와 함께 NAT/default route/EIP를 제거한다. network/data/shared는 destroy하지 않는다.
 5. CN이 EKS·노드/ASG·NAT·EIP·EBS·ALB/ENI 잔존과 비용을 확인한다. kubeconfig의 옛 context를 로컬에서 제거한다. 별도 RDS/EC2는 해당 운영 절차로 중지한다. Terraform 밖 PVC/ALB와 retained EBS는 자동 삭제를 가정하지 않는다.

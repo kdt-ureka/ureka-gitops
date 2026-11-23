@@ -1,0 +1,33 @@
+{{- /*
+ALB → 공개 경로 Pod만 연다. 기본은 끔(albNetworkPolicy.enabled=false).
+주의: NetworkPolicy가 Pod를 하나라도 고르면 그 Pod는 격리된다. 이 정책만 먼저 넣으면 ALB 헬스 체크는 통과해도
+chat → content 같은 내부 호출이 막힌다. prod 내부 허용 정책(#49, EC2 dev의 allow-ingress와 같은 표)이 prod에 있을 때만 켠다.
+recommend 등 공개 경로에 없는 Pod는 고르지 않는다.
+*/ -}}
+{{- if .Values.albNetworkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-alb
+  labels:
+    {{- include "ureka-public-ingress.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          {{- range .Values.routes }}
+          - {{ .service }}
+          {{- end }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range required "albSourceCidrs is required" .Values.albSourceCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.podPort }}
+{{- end }}
