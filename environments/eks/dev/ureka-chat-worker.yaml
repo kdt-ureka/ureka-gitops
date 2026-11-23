@@ -1,0 +1,21 @@
+# EKS dev ureka-chat-worker values. environments/base/ureka-chat-worker.yaml 위에 겹친다(Argo CD valueFiles: base → eks/dev, argocd/eks/apps).
+# EKS dev는 시험용(카나리·NetworkPolicy 시험)이라 작게 둔다: 모든 서비스 1개. 공개하지 않는다(Ingress 없음, 공개는 prod #64).
+# 이미지: EC2 dev에서 확인한 것과 같은 tag·digest(흐름: EC2 dev → EKS dev → EKS prod, 각각 gitops PR).
+# 레지스트리 주소(계정 ID 포함)는 Git에 쓰지 않고 root 앱이 image.registry로 넣는다(scripts/eks/register_root_app.py).
+# DB: Service postgres → EC2 dev와 같은 RDS의 dev 논리 DB·계정(environments/eks/dev/data). 비밀값은 #63 ExternalSecret이 같은 이름·키로 만든다.
+
+image:
+  requireRegistry: true
+  repository: ureka/chat
+  tag: sha-9e87f390928a186c3fa6911419bf9b4796d180e4
+  digest: sha256:7aeff3ba99cd1636e8842289bb71901173db6040bb2ae898625f24432fdb1c3c
+  pullPolicy: IfNotPresent
+
+# EC2 dev와 같은 값. EKS에서 kubectl top으로 다시 잰다.
+resources:
+  requests:
+    cpu: 200m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 384Mi

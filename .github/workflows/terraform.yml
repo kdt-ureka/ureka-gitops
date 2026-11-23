@@ -9,6 +9,7 @@ on:
       - 'tests/eks/**'
       - 'scripts/ec2/copy_eks_dev_secrets.py'
       - 'charts/ureka-eks-secrets/values.yaml'
+      - 'argocd/eks/root-app.yaml'
       - '.github/workflows/terraform.yml'
   push:
     branches: [main]
@@ -18,6 +19,7 @@ on:
       - 'tests/eks/**'
       - 'scripts/ec2/copy_eks_dev_secrets.py'
       - 'charts/ureka-eks-secrets/values.yaml'
+      - 'argocd/eks/root-app.yaml'
       - '.github/workflows/terraform.yml'
   workflow_dispatch:
 

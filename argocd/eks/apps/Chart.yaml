@@ -1,0 +1,5 @@
+apiVersion: v2
+name: ureka-eks-apps
+description: EKS dev·prod의 AppProject와 Argo CD Application 목록(app-of-apps). root 앱(argocd/eks/root-app.yaml)이 렌더링한다.
+type: application
+version: 0.1.0

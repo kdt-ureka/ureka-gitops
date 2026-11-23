@@ -1,0 +1,3 @@
+# envOverrides 시험(scripts/test-chart-options.sh). api-with-migration.yaml 위에 겹친다.
+envOverrides:
+  DATABASE_URL: postgresql+psycopg://example_prod:$(DB_PASSWORD)@postgres:5432/example_db_prod
