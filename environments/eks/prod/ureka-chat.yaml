@@ -8,8 +8,8 @@
 image:
   requireRegistry: true
   repository: ureka/chat
-  tag: sha-9e87f390928a186c3fa6911419bf9b4796d180e4
-  digest: sha256:7aeff3ba99cd1636e8842289bb71901173db6040bb2ae898625f24432fdb1c3c
+  tag: sha-14b1f8a24535f9a43b5ec73b4f7f9dd1e820985e
+  digest: sha256:47eda17e50f2d2509305e79f83f9c60f683b11fca0cd95a9cd1d43fcbae5e6c9
   pullPolicy: IfNotPresent
 
 # EC2 dev와 같은 값. EKS에서 kubectl top으로 다시 잰다.
