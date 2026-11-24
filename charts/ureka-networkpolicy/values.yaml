@@ -1,0 +1,8 @@
+# Egress는 이 작업 범위 밖(DNS·RDS·Gemini·SES 등은 별도 통제).
+alb:
+  enabled: false
+  # 승인된 ALB 서브넷 IPv4 CIDR만 런타임 주입. 실제 값은 Git에 넣지 않는다.
+  sourceCidrs: []
+metrics:
+  enabled: false
+  chatEnabled: false

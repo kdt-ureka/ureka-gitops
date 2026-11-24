@@ -33,3 +33,12 @@ services:
 
 # JVM 지표(auth·content). EKS에는 아직 관측 스택이 없다(EC2와 같이 false).
 jvmMetricsEnabled: false
+
+# #49: prod ALB 경로는 #64 연결 전까지 닫는다. 실제 CIDR은 Git이 아닌 root Helm parameter로 주입.
+networkPolicy:
+  alb:
+    enabled: false
+    sourceCidrs: []
+  metrics:
+    enabled: false
+    chatEnabled: false

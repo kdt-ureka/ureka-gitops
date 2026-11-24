@@ -1,0 +1,38 @@
+{{- range .Values.environments }}
+{{- $env := include "eksapps.envName" . }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-eks-networkpolicy-{{ $env }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: ureka-eks-{{ $env }}
+  source:
+    repoURL: {{ $.Values.repoURL }}
+    targetRevision: {{ $.Values.targetRevision }}
+    path: charts/ureka-networkpolicy
+    helm:
+      releaseName: ureka-networkpolicy-{{ $env }}
+      valueFiles:
+        - ../../environments/eks/{{ $env }}/networkpolicy/values.yaml
+      parameters:
+        - name: alb.enabled
+          value: {{ and (eq $env "prod") $.Values.networkPolicy.alb.enabled | quote }}
+        {{- range $i, $cidr := $.Values.networkPolicy.alb.sourceCidrs }}
+        {{- if eq $env "prod" }}
+        - name: alb.sourceCidrs[{{ $i }}]
+          value: {{ $cidr | quote }}
+        {{- end }}
+        {{- end }}
+        - name: metrics.enabled
+          value: {{ $.Values.networkPolicy.metrics.enabled | quote }}
+        - name: metrics.chatEnabled
+          value: {{ $.Values.networkPolicy.metrics.chatEnabled | quote }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ $env }}
+  {{- include "eksapps.syncPolicy" . | nindent 2 }}
+{{- end }}

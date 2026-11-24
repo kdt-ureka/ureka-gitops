@@ -4,7 +4,7 @@ AppProject 3개. 앱이 만들 수 있는 자원을 줄인다(Argo CD가 동기�
   Argo CD는 클러스터 범위 자원에 목적지(destinations) 검사를 하지 않는다. 그래서 Namespace는 허용 목록의 name으로 dev·prod만 연다
   (argocd·kube-system 등 다른 네임스페이스의 라벨을 바꾸는 변경은 거부). 이미지 PR이 자주 드나드는 서비스 프로젝트와는 분리한다.
 - ureka-eks-dev / ureka-eks-prod: 업무 앱 전용. 목적지는 자기 네임스페이스 하나. 클러스터 범위 자원·Secret·RBAC는 없다.
-  Secret은 ESO(#63, default 프로젝트의 비밀 연결 앱)만 만든다. Ingress(#64)·NetworkPolicy(#49)는 그 변경에서 허용 목록에 더한다.
+  Secret은 ESO(#63, default 프로젝트의 비밀 연결 앱)만 만든다. Ingress(#64)는 해당 변경에서 허용 목록에 더한다. NetworkPolicy(#49)는 아래에 허용한다.
 root 앱보다 먼저(wave -3) 만든다. 저장소는 이 저장소 하나만.
 */ -}}
 {{- $repo := .Values.repoURL }}
@@ -65,6 +65,8 @@ spec:
       kind: Service
     - group: apps
       kind: Deployment
+    - group: networking.k8s.io
+      kind: NetworkPolicy
     # chat 마이그레이션 Job(PreSync 훅)
     - group: batch
       kind: Job

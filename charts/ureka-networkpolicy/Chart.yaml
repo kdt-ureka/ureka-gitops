@@ -1,0 +1,5 @@
+apiVersion: v2
+name: ureka-networkpolicy
+version: 0.1.0
+type: application
+description: EKS ingress allow list with default deny

@@ -7,10 +7,17 @@
 # 출발지 해석 주의: ingest-load 흉내 Pod는 EC2에서 ingest egress 정책도 같이 받아 '차단'이 ingress만의 증거는 아니다.
 #
 # 사용: scripts/netpol/probe.sh [--context <kubectl 컨텍스트>] [--scenario <expected.json allow 키>] [--keep]
+# EKS: --context <context> --namespace <dev|prod> [--expected <table>] [--scenario baseline|metrics|alb|alb-metrics]
 #   --keep: 시험 Pod를 지우지 않는다(손으로 더 볼 때). 지울 때: 아래 cleanup과 같은 명령.
 # 시험 Pod: 이름표 ureka-netpol-probe=true, PSA restricted를 지킨다(비root·seccomp·capability 없음), 이미지는 dev chat 이미지(python).
 # observability 네임스페이스가 없으면(kind) 만들고 끝나면 지운다. 이미 있으면(EC2) 시험 Pod만 지운다.
 set -euo pipefail
+# --namespace를 명시하면 EKS Deployment probe로 실행한다. 기존 EC2/kind 인자는 그대로 둔다.
+for arg in "$@"; do
+  if [ "$arg" = --namespace ]; then
+    exec python3 "$(dirname "$0")/probe_eks.py" "$@"
+  fi
+done
 cd "$(dirname "$0")/../.."
 
 ctx=()

@@ -1,0 +1,7 @@
+# prod: default deny + same-namespace allow list. ALB CIDRs are injected at root registration.
+alb:
+  enabled: true
+  sourceCidrs: []
+metrics:
+  enabled: false
+  chatEnabled: false

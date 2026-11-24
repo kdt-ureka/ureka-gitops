@@ -20,7 +20,7 @@ def compare(exp, scenario, targets, lines, exec_failures):
     if scenario not in keys:
         return [f"시나리오가 없다: {scenario}"], []
     allow = set()
-    for s in keys[: keys.index(scenario) + 1]:
+    for s in (keys[: keys.index(scenario) + 1] if exp.get("cumulative", True) else [scenario]):
         allow |= {tuple(x) for x in exp["allow"][s]}
     if exec_failures:
         errors.append(f"시험 Pod 실행 실패 {exec_failures}건(결과를 믿을 수 없다)")
