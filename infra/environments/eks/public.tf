@@ -117,7 +117,7 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_pods" {
 resource "aws_wafv2_ip_set" "admin" {
   count              = local.public_count
   name               = "${local.name}-admin-allow"
-  description        = "Admin path allow list (values in private tfvars)"
+  description        = "Admin path allow list - values in private tfvars"
   scope              = "REGIONAL"
   ip_address_version = "IPV4"
   addresses          = var.admin_path_allowed_cidrs
