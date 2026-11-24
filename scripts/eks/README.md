@@ -137,3 +137,87 @@ AWS 호출 없이 잘못된 계정·변경된 plan·미병합 코드·부분 실
 
 저장 plan 적용은 추가 Terraform 확인 질문 없이 실행되므로, `--confirm`에 검토 확인값을
 입력하는 것을 명시 승인으로 사용한다. [Terraform apply 공식 문서](https://developer.hashicorp.com/terraform/cli/commands/apply).
+
+## 켜기·끄기 자동화 도구 (#102)
+
+`lifecycle.py`는 기존 운영 도구의 순서·전제·확인 지점을 묶는다. 외부 변경을 한꺼번에
+자동 승인하지 않는다. 기본 실행은 실제 상태를 읽어 완료 단계를 건너뛰고 첫 미완료 단계에서
+멈춘다. 실행 후 같은 명령을 다시 쓰면 상태를 재확인하고 이어 간다.
+
+```sh
+# 외부 호출도 파일 생성도 없는 순서 미리 보기
+python3 scripts/eks/lifecycle.py up --plan-only
+python3 scripts/eks/lifecycle.py down --plan-only
+
+# 앞의 준비 절차대로 프로필·승인 계정 입력 후 사용
+# 현재 공인 IPv4는 직접 확인해 숨겨 입력(목록·입력값은 도구가 출력하지 않음)
+read -r -s UREKA_CURRENT_IPV4
+export UREKA_CURRENT_IPV4
+python3 scripts/eks/lifecycle.py up
+python3 scripts/eks/lifecycle.py down
+```
+
+프로필은 `UREKA_OPS_PROFILE` 또는 `--profile`, 계정은 `UREKA_EXPECTED_ACCOUNT_ID`만 쓴다.
+각 worktree에서 backend 초기화와 비공개 설정을 준비해야 한다. 다른 worktree의 tfvars,
+backend, `.local/`을 복사·수정하지 않는다. 초기 `access` 검사는 Terraform console로
+현재 설정과 실제 EKS 관리 허용 목록의 일치 여부만 확인한다. 현재 IP를 외부 서비스에
+자동 전송해 알아내지 않는다. kubeconfig 단계 이후에는 계정·ACTIVE 클러스터·API 주소가
+실제 대상과 일치해야 하며 노드 Ready도 확인한다.
+
+| 확인 지점 | 진행 방법 |
+|---|---|
+| EKS 생성·공개 인프라·DNS | `--execute infra` / `public-infra` / `dns`로 기존 operate의 **새 plan** 작성. 출력된 경로의 plan.log를 비공개로 검토한 뒤 같은 단계에 `--review-dir 경로 --confirm 확인값` 추가. 기존 1시간·코드/설정/주체 검증·plan 재사용 금지를 유지 |
+| data SG·dev 비밀 복사 | 안내한 기존 Terraform 절차를 직접 실행. 복사는 EC2 SSM에서 `scripts/ec2/copy_eks_dev_secrets.py copy`를 사용. DB/SG 교체 없는 plan 확인·apply는 사람이 담당. 복사 스위치는 false로 되돌리고 적용 |
+| Argo CD·root·비밀 앱·prod DB·복사·LBC | 첫 미완료 단계에 `--execute 단계`와 기존 `--confirm-cluster` 또는 `--confirm-env`를 명시하면 **해당 단계 하나만** 실행. 기존 도구의 검사·승인 인자를 그대로 전달 |
+| Rollouts·ESO·초기 admin 비밀 | 기존 앱 등록·사람 Sync. 초기 비밀을 키체인에 저장 후 초기 Secret 삭제. 도구는 컨트롤러/CRD 준비와 Secret 부재 확인 |
+| prod 서비스·공개 Ingress·prod 정책 | 사람이 Argo CD에서 Sync. auth 카나리도 확인·승격. 도구가 Sync·Health와 pause 상태를 확인한 뒤 진행 |
+| ALB CIDR | `--execute alb-policy --confirm-cluster ureka-eks`. ALB SG/WAF 검증 후 서브넷을 안전한 JSON 입력으로 조회. 기존 값이 같으면 주입 생략, 다르거나 중복이면 중단. JSON Patch test로 동시 중복 추가 차단 |
+| 공개 open 전환 | 지원하지 않음. testers 유지. 공개 게이트·파트장 승인 후 별도 절차 |
+| 연결 수 | PM과 정한 `UREKA_DB_CONNECTION_LIMIT` 필요. 최근 5분 DatabaseConnections Maximum이 없거나 상한 초과면 완료하지 않음 |
+| 삭제 | Ingress 앱·리소스 없음 → 클러스터 태그 ALB 0 → root/업무 앱·Pod/LB/PVC 정리 → data 외부 SG 참조 없음 → `--execute destroy --confirm-cleanup ureka-eks`로 새 삭제 plan. 검토 후 경로·해시·동일 cleanup 확인을 붙여 apply |
+| 잔존 | EKS 출력/클러스터 없음, Terraform EKS 태그 자원·알려진 WAF 부재 검사. 태그 없는 NAT/EIP/ENI/EBS·컨트롤러 자원·인증서·DNS는 운영 문서로 직접 조사한 뒤 `--confirm-residue ureka-eks`. 태그 조회만으로 전체 정리를 보증하지 않음 |
+
+예를 들어 첫 미완료 단계가 prod DB라면:
+
+```sh
+python3 scripts/eks/lifecycle.py up --execute prod-db --confirm-env prod
+```
+
+기존 도구가 preflight로 요구하는 prod 네임스페이스가 먼저 필요하므로 root 등록과
+restricted 네임스페이스 확인을 prod DB보다 앞에 둔다. dev는 비밀 준비 중 일시적으로
+미준비일 수 있다. prod 서비스 Sync는 DB·ExternalSecret 준비 뒤 사람이 실행한다.
+LBC 등록 후 Sync나 ALB 파라미터 주입 뒤 정책 Sync가 아직이면 해당 단계에서 다시 멈추며,
+이미 등록된 내용을 덮어쓰지 않는다.
+
+상태는 `.local/eks/up-<서울 날짜>/state.json` 또는 `down-<날짜>/state.json`에
+시작/종료 시각·단계 결과·시도별 초를 기록한다(폴더 0700, 파일 0600).
+같은 날짜의 재실행은 같은 기록을 사용한다. 다음 날 이어 갈 때는 최초 `--run-id YYYYMMDD`를
+지정한다. 의도적으로 새 실행을 시작하려면 `--run-id YYYYMMDD-HHMMSS`를 쓴다.
+한 worktree 내 동시 up/down 실행은 공통 파일 잠금으로 차단한다.
+대상 계정·context와 클러스터 생성 시점은 해시로만 묶고 원문은 저장하지 않는다.
+실패는 `failed`, 사람 대기는 `waiting`, 재확인 완료는 `skipped`로 남는다.
+표는 작업 합계(사람 대기 제외)와 전체 경과(사람 대기 포함)를 구분한다.
+
+DB 부트스트랩·복사는 기존 도구가 실제 Job 성공과 임시 자원 정리까지 확인한 경우에만
+성공 증빙 해시를 저장한다. 단순 `check` 성공을 DB 완료로 취급하지 않는다.
+재개 시 대상 클러스터·data 출력·prod 비밀 변경 시점이 달라지면 증빙을 인정하지 않는다.
+이 도구 밖에서 이미 채운 prod 데이터나 DB를 메타데이터만으로 완료 처리하는 기능은 없다.
+증빙 없이 기존 데이터가 있는 경우 복사를 억지로 다시 하거나 상태 파일을 편집하지 말고
+DB 담당자와 별도 검증한다. 첫 적용과 외부 변경 후 복구 시 주의할 제한이다.
+
+새 실행기는 하위 명령의 원본 stdout/stderr를 화면·상태·별도 로그로 복사하지 않는다.
+기존 도구가 원래 만드는 Terraform review/plan/apply 로그는 계속 비공개 운영 자료이며
+민감값을 포함할 수 있다. `.local/` 전체를 공유·커밋하지 않는다. 새 상태에는 입력값,
+IP, 계정 ID, 비밀, 원본 오류를 넣지 않는다. 실패 시 공개 채팅에 원본 오류를 붙이지 않는다.
+
+단위 시험과 로컬 실제 CLI의 `--help` 검사만으로 AWS API 호환성이나 기동/삭제 성공을
+증명할 수 없다. WAF 설명 문자나 AWS CLI 입력 파일처럼 mock이 놓치는 문제가 남을 수 있다.
+실제 읽기 전용 AWS smoke는 운영자가 호출을 승인한 뒤에만 아래처럼 별도 실행한다.
+이번 구현 단계에서는 AWS·클러스터 호출 금지에 따라 실행하지 않는다.
+
+```sh
+UREKA_RUN_AWS_READONLY_SMOKE=1 python3 -m unittest discover -s tests/eks -p test_lifecycle.py -v
+```
+
+실환경 최초 재생성 때 plan/apply·DB·ALB/WAF·DNS·잔존과 시간을 직접 검증한다.
+검증 전이므로 이 문서에는 실제 켜기·끄기 소요 숫자를 적지 않는다.
