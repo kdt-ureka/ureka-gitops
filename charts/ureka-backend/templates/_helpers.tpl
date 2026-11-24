@@ -121,11 +121,14 @@ Helm은 목록을 합치지 못하고 통째로 바꾸므로, 환경 values(예:
 - 순서·나머지 항목은 그대로다($(DB_PASSWORD) 같은 치환 순서가 유지된다).
 - env에 없는 이름은 실패한다(오타로 조용히 무시되지 않게). 새 변수는 base env에 추가한다.
 - Secret 참조(valueFrom) 항목은 바꿀 수 없다(비밀값을 평문 values로 덮어쓰지 않게). 값은 문자열만 받는다.
+- requiredSecretEnv(이름 목록)에 적은 항목은 이 환경에서 Secret 참조를 필수로 바꾼다(optional=false). Secret·키가 없으면 Pod가 시작되지 않는다.
+  base env는 Mailpit 같은 선택 구성을 위해 optional=true로 두고, 실제 서비스(EKS prod)만 필수로 올린다. env에 없거나 Secret 참조가 아닌 이름은 실패한다.
 */ -}}
 {{- define "ureka-backend.env" -}}
 {{- $overrides := .Values.envOverrides | default dict -}}
 {{- $names := list -}}
 {{- $out := list -}}
+{{- $required := .Values.requiredSecretEnv | default list -}}
 {{- range .Values.env -}}
 {{- $item := . -}}
 {{- $names = append $names .name -}}
@@ -139,7 +142,19 @@ Helm은 목록을 합치지 못하고 통째로 바꾸므로, 환경 values(예:
 {{- end -}}
 {{- $item = dict "name" .name "value" $value -}}
 {{- end -}}
+{{- if has .name $required -}}
+{{- if not (and (hasKey . "valueFrom") (hasKey .valueFrom "secretKeyRef")) -}}
+{{- fail (printf "requiredSecretEnv.%s: Secret 참조(valueFrom.secretKeyRef) 항목만 필수로 바꿀 수 있다" .name) -}}
+{{- end -}}
+{{- $item = deepCopy $item -}}
+{{- $unused := set $item.valueFrom.secretKeyRef "optional" false -}}
+{{- end -}}
 {{- $out = append $out $item -}}
+{{- end -}}
+{{- range $required -}}
+{{- if not (has . $names) -}}
+{{- fail (printf "requiredSecretEnv.%s: env에 없는 이름이다" .) -}}
+{{- end -}}
 {{- end -}}
 {{- range $name, $_ := $overrides -}}
 {{- if not (has $name $names) -}}
