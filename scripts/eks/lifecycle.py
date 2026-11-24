@@ -49,7 +49,7 @@ UP = (
     Step('secrets-dev', 'dev 비밀 앱·ExternalSecret Ready', 'register_secrets_app.py apply --env dev --confirm-env dev', ('register_secrets_app.py', 'apply', '--env', 'dev')),
     Step('secrets-prod', 'prod 비밀 앱·ExternalSecret Ready', 'register_secrets_app.py apply --env prod --confirm-env prod', ('register_secrets_app.py', 'apply', '--env', 'prod')),
     Step('services', 'dev 정상·prod 수동 Sync·auth 승격', 'ExternalSecret Ready 후 prod 앱을 사람이 Sync. 양 환경 auth 카나리를 확인·승격. 모든 서비스 Synced/Healthy 확인.'),
-    Step('content', 'prod content 복사', 'copy_prod_content.py apply --confirm-env prod; 기존 prod 데이터가 있으면 복사를 반복하지 말고 별도 검증 절차를 따름.', ('copy_prod_content.py', 'apply')),
+    Step('content', 'prod content 복사', 'copy_prod_content.py apply --confirm-env prod; 기존 prod 데이터가 있으면 --verify-existing로 대조만 수행(재복사 없음).', ('copy_prod_content.py', 'apply')),
     Step('public-infra', '공개 입구 testers 인프라', 'public_enabled=true, public_access_mode=testers, public_dns_enabled=false로 operate.py plan → 검토 → apply. open은 별도 공개 승인.', ('operate.py', 'plan')),
     Step('lbc', 'ALB 컨트롤러 등록·Sync', 'register_lbc_app.py check 후 apply --confirm-cluster …; Argo CD에서 컨트롤러 직접 Sync.', ('register_lbc_app.py', 'apply')),
     Step('ingress', '공개 Ingress 등록·수동 Sync', 'kubectl로 argocd/eks/prod-public-ingress-app.yaml 등록 후 사람이 Sync. ALB 생성 대기.'),
@@ -461,7 +461,8 @@ class Live(Operator):
         if step.key in names and self.app(names[step.key]):
             # Registered but not yet Ready: wait for Sync; never clobber injected root parameters.
             return
-        self.child(step.tool, confirm=True)
+        tool = ('copy_prod_content.py', 'verify') if step.key == 'content' and self.args.verify_existing else step.tool
+        self.child(tool, confirm=True)
         if step.key in ('prod-db', 'content'):
             state.setdefault('receipts', {})[step.key] = self.receipt_target()
 
@@ -543,8 +544,15 @@ def workflow(args, live, path):
             start, wall = now(), time.monotonic()
             outcome = 'failed'
             try:
+                # Explicit re-verification invalidates the old receipt before starting a Job.
+                # A failed recheck must not be skipped by a subsequent normal resume.
+                force_verify = (step.key == 'content' and args.execute == 'content'
+                                and args.verify_existing and not executed)
+                if force_verify:
+                    state['receipts'].pop('content', None)
+                    save(path, state)
                 # Fresh checks, even for previously successful steps; never trust a step flag.
-                if live.check(step.key, state):
+                if live.check(step.key, state) and not force_verify:
                     outcome = 'skipped'
                 elif args.execute == step.key and not executed:
                     print('실행 중:', step.key, step.title, flush=True)
@@ -592,6 +600,7 @@ def main(argv=None):
     parser.add_argument('--confirm')
     parser.add_argument('--confirm-cleanup')
     parser.add_argument('--confirm-residue')
+    parser.add_argument('--verify-existing', action='store_true', help='content 단계에서 기존 prod를 읽기 전용 대조, COPY 없음')
     parser.add_argument('--confirm-env', choices=('dev', 'prod'))
     parser.add_argument('--confirm-cluster')
     args = parser.parse_args(argv)

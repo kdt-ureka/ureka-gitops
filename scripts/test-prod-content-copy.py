@@ -63,9 +63,9 @@ CREATE TABLE catalog.flyway_schema_history(installed_rank int primary key,versio
             start += p.read_text() + f"\nINSERT INTO catalog.flyway_schema_history VALUES({version},'{version}','SQL',{checksum},true);\n"
         sql(db, start)
 
-    def copy(*, expect=True, user="postgres"):
+    def copy(*, expect=True, user="postgres", verify=False):
         result = run('docker', 'exec', '-u', '999:999', '-e', 'PGUSER='+user, '-e', 'PGSSLMODE=disable', name,
-                     'bash', '/copy/run-copy.sh', check=False)
+                     'bash', '/copy/run-copy.sh', *(['--verify-only'] if verify else []), check=False)
         if (result.returncode == 0) != expect:
             (temp / 'copy.log').write_text(result.stdout + result.stderr)
             raise RuntimeError('copy result differs from expectation; inspect temporary copy.log locally')
@@ -99,10 +99,27 @@ CREATE TABLE catalog.flyway_schema_history(installed_rank int primary key,versio
         ok('actual migrations: copy preserves data/vector and excludes user history')
         assert sql('content_db_prod', 'SELECT last_value FROM rag.content_embeddings_embedding_id_seq;') == '1'
         ok('owned identity sequence copied')
+        before = sql('content_db_prod', 'SELECT count(*) FROM catalog.contents; SELECT last_value FROM rag.content_embeddings_embedding_id_seq;')
+        copy(verify=True)
+        assert sql('content_db_prod', 'SELECT count(*) FROM catalog.contents; SELECT last_value FROM rag.content_embeddings_embedding_id_seq;') == before
+        ok('existing destination verified in READ ONLY mode without COPY or sequence changes')
+        sql('content_db_prod', 'UPDATE rag.content_embeddings SET is_active=false')
+        copy(verify=True, expect=False)
+        assert sql('content_db_prod', 'SELECT is_active FROM rag.content_embeddings') == 'f'
+        ok('existing destination drift rejected without overwriting it')
+        sql('content_db_prod', 'UPDATE rag.content_embeddings SET is_active=true')
+        sql('content_db_prod', "UPDATE catalog.contents SET title='changed synthetic title'")
+        copy(verify=True, expect=False)
+        assert sql('content_db_prod', 'SELECT title FROM catalog.contents') == 'changed synthetic title'
+        ok('same counts but different row values rejected without overwrite')
+        sql('content_db_prod', "UPDATE catalog.contents SET title='synthetic'")
         copy(expect=False)
         assert sql('content_db_prod', 'SELECT count(*) FROM catalog.contents') == '1'
         ok('nonempty destination rejected without overwrite')
         reset()
+        copy(verify=True, expect=False)
+        assert sql('content_db_prod', 'SELECT count(*) FROM catalog.contents') == '0'
+        ok('verify rejects empty destination without filling it')
         sql('content_db_prod', "UPDATE catalog.flyway_schema_history SET version='17' WHERE installed_rank=(SELECT max(installed_rank) FROM catalog.flyway_schema_history)")
         copy(expect=False)
         assert sql('content_db_prod', 'SELECT count(*) FROM catalog.contents') == '0'

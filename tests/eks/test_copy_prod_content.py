@@ -81,6 +81,20 @@ class Lifecycle(unittest.TestCase):
         credential = next(i for i, c in enumerate(fake.calls) if '--cli-input-json' in c)
         self.assertLess(lock, credential)
 
+    def test_verify_existing_uses_same_lock_cleanup_and_no_copy_command(self):
+        fake = Cluster()
+        rc, error, _ = self.execute(fake, action='verify')
+        self.assertEqual((rc, error), (0, None))
+        self.assertIn('"--verify-only"', fake.bodies['job/' + m.JOB])
+        self.assertEqual(fake.objects, {})
+        self.assertIsNone(fake.lease)
+
+    def test_verify_requires_explicit_prod_confirmation(self):
+        fake = Cluster()
+        _, error, _ = self.execute(fake, action='verify', confirm_env=None)
+        self.assertIsInstance(error, m.SafeError)
+        self.assertFalse(fake.calls)
+
     def test_check_never_fetches_master_or_mutates(self):
         fake = Cluster()
         rc, error, output = self.execute(fake, action='check')

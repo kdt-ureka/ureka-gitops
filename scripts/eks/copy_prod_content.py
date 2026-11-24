@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Manual dev->prod knowledge data copy; check is metadata-only, apply creates one temporary Job.
+"""Manual dev->prod data copy/verification; check is metadata-only, apply/verify create one temporary Job.
+verify compares existing data/owned sequences without destination COPY, using a READ ONLY snapshot.
 Reuse #95 identity/preflight, shared Lease and ownership-aware deletion. No values reach argv/logs.
 """
 import argparse
@@ -20,7 +21,7 @@ CONFIGMAP = JOB
 MASTER_SECRET = JOB + '-master'
 DIRECTORY = ROOT / 'environments/eks/prod/content-copy'
 JOB_FILE = DIRECTORY / 'job.yaml'
-PAYLOADS = ('run-copy.sh', 'policy.sql', 'metadata.sql', 'empty.sql', 'report-hash.sql', 'validate.sql', 'numbers.sql')
+PAYLOADS = ('run-copy.sh', 'policy.sql', 'metadata.sql', 'empty.sql', 'report-hash.sql', 'validate.sql', 'numbers.sql', 'verify-hash.sql')
 MAX_WAIT = 1260
 
 
@@ -28,13 +29,15 @@ def labels(run):
     return {'app.kubernetes.io/name': JOB, 'app.kubernetes.io/part-of': 'ureka', RUN_LABEL: run}
 
 
-def manifest(host, run):
+def manifest(host, run, verify_only=False):
     from bootstrap_prod_db import HOST_RE, PLACEHOLDER
     if not HOST_RE.fullmatch(host or '') or not re.fullmatch('[0-9a-f]{32}', run):
         raise SafeError('복사 Job 대상 또는 실행 표시 형식이 다릅니다(값은 출력하지 않음).')
     source = JOB_FILE.read_text()
     if source.count(PLACEHOLDER) != 1 or source.count(f'{RUN_LABEL}: RUN_ID\n') != 2:
         raise SafeError('복사 Job 템플릿의 자리표시가 다릅니다.')
+    if verify_only:
+        source = source.replace('command: ["/bin/bash", "/copy/run-copy.sh"]', 'command: ["/bin/bash", "/copy/run-copy.sh", "--verify-only"]')
     return source.replace(PLACEHOLDER, f'            - name: PGHOST\n              value: {host}\n').replace(
         f'{RUN_LABEL}: RUN_ID\n', f'{RUN_LABEL}: "{run}"\n')
 
@@ -100,8 +103,8 @@ class Copy(ProdDbBootstrap):
         self.quiet(self.k('create', '-f', '-'), stdin=configmap(self.run_id))
         self.quiet(self.k('create', '-f', '-'), stdin=body)
         body = None
-        self.quiet(self.k('create', '-f', '-'), stdin=manifest(host, self.run_id))
-        print('복사 Job 실행 중. Flyway·기준 표·빈 대상 확인 후에만 COPY합니다.', flush=True)
+        self.quiet(self.k('create', '-f', '-'), stdin=manifest(host, self.run_id, verify_only=self.args.action == 'verify'))
+        print('복사/대조 Job 실행 중. verify는 DB 대조만 하고 COPY하지 않습니다.', flush=True)
         state = self.wait_job()
         result = self.quiet(self.k('logs', 'job/' + JOB, '--tail=200'), check=False)
         summary = safe_log(result.stdout)
@@ -112,7 +115,7 @@ class Copy(ProdDbBootstrap):
         return 0
 
     def execute(self):
-        if self.args.action == 'apply' and self.args.confirm_env != NS:
+        if self.args.action in ('apply', 'verify') and self.args.confirm_env != NS:
             raise SafeError('실제 복사는 --confirm-env prod가 필요합니다.')
         if not 1 <= self.args.max_wait <= MAX_WAIT:
             raise SafeError('복사 대기는 1..1260초 범위입니다(공유 잠금 유효시간보다 짧게 유지).')
@@ -171,7 +174,7 @@ class Copy(ProdDbBootstrap):
 def main(argv=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check', 'apply'))
+    parser.add_argument('action', choices=('check', 'apply', 'verify'))
     parser.add_argument('--profile', required=True)
     parser.add_argument('--context', default='ureka-eks')
     parser.add_argument('--cluster-name', default='ureka-eks')

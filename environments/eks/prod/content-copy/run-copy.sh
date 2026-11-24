@@ -2,6 +2,11 @@
 # No tracing or raw psql/pg_dump output. Dump+diagnostics live only in the Job emptyDir.
 { set +x; } 2>/dev/null
 set -euo pipefail
+case "$#:${1:-}" in
+  0:) ;;
+  1:--verify-only) ;;
+  *) echo 'copy failed 1' >&2; exit 1 ;;
+esac
 umask 077
 cd /copy
 work="$(mktemp -d /work/copy.XXXXXXXX)"
@@ -41,6 +46,31 @@ for side in source prod; do
   { echo '\i /copy/policy.sql'; echo '\i /copy/metadata.sql'; } | sql "$db" >"$work/$side.meta" || fail
 done
 cmp -s "$work/source.meta" "$work/prod.meta" || fail
+# Existing prod data after an EKS recreation: compare without any destination COPY/DDL.
+# Uses the same shared Lease, frozen source, reviewed metadata/report and cleanup path.
+# Prepare temporary tables before READ ONLY (PostgreSQL rejects CREATE even for TEMP there).
+# All persistent destination reads/validation use one READ ONLY snapshot.
+if [ "${1:-}" = --verify-only ]; then
+  phase=3
+  export PGOPTIONS="$PGOPTIONS -c timezone=UTC"
+  [ "$(sql content_db -c "SELECT (count(*)>0)::int FROM catalog.contents")" = 1 ] || fail
+  [ "$(sql content_db -c "SELECT count(*) FROM ingest.ingestion_runs WHERE status='running'")" = 0 ] || fail
+  { echo '\i /copy/policy.sql'; echo '\i /copy/report-hash.sql'; echo '\i /copy/verify-hash.sql'; } | sql content_db >"$work/source.report" || fail
+  {
+    echo '\i /copy/policy.sql'
+    echo 'CREATE TEMP TABLE row_counts(name text, n bigint);'
+    echo 'CREATE TEMP TABLE verify_hashes(name text PRIMARY KEY, digest text);'
+    echo 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;'
+    echo '\i /copy/validate.sql'
+    sed '/^CREATE TEMP TABLE row_counts(name text, n bigint);$/d' /copy/report-hash.sql
+    sed '/^CREATE TEMP TABLE verify_hashes(name text PRIMARY KEY, digest text);$/d' /copy/verify-hash.sql
+    echo 'COMMIT;'
+  } | sql content_db_prod >"$work/prod.report" || fail
+  cmp -s "$work/source.report" "$work/prod.report" || fail
+  kill -0 "$source_pid" 2>/dev/null || fail
+  echo 'copy ok'
+  exit 0
+fi
 phase=3
 { echo '\i /copy/policy.sql'; echo '\i /copy/empty.sql'; } | sql content_db_prod >"$work/check" || fail
 [ "$(sql content_db -c "SELECT (count(*)>0)::int FROM catalog.contents")" = 1 ] || fail
@@ -95,7 +125,7 @@ phase=5
   echo "\\! kill -0 $source_pid"
   echo '\if :SHELL_ERROR'
   echo 'SELECT 1/0;'
-  echo '\endif'
+  printf '%s\n' '\endif'
   echo 'COMMIT;'
 } | sql content_db_prod >"$work/restore.out" || fail
 phase=6

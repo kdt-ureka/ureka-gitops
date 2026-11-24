@@ -27,7 +27,7 @@ def args(direction='up', execute=None):
     return argparse.Namespace(direction=direction, execute=execute, profile='test',
         expected_account_id='123456789012', cluster_name='ureka-eks', context='ureka-eks',
         confirm_cluster=None, confirm_env=None, review_dir=None, confirm=None,
-        confirm_cleanup=None, confirm_residue=None)
+        confirm_cleanup=None, confirm_residue=None, verify_existing=False)
 
 
 class Fake:
@@ -118,6 +118,18 @@ class Workflow(unittest.TestCase):
         self.assertIn('전체 경과:', self.output.getvalue())
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.path.parent.stat().st_mode & 0o777, 0o700)
+
+    def test_explicit_verify_invalidates_old_receipt_and_runs_again(self):
+        fake = Fake(s.key for s in lc.UP)
+        self.run_flow(fake)
+        state = json.loads(self.path.read_text())
+        state['receipts']['content'] = 'old-receipt'
+        self.path.write_text(json.dumps(state))
+        a = args(execute='content')
+        a.verify_existing = True
+        self.assertEqual(lc.workflow(a, fake, self.path), 0)
+        self.assertEqual(fake.executions, ['content'])
+        self.assertNotIn('content', json.loads(self.path.read_text())['receipts'])
 
     def test_changed_generation_blocks_completed_run(self):
         fake = Fake(s.key for s in lc.UP)
@@ -305,6 +317,15 @@ class LiveSafety(unittest.TestCase):
         with patch.object(self.live, 'run', return_value='secret/x') as run:
             self.assertTrue(self.live.get('secret', 'x', 'argocd'))
             self.assertEqual(run.call_args.args[0][-2:], ['-o', 'name'])
+
+    def test_existing_content_uses_verify_not_apply(self):
+        self.live.args.verify_existing = True
+        self.live.args.confirm_env = 'prod'
+        state = {}
+        with patch.object(self.live, 'destination'), patch.object(self.live, 'receipt_target', return_value='target'), patch.object(self.live, 'child') as child:
+            self.live.execute(next(s for s in lc.UP if s.key == 'content'), state)
+            child.assert_called_once_with(('copy_prod_content.py', 'verify'), confirm=True)
+        self.assertEqual(state['receipts']['content'], 'target')
 
     def test_registered_root_is_not_reapplied_while_waiting_for_health(self):
         with patch.object(self.live, 'destination'), patch.object(self.live, 'app', return_value={'spec': {}}), patch.object(self.live, 'child') as child:
