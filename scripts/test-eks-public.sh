@@ -102,5 +102,25 @@ else
   fail "컨트롤러 차트 digest가 검토한 값과 다르다"
 fi
 
+# WAF 이름·설명은 AWS가 apply 때 문자 규칙으로 거부한다(mock 시험은 못 잡는다. 11/24 괄호 때문에 IP 목록 생성 실패).
+# 설명: ^[\w+=:#@/\-,\.][\w+=:#@/\-,\.\s]+[\w+=:#@/\-,\.]$ (괄호·세미콜론 불가). 지표 이름은 영숫자·_·-·.만 보는 더 좁은 안전 부분집합이다.
+# 범위: 큰따옴표 단순 문자열의 description·metric_name만 본다(보간 ${…}·$ 포함 값, heredoc, name은 건너뜀). 회귀 방지용이지 AWS 전체 검증기가 아니다.
+python3 -I - infra/environments/eks/public.tf <<'PY' || fail "WAF 설명 또는 정적 지표 이름이 AWS 문자 규칙에 맞지 않는다"
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+desc = re.compile(r"^[\w+=:#@/\-,\.][\w+=:#@/\-,\.\s]+[\w+=:#@/\-,\.]$")
+nm = re.compile(r"^[\w\-\.]+$")
+bad = []
+for block in re.split(r'(?m)^resource "', text)[1:]:
+    if not block.startswith("aws_wafv2_"):
+        continue
+    for key, val in re.findall(r'(?m)^\s*(description|metric_name)\s*=\s*"([^"$]*)"', block):
+        if not (desc if key == "description" else nm).match(val):
+            bad.append(f"{key}: {val}")
+if bad:
+    print("\n".join(bad))
+    sys.exit(1)
+PY
+
 if [ "$status" -eq 0 ]; then echo "공개 입구 매니페스트 시험 통과"; fi
 exit "$status"
