@@ -8,15 +8,30 @@
 image:
   requireRegistry: true
   repository: ureka/recommend
-  tag: sha-f5c02c3f8a93edbd962934ead302ccf73c320262
-  digest: sha256:368a64e5e1fd8bac5c04442943c80d7632701f67b2881caccd997d14bc1862df
+  tag: sha-16dc2df29cf73594771768f1642f0a799205ef9b
+  digest: sha256:0dba4bf88a2bce05f5df39c1e94bca61e4f02f55b54c257b216008134029e0a2
   pullPolicy: IfNotPresent
 
 # EC2 dev와 같은 값. EKS에서 kubectl top으로 다시 잰다.
 resources:
   requests:
     cpu: 50m
-    memory: 128Mi
+    memory: 192Mi
   limits:
     cpu: 500m
-    memory: 256Mi
+    memory: 384Mi
+
+# 실제 모드(11/25): dev에서 확인한 같은 이미지·설정. content_db_prod에 V19·V20(검색 함수 v2)이 적용돼 있어야 한다(content prod 이미지 PR 먼저).
+# 메모리: 로컬 실측 평소 114Mi·최대 160Mi(순간 192Mi) → AI팀 권고 requests 192Mi / limit 384Mi. CPU는 그대로.
+# 키(ureka-chat-ai, prod 비밀 묶음 chat-ai)·DB 계정(ureka-recommend-db)은 필수 참조: 없으면 Pod가 시작되지 않는다.
+# PG_DSN: Service postgres의 prod content_db_prod, 검색 전용 계정(content_db_prod_recommend → content_db_prod_recommend_search 역할로 함수 EXECUTE만).
+requiredSecretEnv:
+  - DB_USERNAME
+  - DB_PASSWORD
+  - GEMINI_API_KEY
+envOverrides:
+  MOCK_MODE: "false"
+  SEARCH_ENABLED: "true"
+  CONTENT_BASE_URL: http://ureka-content
+  MAPPING_FILE: /app/app/mappings/genre-map-v1.json
+  PG_DSN: host=postgres port=5432 dbname=content_db_prod user=$(DB_USERNAME) password=$(DB_PASSWORD)
