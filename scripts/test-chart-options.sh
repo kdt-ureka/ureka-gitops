@@ -126,4 +126,18 @@ o="$(printf '%s\n' "$out" | yq ea 'select(.kind=="Deployment") | del(.spec.templ
 must_render_fail "envOverrides: env에 없는 이름" -f tests/chart/api-with-migration.yaml --set envOverrides.NO_SUCH=x
 must_render_fail "envOverrides: Secret 참조 항목 덮어쓰기" -f tests/chart/api-with-migration.yaml --set envOverrides.DB_PASSWORD=plain
 must_render_fail "envOverrides: 문자열 아닌 값" -f tests/chart/api-with-migration.yaml --set envOverrides.DATABASE_URL=true
+
+# 10) requiredSecretEnv: 지정한 Secret 참조만 optional=false로 올리고 나머지·순서는 그대로, Deployment·Job 같음. 잘못 쓰면 실패
+opt="$(render tests/chart/api-with-migration.yaml -f tests/chart/optional-secret.yaml)"
+expect "requiredSecretEnv 없음: optional=true 그대로" "$opt" 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env | ((.[1].valueFrom.secretKeyRef.optional==true) and (.[2].valueFrom.secretKeyRef.optional==true))'
+out="$(render tests/chart/api-with-migration.yaml -f tests/chart/optional-secret.yaml --set 'requiredSecretEnv={MAIL_USERNAME,MAIL_PASSWORD}')"
+expect "requiredSecretEnv: 지정한 두 자격은 optional=false" "$out" 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env | ((.[1].valueFrom.secretKeyRef.optional==false) and (.[2].valueFrom.secretKeyRef.optional==false))'
+expect "requiredSecretEnv: 순서·이름·다른 항목 유지" "$out" 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env | ((length==4) and (.[0].name=="DB_PASSWORD") and (.[1].name=="MAIL_USERNAME") and (.[2].name=="MAIL_PASSWORD") and (.[1].valueFrom.secretKeyRef.name=="example-mail") and (.[3].name=="DATABASE_URL"))'
+one="$(render tests/chart/api-with-migration.yaml -f tests/chart/optional-secret.yaml --set 'requiredSecretEnv={MAIL_USERNAME}')"
+expect "requiredSecretEnv: 적지 않은 항목은 optional=true 그대로" "$one" 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env | ((.[1].valueFrom.secretKeyRef.optional==false) and (.[2].valueFrom.secretKeyRef.optional==true))'
+d="$(printf '%s\n' "$out" | yq ea 'select(.kind=="Deployment") | .spec.template.spec.containers[0].env' -o json -)"
+j="$(printf '%s\n' "$out" | yq ea 'select(.kind=="Job") | .spec.template.spec.containers[0].env' -o json -)"
+[ "$d" = "$j" ] && ok "requiredSecretEnv: 마이그레이션 Job env도 같음" || fail "requiredSecretEnv: Job env가 Deployment와 다름"
+must_render_fail "requiredSecretEnv: env에 없는 이름" -f tests/chart/api-with-migration.yaml -f tests/chart/optional-secret.yaml --set 'requiredSecretEnv={NO_SUCH}'
+must_render_fail "requiredSecretEnv: Secret 참조가 아닌 항목" -f tests/chart/api-with-migration.yaml -f tests/chart/optional-secret.yaml --set 'requiredSecretEnv={DATABASE_URL}'
 exit "$status"

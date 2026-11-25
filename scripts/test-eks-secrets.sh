@@ -60,7 +60,8 @@ refs="$( { yq ea -N '.. | select(has("secretKeyRef")) | .secretKeyRef.name + "/"
 [ -n "$refs" ] || fail "secretKeyRef를 하나도 찾지 못함(검사 자체 오류)"
 before=$status
 while read -r ref; do
-  grep -qxF "$ref" "${TMPDIR:-/tmp}/eks-secrets-dev.keys" || fail "dev에 ${ref}가 없음"
+  # ureka-auth-mail(SES SMTP)은 prod만 만든다. base env의 참조는 optional이고 dev는 Mailpit이라 없어야 한다(아래 prod 전용 검사).
+  case "$ref" in ureka-auth-mail/*) ;; *) grep -qxF "$ref" "${TMPDIR:-/tmp}/eks-secrets-dev.keys" || fail "dev에 ${ref}가 없음" ;; esac
   case "$ref" in ureka-chat-ai/*) continue ;; esac
   grep -qxF "$ref" "${TMPDIR:-/tmp}/eks-secrets-prod.keys" || fail "prod에 ${ref}가 없음"
 done <<<"$refs"

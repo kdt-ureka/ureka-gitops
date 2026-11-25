@@ -33,9 +33,18 @@ rollout:
     - pause: {}
 
 # prod 논리 DB·계정(#63 이름 규칙). 쿠키는 공개 주소가 https라 Secure로 보낸다(#64 ALB·인증서 전에는 localhost 포트 포워딩으로만 확인).
-# 메일: 지금은 dev와 같이 클러스터 안 Mailpit(받기만, 밖으로 안 보냄). 공개 전 SES(#92, docs/ses.md)로 바꾸는 연결은 후속
-# (base env에 MAIL_USERNAME·MAIL_PASSWORD 참조·MAIL_FROM 추가, #63 ExternalSecret에 ureka/eks/prod/ses-smtp, 여기 envOverrides로 SMTP 주소·587·인증·STARTTLS).
+# 메일: 실제 발송은 SES SMTP(#92, docs/ses.md). 자격(MAIL_USERNAME·MAIL_PASSWORD)은 base env가 Secret ureka-auth-mail에서
+# 읽고(#63 ExternalSecret, 원격 비밀 ureka/eks/prod/ses-smtp), 주소·포트·인증·발신 주소는 아래 값이다. 도메인 인증·DKIM·샌드박스 해제 확인 뒤 연결한다.
+# SMTP 자격은 prod에서 필수다: Secret ureka-auth-mail이나 키가 없으면 Pod가 시작되지 않아 빈 자격으로 승격되는 일이 없다.
+requiredSecretEnv:
+  - MAIL_USERNAME
+  - MAIL_PASSWORD
 envOverrides:
   DB_URL: jdbc:postgresql://postgres:5432/auth_db_prod
   DB_USERNAME: auth_db_prod_app
   COOKIE_SECURE: "true"
+  MAIL_HOST: email-smtp.ap-northeast-2.amazonaws.com
+  MAIL_PORT: "587"
+  MAIL_SMTP_AUTH: "true"
+  MAIL_STARTTLS: "true"
+  MAIL_FROM: no-reply@magonjal.com

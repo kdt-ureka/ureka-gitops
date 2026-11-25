@@ -64,6 +64,22 @@ env:
     value: "false"
   - name: MAIL_STARTTLS
     value: "false"
+  # 실제 메일(SES SMTP)은 prod만 쓴다. Secret ureka-auth-mail이 있을 때만 값이 들어가고(optional), 없으면 비어
+  # MAIL_SMTP_AUTH=false인 dev·EC2·kind에서는 쓰이지 않는다. 발신 주소는 앱 기본값이고 prod values가 바꾼다.
+  - name: MAIL_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-mail
+        key: MAIL_USERNAME
+        optional: true
+  - name: MAIL_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-mail
+        key: MAIL_PASSWORD
+        optional: true
+  - name: MAIL_FROM
+    value: no-reply@ureka.local
   # dev는 HTTP(kind 포트 포워딩, EC2 SSM 터널)로 접속한다. https 입구가 생기면(EKS) 환경 values에서 true로 바꾼다.
   - name: COOKIE_SECURE
     value: "false"
