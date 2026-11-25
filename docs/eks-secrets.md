@@ -290,6 +290,20 @@ base에 추가하면 EC2 dev auth가 새 Pod 스펙으로 카나리 배포(50%�
 이 PR은 교체 도구를 만들지 않는다. DB 비밀번호 교체 순서(설계만): 묶음에 새 버전(`put-secret-value`, 이전 값은 AWSPREVIOUS) → 2번 bootstrap(새 해시)
 → ESO 새로 고침 → prod 앱 재시작. 2번과 앱 재시작 사이에는 기존 연결만 살아 있고 새 연결은 실패한다. JWT 키 교체는 모든 로그인 토큰을 끊는다.
 
+## Turnstile 끄기와 복구 (prod auth 봇 확인, auth#44)
+
+prod auth는 `TURNSTILE_ENABLED=true`이고 비밀키(`ureka-auth-turnstile`의 `TURNSTILE_SECRET_KEY`)를 **필수 참조**로 읽는다. 비밀 묶음 `turnstile`의 원격 비밀 `ureka/eks/prod/turnstile`은 JSON이 아니라 **값 하나**라서 속성 이름을 비워 두고(`wholeValueAllowed`에 적은 항목만 허용) 전체 값을 읽는다.
+
+켜는 순서: 병합 → prod 비밀 앱 수동 Sync(`ureka-auth-turnstile` SecretSynced) → prod auth 수동 Sync(카나리 정지) → **새 카나리 Pod**로 확인(새 비회원 발급 201, 인증 메일 202와 실제 수신, 토큰 없이 호출하면 400, 공급자·키 문제는 503) → 승격 → 모든 Pod가 ON인지 확인. 카나리 중에는 OFF Pod도 요청을 받으므로 공개 보호가 끝난 것으로 보지 않는다.
+
+| 상황 | 복구 |
+|---|---|
+| 설정 실수(비밀키 값·호스트 불일치)인데 Secret·키는 **있음** | `environments/eks/prod/ureka-auth.yaml`의 `TURNSTILE_ENABLED`를 `"false"`로 되돌리고 auth 앱을 Sync한다. 고친 뒤 다시 켠다 |
+| Secret·키가 **없음**(ExternalSecret 실패 등) | `false` 한 줄만으로는 복구되지 않는다. 필수 참조(`requiredSecretEnv`)가 남아 새 Pod가 시작하지 못한다. 이 변경(PR)을 되돌리거나 `TURNSTILE_SECRET_KEY`를 `requiredSecretEnv`에서 빼고 `false`로 한다. 메일 자격(`MAIL_USERNAME`·`MAIL_PASSWORD`) 필수 지정은 유지한다 |
+| 운영 중 Cloudflare 장애(503) | 기본은 503 유지. 끄려면 CN이 판단하고 공개 입구 제한 같은 다른 막기를 먼저 건다(`07-봇확인-Turnstile.md` 8-2) |
+
+끄는 순간 비회원 발급과 인증 메일이 **확인 없이 열린다**. 끈 시각, 이유, 다시 켠 뒤 확인한 결과를 기록한다. 비밀키를 바꾸면 ESO 동기화 뒤 auth Pod를 교체하고 새 Pod로 다시 확인한다(Secret 갱신만으로는 실행 중인 Pod의 환경 변수가 바뀌지 않는다). 값은 로그·화면·리뷰에 출력하지 않는다.
+
 ## 로컬 검증 (AWS·클러스터 불필요)
 
 ```sh

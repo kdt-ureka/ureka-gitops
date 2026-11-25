@@ -94,6 +94,14 @@ grep -q '^ureka-auth-mail/' "${TMPDIR:-/tmp}/eks-secrets-dev.keys" && fail "dev�
 [ "$(yq '.bundles.app | to_entries | map(.value | to_entries | map(.value)) | flatten | map(select(test("^MAIL_"))) | length' "$chart/values.yaml")" = 0 ] ||
   fail "app 묶음에 MAIL_ 속성이 있음"
 
+# 실패해야 하는 경우: 비밀 전체 값 읽기는 허용 목록(turnstile) 항목만. 다른 묶음의 빈 속성이 조용히 JSON 전체를 읽으면 안 된다.
+render prod --set-string bundles.app.ureka-auth-secrets.DB_PASSWORD= >/dev/null 2>&1 &&
+  fail "허용 목록 밖의 빈 속성이 렌더링됨(비밀 전체가 새는 길)"
+render prod --set bundles.app.ureka-auth-secrets.DB_PASSWORD=false >/dev/null 2>&1 &&
+  fail "허용 목록 밖의 문자열이 아닌 속성(false)이 렌더링됨"
+render prod --set-string bundles.turnstile.ureka-auth-turnstile.TURNSTILE_SECRET_KEY=SOME_PROPERTY >/dev/null 2>&1 &&
+  fail "허용 목록 항목에 속성 이름이 들어갔는데 렌더링됨(전체 값 읽기와 속성 읽기가 섞임)"
+
 # 실패해야 하는 경우
 render dev --set awsAccountId= >/dev/null 2>&1 && fail "계정 ID 빈칸인데 렌더링됨"
 render dev --set awsAccountId=12345 >/dev/null 2>&1 && fail "계정 ID 형식이 틀렸는데 렌더링됨"
