@@ -36,10 +36,17 @@ rollout:
 # 메일: 실제 발송은 SES SMTP(#92, docs/ses.md). 자격(MAIL_USERNAME·MAIL_PASSWORD)은 base env가 Secret ureka-auth-mail에서
 # 읽고(#63 ExternalSecret, 원격 비밀 ureka/eks/prod/ses-smtp), 주소·포트·인증·발신 주소는 아래 값이다. 도메인 인증·DKIM·샌드박스 해제 확인 뒤 연결한다.
 # SMTP 자격은 prod에서 필수다: Secret ureka-auth-mail이나 키가 없으면 Pod가 시작되지 않아 빈 자격으로 승격되는 일이 없다.
+# 봇 확인(Turnstile): 켜면 비밀키가 꼭 있어야 한다. 필수 참조라 Secret·키가 없으면 새 Pod가 시작되지 않는다(카나리라 옛 Pod가 서비스를 지킨다).
+# 끄기(docs 07-봇확인-Turnstile 8절)는 원인에 따라 다르다. docs/eks-secrets.md 'Turnstile 끄기와 복구':
+#  - 설정 실수인데 Secret·키는 있음: TURNSTILE_ENABLED를 "false"로 되돌린다(이 한 줄).
+#  - Secret·키가 없음: false만으로는 복구되지 않는다(필수 참조가 남아 새 Pod가 못 뜬다). 이 PR 전체를 되돌리거나,
+#    TURNSTILE_SECRET_KEY를 requiredSecretEnv에서 빼고 false로 한다. 메일 자격 필수 지정(MAIL_USERNAME·MAIL_PASSWORD)은 유지한다.
 requiredSecretEnv:
   - MAIL_USERNAME
   - MAIL_PASSWORD
+  - TURNSTILE_SECRET_KEY
 envOverrides:
+  TURNSTILE_ENABLED: "true"
   DB_URL: jdbc:postgresql://postgres:5432/auth_db_prod
   DB_USERNAME: auth_db_prod_app
   COOKIE_SECURE: "true"

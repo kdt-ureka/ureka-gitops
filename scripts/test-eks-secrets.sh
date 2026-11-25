@@ -61,7 +61,8 @@ refs="$( { yq ea -N '.. | select(has("secretKeyRef")) | .secretKeyRef.name + "/"
 before=$status
 while read -r ref; do
   # ureka-auth-mail(SES SMTP)은 prod만 만든다. base env의 참조는 optional이고 dev는 Mailpit이라 없어야 한다(아래 prod 전용 검사).
-  case "$ref" in ureka-auth-mail/*) ;; *) grep -qxF "$ref" "${TMPDIR:-/tmp}/eks-secrets-dev.keys" || fail "dev에 ${ref}가 없음" ;; esac
+  # ureka-auth-turnstile(봇 확인 비밀키)도 prod만 만든다(dev는 스위치 꺼짐).
+  case "$ref" in ureka-auth-mail/*|ureka-auth-turnstile/*) ;; *) grep -qxF "$ref" "${TMPDIR:-/tmp}/eks-secrets-dev.keys" || fail "dev에 ${ref}가 없음" ;; esac
   case "$ref" in ureka-chat-ai/*) continue ;; esac
   grep -qxF "$ref" "${TMPDIR:-/tmp}/eks-secrets-prod.keys" || fail "prod에 ${ref}가 없음"
 done <<<"$refs"
@@ -74,6 +75,14 @@ done
 [ "$(render prod | yq ea -N 'select(.kind == "ExternalSecret" and .spec.target.name == "ureka-chat-ai") | .spec.data[].remoteRef.key' - | sort -u)" = "ureka/eks/prod/chat-ai" ] ||
   fail "prod ureka-chat-ai의 원격 키가 ureka/eks/prod/chat-ai가 아님"
 
+# prod auth 봇 확인(Turnstile): prod만 ureka-auth-turnstile을 만든다. 원격 비밀 ureka/eks/prod/turnstile은 단순 문자열이라 property가 없어야 한다.
+grep -qxF "ureka-auth-turnstile/TURNSTILE_SECRET_KEY" "${TMPDIR:-/tmp}/eks-secrets-prod.keys" || fail "prod에 ureka-auth-turnstile/TURNSTILE_SECRET_KEY가 없음"
+grep -q '^ureka-auth-turnstile/' "${TMPDIR:-/tmp}/eks-secrets-dev.keys" && fail "dev에 ureka-auth-turnstile이 렌더링됨(dev는 스위치 꺼짐)"
+[ "$(render prod | yq ea -N 'select(.kind == "ExternalSecret" and .spec.target.name == "ureka-auth-turnstile") | .spec.data[].remoteRef.key' - | sort -u)" = "ureka/eks/prod/turnstile" ] ||
+  fail "prod ureka-auth-turnstile의 원격 키가 ureka/eks/prod/turnstile이 아님"
+[ "$(render prod | yq ea -N 'select(.kind == "ExternalSecret" and .spec.target.name == "ureka-auth-turnstile") | .spec.data[0].remoteRef | has("property")' -)" = "false" ] ||
+  fail "prod ureka-auth-turnstile에 property가 있음(단순 문자열 비밀이라 없어야 함)"
+
 # prod 메일(SES SMTP): prod만 ureka-auth-mail을 만들고, 원격 키는 ureka/eks/prod/ses-smtp다. dev는 Mailpit이라 만들지 않는다.
 for key in MAIL_USERNAME MAIL_PASSWORD; do
   grep -qxF "ureka-auth-mail/${key}" "${TMPDIR:-/tmp}/eks-secrets-prod.keys" || fail "prod에 ureka-auth-mail/${key}가 없음"
@@ -84,6 +93,14 @@ grep -q '^ureka-auth-mail/' "${TMPDIR:-/tmp}/eks-secrets-dev.keys" && fail "dev�
 # 메일 자격은 서비스 묶음(app)에 섞지 않는다(시드가 만들지 않는 값, 교체 주기가 다름).
 [ "$(yq '.bundles.app | to_entries | map(.value | to_entries | map(.value)) | flatten | map(select(test("^MAIL_"))) | length' "$chart/values.yaml")" = 0 ] ||
   fail "app 묶음에 MAIL_ 속성이 있음"
+
+# 실패해야 하는 경우: 비밀 전체 값 읽기는 허용 목록(turnstile) 항목만. 다른 묶음의 빈 속성이 조용히 JSON 전체를 읽으면 안 된다.
+render prod --set-string bundles.app.ureka-auth-secrets.DB_PASSWORD= >/dev/null 2>&1 &&
+  fail "허용 목록 밖의 빈 속성이 렌더링됨(비밀 전체가 새는 길)"
+render prod --set bundles.app.ureka-auth-secrets.DB_PASSWORD=false >/dev/null 2>&1 &&
+  fail "허용 목록 밖의 문자열이 아닌 속성(false)이 렌더링됨"
+render prod --set-string bundles.turnstile.ureka-auth-turnstile.TURNSTILE_SECRET_KEY=SOME_PROPERTY >/dev/null 2>&1 &&
+  fail "허용 목록 항목에 속성 이름이 들어갔는데 렌더링됨(전체 값 읽기와 속성 읽기가 섞임)"
 
 # 실패해야 하는 경우
 render dev --set awsAccountId= >/dev/null 2>&1 && fail "계정 ID 빈칸인데 렌더링됨"

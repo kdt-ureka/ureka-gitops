@@ -80,6 +80,16 @@ env:
         optional: true
   - name: MAIL_FROM
     value: no-reply@ureka.local
+  # 비회원 발급·인증 메일 발송의 봇 확인(Turnstile, docs 07-봇확인-Turnstile). 기본 꺼짐: dev·EC2·kind는 확인 없이 그대로 동작한다.
+  # prod values가 켠다. 비밀키는 Secret ureka-auth-turnstile이 있을 때만 들어간다(optional). 허용 호스트는 앱 기본값(ureka.magonjal.com).
+  - name: TURNSTILE_ENABLED
+    value: "false"
+  - name: TURNSTILE_SECRET_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-auth-turnstile
+        key: TURNSTILE_SECRET_KEY
+        optional: true
   # dev는 HTTP(kind 포트 포워딩, EC2 SSM 터널)로 접속한다. https 입구가 생기면(EKS) 환경 values에서 true로 바꾼다.
   - name: COOKIE_SECURE
     value: "false"

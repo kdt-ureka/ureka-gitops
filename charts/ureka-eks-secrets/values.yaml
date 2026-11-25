@@ -57,6 +57,16 @@ bundles:
     ureka-auth-mail:
       MAIL_USERNAME: MAIL_USERNAME
       MAIL_PASSWORD: MAIL_PASSWORD
+  # prod auth 봇 확인(Turnstile, auth#44) 비밀키. 원격 비밀 ureka/eks/prod/turnstile은 JSON이 아니라 값 하나(단순 문자열)다.
+  # 속성 이름을 빈 문자열로 두면 ExternalSecret이 property 없이 비밀 전체 값을 읽는다(차트 규칙).
+  turnstile:
+    ureka-auth-turnstile:
+      TURNSTILE_SECRET_KEY: ""
+
+# 비밀 전체 값을 읽어도 되는 항목(묶음/Secret/키). 원격 비밀이 JSON이 아니라 값 하나일 때만 쓰고, 속성 이름은 빈 문자열이다.
+# 여기에 없는 항목의 빈 속성은 렌더링 실패다(다른 서비스 자격이 든 JSON 전체가 Secret에 들어가는 실수를 막는다).
+wholeValueAllowed:
+  - turnstile/ureka-auth-turnstile/TURNSTILE_SECRET_KEY
 
 # 이 환경에서 실제로 연결할 묶음. 원격 비밀이 아직 없는 묶음은 빼 둔다(ExternalSecret이 오류 상태로 남지 않게).
 enabledBundles: [app, chat-ai]

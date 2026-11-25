@@ -140,4 +140,14 @@ j="$(printf '%s\n' "$out" | yq ea 'select(.kind=="Job") | .spec.template.spec.co
 [ "$d" = "$j" ] && ok "requiredSecretEnv: 마이그레이션 Job env도 같음" || fail "requiredSecretEnv: Job env가 Deployment와 다름"
 must_render_fail "requiredSecretEnv: env에 없는 이름" -f tests/chart/api-with-migration.yaml -f tests/chart/optional-secret.yaml --set 'requiredSecretEnv={NO_SUCH}'
 must_render_fail "requiredSecretEnv: Secret 참조가 아닌 항목" -f tests/chart/api-with-migration.yaml -f tests/chart/optional-secret.yaml --set 'requiredSecretEnv={DATABASE_URL}'
+
+# 11) prod auth 봇 확인(Turnstile) 켜기·복구 상태(11/25 교차 검토). 켠 상태는 비밀키 필수 참조, Secret이 없는 사고의 복구 상태는
+#     비밀키만 선택 참조·스위치 꺼짐이고 메일 자격은 계속 필수다(false 한 줄만 바꾸면 필수 참조가 남아 새 Pod가 못 뜬다).
+reg=123456789012.dkr.ecr.ap-northeast-2.amazonaws.com
+on="$(helm template t "$chart" -f environments/base/ureka-auth.yaml -f environments/eks/prod/ureka-auth.yaml --set "image.registry=$reg")"
+expect "turnstile 켠 상태: 스위치 true·비밀키 필수 참조" "$on" 'select(.kind=="Rollout") | .spec.template.spec.containers[0].env | ((map(select(.name=="TURNSTILE_ENABLED"))[0].value=="true") and (map(select(.name=="TURNSTILE_SECRET_KEY"))[0].valueFrom.secretKeyRef.optional==false))'
+rec="$(helm template t "$chart" -f environments/base/ureka-auth.yaml -f environments/eks/prod/ureka-auth.yaml --set "image.registry=$reg" --set 'requiredSecretEnv={MAIL_USERNAME,MAIL_PASSWORD}' --set-string envOverrides.TURNSTILE_ENABLED=false)"
+expect "turnstile Secret 누락 복구 상태: 스위치 false·비밀키 선택 참조·메일 자격 필수 유지" "$rec" 'select(.kind=="Rollout") | .spec.template.spec.containers[0].env | ((map(select(.name=="TURNSTILE_ENABLED"))[0].value=="false") and (map(select(.name=="TURNSTILE_SECRET_KEY"))[0].valueFrom.secretKeyRef.optional==true) and (map(select(.name=="MAIL_USERNAME"))[0].valueFrom.secretKeyRef.optional==false))'
+off="$(helm template t "$chart" -f environments/base/ureka-auth.yaml -f environments/eks/prod/ureka-auth.yaml --set "image.registry=$reg" --set-string envOverrides.TURNSTILE_ENABLED=false)"
+expect "turnstile false만 바꾸면 비밀키 필수 참조가 남는다(Secret이 없으면 복구 안 됨)" "$off" 'select(.kind=="Rollout") | .spec.template.spec.containers[0].env | map(select(.name=="TURNSTILE_SECRET_KEY"))[0].valueFrom.secretKeyRef.optional==false'
 exit "$status"
