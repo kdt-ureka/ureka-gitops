@@ -53,7 +53,7 @@ for env in dev prod; do
     sort -u >"${TMPDIR:-/tmp}/eks-secrets-${env}.keys"
 done
 
-# 앱이 읽는 모든 secretKeyRef(이름/키). chat-ai는 prod에서 아직 끔(앱은 optional로 읽는다).
+# 앱이 읽는 모든 secretKeyRef(이름/키). chat-ai는 optional로 읽는다(dev·prod 모두 켬, 아래 prod 전용 검사).
 refs="$( { yq ea -N '.. | select(has("secretKeyRef")) | .secretKeyRef.name + "/" + .secretKeyRef.key' environments/base/ureka-*.yaml
   yq ea -N '.. | select(has("secretKeyRef")) | .secretKeyRef.name + "/" + .secretKeyRef.key' environments/ec2/dev/ingest/*.yaml; } |
   grep -v '^rds-master/' | sort -u)"
@@ -66,6 +66,13 @@ while read -r ref; do
   grep -qxF "$ref" "${TMPDIR:-/tmp}/eks-secrets-prod.keys" || fail "prod에 ${ref}가 없음"
 done <<<"$refs"
 [ "$status" != "$before" ] || echo "앱 secretKeyRef $(wc -l <<<"$refs" | tr -d ' ')개 모두 ExternalSecret과 일치"
+
+# prod chat-ai(Gemini 키): prod도 ureka-chat-ai를 만들고, 원격 키는 ureka/eks/prod/chat-ai다(dev·prod 같은 키 값, 원격 비밀은 따로).
+for key in AI_MODE AI_API_KEY; do
+  grep -qxF "ureka-chat-ai/${key}" "${TMPDIR:-/tmp}/eks-secrets-prod.keys" || fail "prod에 ureka-chat-ai/${key}가 없음"
+done
+[ "$(render prod | yq ea -N 'select(.kind == "ExternalSecret" and .spec.target.name == "ureka-chat-ai") | .spec.data[].remoteRef.key' - | sort -u)" = "ureka/eks/prod/chat-ai" ] ||
+  fail "prod ureka-chat-ai의 원격 키가 ureka/eks/prod/chat-ai가 아님"
 
 # prod 메일(SES SMTP): prod만 ureka-auth-mail을 만들고, 원격 키는 ureka/eks/prod/ses-smtp다. dev는 Mailpit이라 만들지 않는다.
 for key in MAIL_USERNAME MAIL_PASSWORD; do
