@@ -8,8 +8,8 @@ image:
   requireRegistry: true
   repository: ureka/content
   # content main 4790011: V15(국가 기준정보, ingest 적재 FK 전제)~V18(매핑 버전), 선택형 JVM 지표(#42, 이 환경은 꺼짐).
-  tag: sha-47900118a2001a3e1c8126c87c23de7d7a9630dc
-  digest: sha256:43d1919c26693137d87c19fa5f4bbb9fe073a4f7eeaa3ad9e750c9c7b2d0a23b
+  tag: sha-7ca8ce0c86dcba4737c0fd4dbeb0430053efd96a
+  digest: sha256:7947480fac25d63905e9d4943b6e9750c0bc35597498fd10564168d012d8d172
   pullPolicy: IfNotPresent
 
 # JVM: limit 768Mi + base의 -Xmx256m(EC2 dev와 같은 값). EKS에서 kubectl top으로 다시 잰다.
