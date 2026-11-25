@@ -15,10 +15,10 @@ image:
 resources:
   requests:
     cpu: 50m
-    memory: 128Mi
+    memory: 192Mi
   limits:
     cpu: 500m
-    memory: 256Mi
+    memory: 384Mi
 
 # 실제 모드(11/25): content 검색 함수 v2(V19·V20)가 dev content_db에 있어야 한다(content 이미지를 먼저 올린 뒤 이 값을 적용).
 # CONTENT_BASE_URL은 Service 포트(80)를 쓴다(:8080이 아님). 키·DB 계정은 base에서 optional 참조이고, 실제 모드에서는 필수로 올린다:
