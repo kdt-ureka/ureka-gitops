@@ -5,7 +5,7 @@
 name: ureka-recommend
 containerPort: 8000
 # Gemini·DB 없이 합성 후보로 응답한다(MOCK_CONTENT_IDS 기본값 1건, recommend app/config.py).
-# 실제 모드(MOCK_MODE=false, GEMINI_API_KEY·PG_DSN·MAPPING_FILE)는 작품 적재·매핑 파일이 준비된 뒤.
+# 실제 모드(MOCK_MODE=false)는 아래 env 설정과 content V19·V20이 있는 환경에서 환경 values가 켠다(EKS dev부터).
 env:
   - name: MOCK_MODE
     value: "true"
@@ -18,3 +18,36 @@ env:
       secretKeyRef:
         name: ureka-recommend-secrets
         key: INTERNAL_SERVICE_TOKEN
+  # --- 실제 모드(MOCK_MODE=false) 설정. 기본은 모두 꺼짐·빈 값이라 EC2·mock에서는 영향이 없다. EKS dev values가 값을 넣는다. ---
+  # 검색 스위치. 꺼져 있으면 실제 모드의 추천·장르 추천은 503이고 readyz도 503이다(recommend README).
+  - name: SEARCH_ENABLED
+    value: "false"
+  # 화면 선택지 이름을 받을 content 주소. 실제 모드 필수. 같은 네임스페이스 Service(포트 80)로 부른다.
+  - name: CONTENT_BASE_URL
+    value: ""
+  # 이미지에 들어 있는 매핑 파일 경로(content V16 장르·V4 시대 스냅샷).
+  - name: MAPPING_FILE
+    value: ""
+  # Gemini 키(임베딩·해석). chat과 같은 키를 가진 Secret을 참조한다. 없으면 비어 있고 실제 모드에서만 필요하다(optional).
+  - name: GEMINI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ureka-chat-ai
+        key: AI_API_KEY
+        optional: true
+  # content_db 검색 전용 계정. PG_DSN이 아래 두 값을 $(…)로 쓰므로 PG_DSN보다 먼저 선언한다.
+  - name: DB_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: ureka-recommend-db
+        key: DB_USERNAME
+        optional: true
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: ureka-recommend-db
+        key: DB_PASSWORD
+        optional: true
+  # content_db 접속 문자열. 실제 값은 환경 values(envOverrides)가 넣는다. 비밀번호는 위 Secret에서 Pod 안에서 치환된다.
+  - name: PG_DSN
+    value: ""
