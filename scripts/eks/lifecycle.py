@@ -69,6 +69,64 @@ DOWN = (
     Step('residue', '잔존 자원 확인', 'NAT/EIP/ENI/EBS 및 공개 입구 WAF/SG/인증서/DNS 잔존을 운영 문서대로 별도 확인. 자동 삭제 금지.'),
 )
 SERVICES = ('auth', 'chat', 'content', 'ops', 'recommend', 'frontend')
+REGION = 'ap-northeast-2'
+# Managed addresses in the EKS stack only. New resources require an explicit scope review.
+INFRA_RESOURCES = frozenset("""
+aws_eip.nat aws_nat_gateway.this aws_route.private_internet
+aws_cloudwatch_log_group.cluster aws_eks_cluster.this aws_eks_access_entry.admin
+aws_eks_access_policy_association.admin aws_security_group.nodes
+aws_vpc_security_group_ingress_rule.nodes_self aws_vpc_security_group_ingress_rule.control_to_nodes
+aws_vpc_security_group_ingress_rule.control_https_to_nodes aws_vpc_security_group_ingress_rule.nodes_to_api
+aws_vpc_security_group_egress_rule.nodes aws_launch_template.nodes aws_eks_node_group.this
+aws_iam_role.cluster aws_iam_role_policy_attachment.cluster aws_iam_role.nodes
+aws_iam_role_policy_attachment.nodes aws_iam_openid_connect_provider.this
+aws_iam_role.addon aws_iam_role_policy_attachment.addon aws_eks_addon.cni aws_eks_addon.runtime
+aws_iam_role.eso_reader aws_iam_role_policy.eso_reader
+""".split())
+PUBLIC_RESOURCES = frozenset("""
+aws_acm_certificate.public aws_route53_record.cert_validation aws_acm_certificate_validation.public
+aws_ec2_managed_prefix_list.alb_testers aws_security_group.alb_public
+aws_vpc_security_group_ingress_rule.alb_testers aws_vpc_security_group_egress_rule.alb_to_pods
+aws_wafv2_ip_set.admin aws_wafv2_web_acl.public aws_iam_role.lbc aws_iam_policy.lbc
+aws_iam_role_policy_attachment.lbc aws_iam_role_policy.lbc_waf_lookup
+""".split())
+DNS_RESOURCES = frozenset(('aws_route53_record.public',))
+DESTROY_RESOURCES = INFRA_RESOURCES | PUBLIC_RESOURCES | DNS_RESOURCES | frozenset(('aws_vpc_security_group_ingress_rule.alb_open',))
+
+
+def check_phase_settings(phase, values):
+    if phase == 'destroy':
+        return
+    expected = {'infra': (False, False), 'public-infra': (True, False), 'dns': (True, True)}
+    if (phase not in expected or values.get('mode') != 'testers'
+            or (values.get('public'), values.get('dns')) != expected[phase]
+            or type(values.get('public')) is not bool or type(values.get('dns')) is not bool):
+        raise SafeError('공개/DNS 설정이 현재 단계와 다릅니다. testers·단계별 설정을 확인하세요.')
+
+
+def check_plan_scope(plan, phase, cluster_name):
+    variables = {k: v.get('value') for k, v in plan.get('variables', {}).items()}
+    if (variables.get('aws_region') != REGION
+            or variables.get('project_name', '') + '-eks' != cluster_name):
+        raise SafeError('plan의 리전·클러스터가 지정한 대상과 다릅니다.')
+    check_phase_settings(phase, {'mode': variables.get('public_access_mode'),
+                               'public': variables.get('public_enabled'), 'dns': variables.get('public_dns_enabled')})
+    allowed = {'infra': INFRA_RESOURCES, 'public-infra': PUBLIC_RESOURCES,
+               'dns': DNS_RESOURCES, 'destroy': DESTROY_RESOURCES}[phase]
+    if plan.get('errored') or plan.get('complete') is False:
+        raise SafeError('완전한 plan이 아닙니다.')
+    for change in plan.get('resource_changes', []):
+        actions = change['change']['actions']
+        if actions == ['no-op']:
+            continue
+        if change.get('mode') == 'data' and actions == ['read']:
+            continue
+        match = re.fullmatch(r'(aws_[a-z0-9_]+\.[A-Za-z_][A-Za-z_0-9]*)(?:\[(?:[0-9]+|"[^"\\]*")\])?', change.get('address', ''))
+        expected_actions = (['delete'],) if phase == 'destroy' else (['create'], ['update'])
+        if (change.get('mode') != 'managed' or not match or match[1] not in allowed
+                or change.get('type') != match[1].split('.')[0] or actions not in expected_actions):
+            raise SafeError('현재 단계에서 허용하지 않은 자원 변경이 있습니다. 새 plan을 검토하세요.')
+
 
 
 def fingerprint(value):
@@ -148,7 +206,33 @@ class Live(Operator):
             raise SafeError('EKS가 없습니다. 부분 적용/삭제 상태를 확인하세요.')
         config = json.loads(self.run(self.k('config', 'view', '--minify', '-o', 'json')))
         verify_destination(c, config, self.args.expected_account_id, self.args.context)
+        outputs = self.outputs()
+        arn = c['arn'].split(':', 5)
+        if (len(arn) != 6 or arn[2] != 'eks' or arn[3] != REGION
+                or arn[4] != self.args.expected_account_id or arn[5] != 'cluster/' + self.args.cluster_name
+                or c.get('name') != self.args.cluster_name
+                or outputs.get('cluster_name') != self.args.cluster_name
+                or outputs.get('cluster_endpoint') != c['endpoint']
+                or not outputs.get('node_security_group_id')):
+            raise SafeError('Terraform state와 실제 계정·리전·클러스터가 다릅니다.')
+        # Nodes use a launch-template SG, not EKS resourcesVpcConfig.securityGroupIds.
+        groups = self.aws('ec2', 'describe-security-groups',
+                          payload={'GroupIds': [outputs['node_security_group_id']]})['SecurityGroups']
+        group = groups[0] if len(groups) == 1 else {}
+        tags = {t['Key']: t['Value'] for t in group.get('Tags', [])}
+        if (group.get('GroupId') != outputs['node_security_group_id']
+                or group.get('OwnerId') != self.args.expected_account_id
+                or group.get('VpcId') != c['resourcesVpcConfig']['vpcId']
+                or group.get('GroupName') != self.args.cluster_name + '-nodes'
+                or tags.get('Project') != self.args.cluster_name.removesuffix('-eks')
+                or tags.get('Stack') != 'eks' or tags.get('ManagedBy') != 'terraform'):
+            raise SafeError('Terraform 노드 SG가 승인 계정·VPC·EKS 소유 태그와 다릅니다.')
         return c
+
+    def cleanup_gate(self):
+        # Operator invokes this AFTER backend init, again for both destroy plan and apply.
+        self.destination()
+        super().cleanup_gate()
 
     def outputs(self, stack='eks'):
         raw = self.run(['terraform', '-chdir=infra/environments/' + stack, 'output', '-json'])
@@ -246,6 +330,7 @@ class Live(Operator):
         if key == 'infra':
             c = self.cluster()
             if not c or c['status'] != 'ACTIVE':
+                check_phase_settings('infra', self.tfvars())
                 return False
             outputs = self.outputs()
             if outputs.get('cluster_name') != self.args.cluster_name or outputs.get('cluster_endpoint') != c['endpoint']:
@@ -306,6 +391,11 @@ class Live(Operator):
             v = self.tfvars()
             if v['mode'] != 'testers':
                 raise SafeError('이 도구는 testers만 지원합니다. open 전환은 별도 공개 승인 절차를 따르세요.')
+            if key == 'public-infra' and v['dns']:
+                # DNS enablement is a later resume only; a fresh public-infra stage requires false.
+                if not all(state.get('steps', {}).get(k, {}).get('result') in ('success', 'skipped')
+                           for k in ('public-infra', 'alb-policy', 'targets')):
+                    raise SafeError('공개 인프라 단계는 public_dns_enabled=false가 필요합니다.')
             if not v['public'] or (key == 'dns' and not v['dns']):
                 return False
             # Applied WAF and IAM presence, not merely edited tfvars.
@@ -425,13 +515,23 @@ class Live(Operator):
                 if folder.parent != (ROOT / '.local/eks').resolve():
                     raise SafeError('이 worktree의 review 폴더만 허용합니다.')
                 review = json.loads((folder / 'review.json').read_text())
-                if bool(review.get('destroy')) != (step.key == 'destroy'):
-                    raise SafeError('현재 단계와 다른 종류의 plan입니다.')
+                if (bool(review.get('destroy')) != (step.key == 'destroy')
+                        or review.get('lifecycle_step') != step.key):
+                    raise SafeError('현재 단계와 다른 종류의 plan입니다. 이 단계에서 새 plan을 만드세요.')
+                with contextlib.redirect_stdout(io.StringIO()):
+                    plan = json.loads(op.tf('show', '-json', str(folder / 'saved.tfplan')))
+                check_plan_scope(plan, step.key, self.args.cluster_name)
+                if step.key == 'dns' and not self.check('targets', state):
+                    raise SafeError('DNS 적용 전 ALB 대상이 healthy여야 합니다.')
                 args.review_dir = str(folder)
                 args.confirm = self.args.confirm
                 with contextlib.redirect_stdout(io.StringIO()):
                     op.apply()
             else:
+                if step.key != 'destroy':
+                    check_phase_settings(step.key, self.tfvars())
+                if step.key == 'dns' and not self.check('targets', state):
+                    raise SafeError('DNS plan 전 ALB 대상이 healthy여야 합니다.')
                 with contextlib.redirect_stdout(io.StringIO()) as output:
                     op.plan(destroy=step.key == 'destroy')
                 # Derive the path from the known private artifact root, never echo arbitrary output.
@@ -440,6 +540,13 @@ class Live(Operator):
                     raise SafeError('저장된 plan 경로를 확인하지 못했습니다.')
                 folder = ROOT / match.group(1)
                 review = json.loads((folder / 'review.json').read_text())
+                with contextlib.redirect_stdout(io.StringIO()):
+                    plan = json.loads(op.tf('show', '-json', str(folder / 'saved.tfplan')))
+                check_plan_scope(plan, step.key, self.args.cluster_name)
+                review['lifecycle_step'] = step.key
+                with (folder / 'review.json').open('w') as handle:
+                    os.fchmod(handle.fileno(), 0o600)
+                    json.dump(review, handle, sort_keys=True)
                 token = hashlib.sha256(json.dumps(review, sort_keys=True).encode()).hexdigest()
                 print('새 plan:', folder.relative_to(ROOT))
                 print('확인값:', token)
@@ -469,6 +576,40 @@ class Live(Operator):
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def shared_lock_root():
+    # Resolve Git's shared administrative directory without a subprocess or private input files.
+    admin = ROOT / '.git'
+    if admin.is_file():
+        text = admin.read_text().strip()
+        if not text.startswith('gitdir: '):
+            raise SafeError('공유 Git 잠금 위치를 확인하지 못했습니다.')
+        admin = (ROOT / text.removeprefix('gitdir: ')).resolve()
+    common = admin / 'commondir'
+    if common.is_file():
+        admin = (admin / common.read_text().strip()).resolve()
+    if not admin.is_dir():
+        raise SafeError('공유 Git 잠금 위치가 없습니다.')
+    return admin / 'ureka-lifecycle-locks'
+
+
+@contextmanager
+def locked_target(args):
+    root = shared_lock_root()
+    if root.is_symlink():
+        raise SafeError('공유 잠금 폴더의 심볼릭 링크를 허용하지 않습니다.')
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
+    key = fingerprint([args.expected_account_id, REGION, args.cluster_name])
+    fd = os.open(root / (key + '.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SafeError('다른 worktree/방향에서 같은 대상 작업이 진행 중입니다.') from None
+        yield
 
 
 @contextmanager
@@ -514,11 +655,14 @@ def summary(state):
 
 def workflow(args, live, path):
     steps = UP if args.direction == 'up' else DOWN
-    with locked_state(path):
+    with locked_state(path), locked_target(args):
         state = json.loads(path.read_text()) if path.exists() else dict(version=1, direction=args.direction, started=now(), steps={}, receipts={})
         if state.get('version') != 1 or state.get('direction') != args.direction:
             raise SafeError('다른 형식/방향의 상태 파일입니다.')
         live.identity()
+        if args.direction == 'down' and live.cluster() is not None:
+            # Before even the first cleanup hint/check, tie context to the actual Terraform state.
+            live.destination()
         binding = live.binding()
         if state.get('binding') not in (None, binding):
             # Up may cross the intentional no-cluster -> created boundary only before infra success.
@@ -544,6 +688,8 @@ def workflow(args, live, path):
             start, wall = now(), time.monotonic()
             outcome = 'failed'
             try:
+                if args.direction == 'down' and step.key != 'residue' and live.cluster() is not None:
+                    live.destination()
                 # Explicit re-verification invalidates the old receipt before starting a Job.
                 # A failed recheck must not be skipped by a subsequent normal resume.
                 force_verify = (step.key == 'content' and args.execute == 'content'

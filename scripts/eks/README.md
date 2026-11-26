@@ -162,7 +162,9 @@ python3 scripts/eks/lifecycle.py down
 backend, `.local/`을 복사·수정하지 않는다. 초기 `access` 검사는 Terraform console로
 현재 설정과 실제 EKS 관리 허용 목록의 일치 여부만 확인한다. 현재 IP를 외부 서비스에
 자동 전송해 알아내지 않는다. kubeconfig 단계 이후에는 계정·ACTIVE 클러스터·API 주소가
-실제 대상과 일치해야 하며 노드 Ready도 확인한다.
+실제 대상과 일치해야 하며 노드 Ready도 확인한다. down은 첫 전제 확인부터 Terraform 출력의
+클러스터 이름·endpoint·노드 SG를 실제 계정·리전·context와 대조한다. destroy plan/apply는
+backend 초기화 후에도 이 대조를 다시 수행하며, 다르면 정리 대상으로 인정하지 않는다.
 
 | 확인 지점 | 진행 방법 |
 |---|---|
@@ -176,6 +178,23 @@ backend, `.local/`을 복사·수정하지 않는다. 초기 `access` 검사는 
 | 연결 수 | PM과 정한 `UREKA_DB_CONNECTION_LIMIT` 필요. 최근 5분 DatabaseConnections Maximum이 없거나 상한 초과면 완료하지 않음 |
 | 삭제 | Ingress 앱·리소스 없음 → 클러스터 태그 ALB 0 → root/업무 앱·Pod/LB/PVC 정리 → data 외부 SG 참조 없음 → `--execute destroy --confirm-cleanup ureka-eks`로 새 삭제 plan. 검토 후 경로·해시·동일 cleanup 확인을 붙여 apply |
 | 잔존 | EKS 출력/클러스터 없음, Terraform EKS 태그 자원·알려진 WAF 부재 검사. 태그 없는 NAT/EIP/ENI/EBS·컨트롤러 자원·인증서·DNS는 운영 문서로 직접 조사한 뒤 `--confirm-residue ureka-eks`. 태그 조회만으로 전체 정리를 보증하지 않음 |
+
+Terraform plan은 생성·적용 양쪽에서 실제 변경 목록과 아래 범위를 검사한다.
+허용한 EKS managed 주소 목록은 `lifecycle.py`에 고정하며, 알 수 없는 자원·모듈의 변경은 거절한다.
+기존 operate의 최신 main·plan 해시·주체·1시간·재사용 방지·cleanup 검사는 그대로 수행한다.
+
+| plan 단계 | 허용 설정·변경 |
+|---|---|
+| infra | testers, public/DNS 모두 false. EKS·노드·애드온·ESO 역할과 EKS 전용 NAT/라우트 등 기본 인프라 주소만 생성/변경 |
+| public-infra | testers, public=true·DNS=false. 인증서·검증 CNAME·시험자 SG·WAF·LBC IAM 주소만 생성/변경 |
+| dns | testers, public/DNS=true. `aws_route53_record.public` 별칭 레코드만 생성/변경. plan/apply 직전 target healthy 재검사 |
+| destroy | 알려진 EKS 기본·공개·DNS 주소만 삭제. 기존 open 규칙도 삭제할 수 있으나 생성/변경은 허용하지 않음 |
+
+각 lifecycle plan의 `review.json`에 단계를 기록하고 이를 포함해 확인 해시를 다시 계산한다.
+다른 단계나 기존 standalone operate에서 만든 plan은 받아들이지 않으므로 해당 lifecycle 단계에서
+새 plan을 만들어 검토한다. 생성 단계의 open 전환은 허용하지 않는다. 초기 infra 생성 전에 이전
+공개/DNS 설정을 false·testers로 정리한다. public-infra는 DNS=false로 적용하고, 이후 정책·targets
+검증을 마친 기록이 있을 때만 DNS=true 상태로 재개할 수 있다(앞 단계의 실제 상태 검사도 유지).
 
 예를 들어 첫 미완료 단계가 prod DB라면:
 
@@ -193,7 +212,11 @@ LBC 등록 후 Sync나 ALB 파라미터 주입 뒤 정책 Sync가 아직이면 �
 시작/종료 시각·단계 결과·시도별 초를 기록한다(폴더 0700, 파일 0600).
 같은 날짜의 재실행은 같은 기록을 사용한다. 다음 날 이어 갈 때는 최초 `--run-id YYYYMMDD`를
 지정한다. 의도적으로 새 실행을 시작하려면 `--run-id YYYYMMDD-HHMMSS`를 쓴다.
-한 worktree 내 동시 up/down 실행은 공통 파일 잠금으로 차단한다.
+같은 로컬 저장소의 Git common dir 아래 `ureka-lifecycle-locks/`(0700)에
+계정·서울 리전·클러스터를 해시한 대상 잠금 파일(0600)을 두어, 다른 worktree·방향의
+동시 실행도 차단한다. 기존 worktree 내부 상태 잠금도 유지한다. 종료 시 OS가 잠금을
+해제하므로 남은 파일만 보고 잠금을 강제로 지우지 않는다. 다른 PC나 lifecycle을 거치지
+않고 직접 실행하는 기존 도구/수동 작업까지 보호하지는 못한다.
 대상 계정·context와 클러스터 생성 시점은 해시로만 묶고 원문은 저장하지 않는다.
 실패는 `failed`, 사람 대기는 `waiting`, 재확인 완료는 `skipped`로 남는다.
 표는 작업 합계(사람 대기 제외)와 전체 경과(사람 대기 포함)를 구분한다.

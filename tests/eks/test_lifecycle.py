@@ -40,6 +40,9 @@ class Fake:
     def identity(self):
         pass
 
+    def destination(self):
+        return {}
+
     def binding(self):
         return self.binding_value
 
@@ -61,12 +64,15 @@ class Workflow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'up-20261124/state.json'
+        self.shared = patch.object(lc, 'shared_lock_root', return_value=Path(self.tmp.name) / 'shared')
+        self.shared.start()
         self.output = io.StringIO()
         self.capture = contextlib.redirect_stdout(self.output)
         self.capture.__enter__()
 
     def tearDown(self):
         self.capture.__exit__(None, None, None)
+        self.shared.stop()
         self.tmp.cleanup()
 
     def run_flow(self, fake, **kwargs):
@@ -145,6 +151,15 @@ class Workflow(unittest.TestCase):
         a.expected_account_id = '000000000000'
         with self.assertRaises(SafeError):
             lc.workflow(a, fake, self.path)
+
+
+    def test_down_mismatched_state_stops_before_first_step(self):
+        fake = Fake(s.key for s in lc.DOWN)
+        fake.destination = Mock(side_effect=SafeError('state mismatch'))
+        with self.assertRaises(SafeError):
+            self.run_flow(fake, direction='down', execute='destroy')
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(fake.executions, [])
 
     def test_down_order_alb_before_data_or_destroy(self):
         fake = Fake(['access', 'context', 'ingress-removed'])
@@ -363,6 +378,201 @@ class LiveSafety(unittest.TestCase):
             with self.assertRaises(SafeError):
                 self.live.check('connections', {})
             aws.assert_not_called()
+
+
+
+class TargetAndPhaseSafety(unittest.TestCase):
+    def plan(self, phase, address, actions=None):
+        flags = {'infra': (False, False), 'public-infra': (True, False), 'dns': (True, True), 'destroy': (True, True)}
+        public, dns = flags[phase]
+        return {'variables': {k: {'value': v} for k, v in {
+            'aws_region': lc.REGION, 'project_name': 'ureka', 'public_access_mode': 'testers',
+            'public_enabled': public, 'public_dns_enabled': dns}.items()},
+            'resource_changes': [{'mode': 'managed', 'address': address, 'type': address.split('.')[0],
+                                  'change': {'actions': actions or ['create']}}]}
+
+    def test_allowlisted_phase_changes(self):
+        for phase, address in [('infra', 'aws_eks_cluster.this'),
+                               ('public-infra', 'aws_wafv2_web_acl.public[0]'),
+                               ('public-infra', 'aws_route53_record.cert_validation["example.invalid"]'),
+                               ('dns', 'aws_route53_record.public["example.invalid"]'),
+                               ('destroy', 'aws_vpc_security_group_ingress_rule.alb_open["https"]')]:
+            with self.subTest(phase=phase):
+                lc.check_plan_scope(self.plan(phase, address, ['delete'] if phase == 'destroy' else None), phase, 'ureka-eks')
+
+    def test_other_phase_or_foreign_stack_resource_is_rejected(self):
+        for phase, address in [('infra', 'aws_wafv2_web_acl.public[0]'),
+                               ('infra', 'aws_route53_record.public["example.invalid"]'),
+                               ('public-infra', 'aws_eks_cluster.this'),
+                               ('public-infra', 'aws_route53_record.public["example.invalid"]'),
+                               ('dns', 'aws_wafv2_web_acl.public[0]'),
+                               ('dns', 'aws_route53_record.cert_validation["example.invalid"]'),
+                               ('destroy', 'aws_db_instance.this'),
+                               ('destroy', 'module.network.aws_vpc.this')]:
+            with self.subTest(phase=phase, address=address), self.assertRaises(SafeError):
+                lc.check_plan_scope(self.plan(phase, address, ['delete'] if phase == 'destroy' else None), phase, 'ureka-eks')
+
+    def test_open_early_dns_and_replacements_are_rejected(self):
+        for phase in ('infra', 'public-infra', 'dns'):
+            plan = self.plan(phase, 'aws_eks_cluster.this')
+            plan['variables']['public_access_mode']['value'] = 'open'
+            with self.subTest(phase=phase), self.assertRaises(SafeError):
+                lc.check_plan_scope(plan, phase, 'ureka-eks')
+        for phase in ('infra', 'public-infra'):
+            plan = self.plan(phase, 'aws_eks_cluster.this')
+            plan['variables']['public_dns_enabled']['value'] = True
+            with self.assertRaises(SafeError):
+                lc.check_plan_scope(plan, phase, 'ureka-eks')
+        with self.assertRaises(SafeError):
+            lc.check_plan_scope(self.plan('infra', 'aws_eks_cluster.this', ['delete', 'create']), 'infra', 'ureka-eks')
+
+    def test_wrong_plan_region_or_cluster_is_rejected(self):
+        plan = self.plan('infra', 'aws_eks_cluster.this')
+        plan['variables']['aws_region']['value'] = 'other-region'
+        with self.assertRaises(SafeError):
+            lc.check_plan_scope(plan, 'infra', 'ureka-eks')
+        plan['variables']['aws_region']['value'] = lc.REGION
+        with self.assertRaises(SafeError):
+            lc.check_plan_scope(plan, 'infra', 'another-eks')
+
+    def test_saved_plan_phase_and_actual_changes_checked_before_apply(self):
+        for phase, original, address in [('public-infra', 'dns', 'aws_route53_record.public[0]'),
+                                         ('dns', 'public-infra', 'aws_wafv2_web_acl.public[0]'),
+                                         ('dns', 'dns', 'aws_wafv2_web_acl.public[0]')]:
+            with self.subTest(phase=phase, original=original), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                review = root / '.local/eks/review-test'
+                review.mkdir(parents=True)
+                (review / 'review.json').write_text(json.dumps({'destroy': False, 'lifecycle_step': original}))
+                a = args(execute=phase)
+                a.review_dir, a.confirm = str(review), 'synthetic-hash'
+                live = object.__new__(lc.Live)
+                live.args = a
+                operator = Mock()
+                operator.tf.return_value = json.dumps(self.plan(phase, address))
+                with patch.object(lc, 'ROOT', root), patch.object(lc, 'Live', return_value=operator):
+                    with self.assertRaises(SafeError):
+                        live.execute(next(step for step in lc.UP if step.key == phase), {})
+                operator.apply.assert_not_called()
+
+    def test_destination_checks_state_name_endpoint_node_sg_and_region(self):
+        live = object.__new__(lc.Live)
+        live.args = args(direction='down')
+        c = {'name': live.args.cluster_name, 'arn': ':'.join(('arn', 'aws', 'eks', lc.REGION,
+             live.args.expected_account_id, 'cluster/' + live.args.cluster_name)), 'endpoint': 'https://cluster.invalid',
+             'status': 'ACTIVE', 'resourcesVpcConfig': {'vpcId': 'vpc-synthetic', 'securityGroupIds': []}}
+        config = {'current-context': live.args.context, 'contexts': [{'context': {'cluster': 'target'}}],
+                  'clusters': [{'name': 'target', 'cluster': {'server': c['endpoint']}}]}
+        good = {'cluster_name': c['name'], 'cluster_endpoint': c['endpoint'], 'node_security_group_id': 'sg-synthetic'}
+        group = {'GroupId': 'sg-synthetic', 'OwnerId': live.args.expected_account_id,
+                 'VpcId': 'vpc-synthetic', 'GroupName': live.args.cluster_name + '-nodes',
+                 'Tags': [{'Key': k, 'Value': v} for k, v in {'Project': 'ureka', 'Stack': 'eks', 'ManagedBy': 'terraform'}.items()]}
+        with patch.object(live, 'cluster', return_value=c), patch.object(live, 'run', return_value=json.dumps(config)), patch.object(live, 'outputs', return_value=good), patch.object(live, 'aws', return_value={'SecurityGroups': [group]}):
+            self.assertEqual(live.destination(), c)
+            for key, value in [('cluster_name', 'other-eks'), ('cluster_endpoint', 'https://other.invalid'),
+                               ('node_security_group_id', 'sg-other')]:
+                with self.subTest(key=key), patch.object(live, 'outputs', return_value={**good, key: value}):
+                    with self.assertRaises(SafeError):
+                        live.destination()
+            for key, value in [('OwnerId', 'other-account'), ('VpcId', 'vpc-other'), ('GroupName', 'other-nodes'), ('Tags', [])]:
+                with self.subTest(group_key=key), patch.object(live, 'aws', return_value={'SecurityGroups': [{**group, key: value}]}):
+                    with self.assertRaises(SafeError):
+                        live.destination()
+            wrong = dict(c, arn=c['arn'].replace(lc.REGION, 'other-region'))
+            with patch.object(live, 'cluster', return_value=wrong), self.assertRaises(SafeError):
+                live.destination()
+
+    def test_fresh_public_infra_rejects_enabled_dns(self):
+        live = object.__new__(lc.Live)
+        with patch.object(live, 'tfvars', return_value={'mode': 'testers', 'public': True, 'dns': True}), patch.object(live, 'aws') as aws:
+            with self.assertRaises(SafeError):
+                live.check('public-infra', {})
+            aws.assert_not_called()
+
+    def test_valid_plan_keeps_existing_apply_delegation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            review = root / '.local/eks/review-test'
+            review.mkdir(parents=True)
+            (review / 'review.json').write_text(json.dumps({'destroy': False, 'lifecycle_step': 'dns'}))
+            a = args(execute='dns')
+            a.review_dir, a.confirm = str(review), 'synthetic-hash'
+            live = object.__new__(lc.Live)
+            live.args = a
+            operator = Mock()
+            operator.tf.return_value = json.dumps(self.plan('dns', 'aws_route53_record.public[0]'))
+            with patch.object(lc, 'ROOT', root), patch.object(lc, 'Live', return_value=operator), patch.object(live, 'check', return_value=True) as check:
+                live.execute(next(step for step in lc.UP if step.key == 'dns'), {})
+            check.assert_called_once_with('targets', {})
+            operator.apply.assert_called_once_with()
+
+    def test_plan_creation_adds_phase_to_hashed_review(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            review = root / '.local/eks/review-test'
+            review.mkdir(parents=True)
+            (review / 'review.json').write_text(json.dumps({'destroy': False, 'plan_sha256': 'synthetic-digest'}))
+            live = object.__new__(lc.Live)
+            live.args = args(execute='infra')
+            operator = Mock()
+            operator.plan.side_effect = lambda **kwargs: print('plan 저장 위치: .local/eks/review-test')
+            operator.tf.return_value = json.dumps(self.plan('infra', 'aws_eks_cluster.this'))
+            with patch.object(lc, 'ROOT', root), patch.object(lc, 'Live', return_value=operator), patch.object(live, 'tfvars', return_value={'mode': 'testers', 'public': False, 'dns': False}), contextlib.redirect_stdout(io.StringIO()) as output:
+                live.execute(next(step for step in lc.UP if step.key == 'infra'), {})
+            saved = json.loads((review / 'review.json').read_text())
+            self.assertEqual(saved['lifecycle_step'], 'infra')
+            self.assertIn(lc.fingerprint(saved), output.getvalue())
+            self.assertEqual(saved['plan_sha256'], 'synthetic-digest')
+            operator.apply.assert_not_called()
+
+    def test_allowlist_matches_only_current_eks_managed_addresses(self):
+        import re
+        addresses = set()
+        for path in (ROOT / 'infra/environments/eks').glob('*.tf'):
+            addresses.update(kind + '.' + name for kind, name in re.findall(r'^resource "([^"]+)" "([^"]+)"', path.read_text(), re.M))
+        self.assertEqual(addresses, lc.DESTROY_RESOURCES)
+
+    def test_destroy_cleanup_revalidates_destination_after_init(self):
+        live = object.__new__(lc.Live)
+        with patch.object(live, 'destination', side_effect=SafeError('mismatch')), patch.object(lc.Operator, 'cleanup_gate') as cleanup:
+            with self.assertRaises(SafeError):
+                live.cleanup_gate()
+            cleanup.assert_not_called()
+
+    def test_common_git_directory_resolves_from_two_worktrees(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            common = root / 'repo/.git'
+            for name in ('a', 'b'):
+                worktree = root / name
+                worktree.mkdir()
+                admin = common / 'worktrees' / name
+                admin.mkdir(parents=True)
+                (admin / 'commondir').write_text('../..')
+                (worktree / '.git').write_text('gitdir: ' + str(admin))
+                with patch.object(lc, 'ROOT', worktree):
+                    self.assertEqual(lc.shared_lock_root(), common.resolve() / 'ureka-lifecycle-locks')
+
+    def test_two_worktrees_and_directions_share_target_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(lc, 'shared_lock_root', return_value=root / 'shared'):
+                with lc.locked_state(root / 'a/up/state.json'), lc.locked_target(args('up')):
+                    with lc.locked_state(root / 'b/down/state.json'):
+                        with self.assertRaises(SafeError):
+                            with lc.locked_target(args('down')):
+                                self.fail('same target acquired twice')
+                    other = args('down')
+                    other.cluster_name = 'other-eks'
+                    with lc.locked_target(other):
+                        pass
+                # File remains, but closing the descriptor releases the advisory lock.
+                with lc.locked_target(args('down')):
+                    pass
+                for path in (root / 'shared').iterdir():
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                    self.assertRegex(path.name, r'^[0-9a-f]{64}\.lock$')
+                self.assertEqual((root / 'shared').stat().st_mode & 0o777, 0o700)
 
 
 if __name__ == '__main__':
