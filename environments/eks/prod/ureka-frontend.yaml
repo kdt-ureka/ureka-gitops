@@ -8,8 +8,8 @@
 image:
   requireRegistry: true
   repository: ureka/frontend
-  tag: sha-133dab1fbeec05d88a9f787c2778ed0b47bce341
-  digest: sha256:d4c0d0ffd88239bee2c83646a9af43a5e3884bee8ba6aed8cd83047e671cf9bb
+  tag: sha-5f8d1171de0db74b02dd24f1e58aa680363d70f4
+  digest: sha256:7bd52101120e2240a3cab094cbfc974fe4c3d41fa349240951a5a07b76d55a57
   pullPolicy: IfNotPresent
 
 # EC2 dev와 같은 값. EKS에서 kubectl top으로 다시 잰다.
