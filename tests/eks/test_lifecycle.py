@@ -200,6 +200,132 @@ class Workflow(unittest.TestCase):
             self.run_flow(Fake())
 
 
+
+class DNSResumeFake(Fake):
+    """Real public-infra guard/state recording, mocked external reads and other checkpoints."""
+    def __init__(self):
+        super().__init__(s.key for s in lc.UP)
+        self.dns_enabled = False
+        self.dns_ready = False
+        self.targets_healthy = True
+        self.public_failure = False
+        self.public_reads = 0
+        self.public = object.__new__(lc.Live)
+        self.public.binding = lambda: self.binding_value
+        self.public.tfvars = lambda: {'mode': 'testers', 'public': True, 'dns': self.dns_enabled,
+                                     'testers': ['synthetic-entry']}
+        self.public.aws = self.read_public
+
+    def read_public(self, service, action, *args, **kwargs):
+        self.public_reads += 1
+        if self.public_failure:
+            raise SafeError('temporary public read failure')
+        if action == 'list-roles':
+            return {'Roles': [{'RoleName': 'ureka-eks-aws-load-balancer-controller'}]}
+        if action == 'list-web-acls':
+            return {'WebACLs': [{'Name': 'ureka-eks-public'}]}
+        if action == 'describe-security-groups':
+            return {'SecurityGroups': [{'IpPermissions': [
+                {'IpProtocol': 'tcp', 'FromPort': port, 'ToPort': port,
+                 'PrefixListIds': [{'PrefixListId': 'synthetic-list'}]} for port in (80, 443)]}]}
+        if action == 'get-managed-prefix-list-entries':
+            return {'Entries': [{'Cidr': 'synthetic-entry'}]}
+        raise AssertionError('unexpected public read')
+
+    def check(self, key, state):
+        self.calls.append(key)
+        if key == 'public-infra':
+            return lc.Live.check(self.public, key, state)
+        if key == 'targets':
+            return self.targets_healthy
+        if key == 'dns':
+            return self.dns_enabled and self.dns_ready
+        return key in self.complete
+
+    def execute(self, step, state):
+        self.executions.append(step.key)
+        if step.key != 'dns':
+            raise AssertionError('unexpected execution')
+        self.dns_ready = True
+
+
+class DNSResumeWorkflow(unittest.TestCase):
+    setUp = Workflow.setUp
+    tearDown = Workflow.tearDown
+    run_flow = Workflow.run_flow
+
+    def prepared(self):
+        fake = DNSResumeFake()
+        self.assertEqual(self.run_flow(fake), 2)
+        self.assertEqual(fake.calls[-1], 'dns')
+        fake.dns_enabled = True
+        fake.calls.clear()
+        fake.public_reads = 0
+        return fake
+
+    def test_same_run_recovers_after_target_waiting(self):
+        fake = self.prepared()
+        fake.targets_healthy = False
+        self.assertEqual(self.run_flow(fake, execute='dns'), 2)
+        self.assertEqual(fake.calls[-1], 'targets')
+        self.assertFalse(fake.executions)
+        fake.targets_healthy = True
+        fake.calls.clear()
+        self.assertEqual(self.run_flow(fake, execute='dns'), 0)
+        self.assertGreater(fake.public_reads, 0)
+        self.assertIn('alb-policy', fake.calls)
+        self.assertIn('targets', fake.calls)
+        self.assertEqual(fake.executions, ['dns'])
+
+    def test_same_run_recovers_after_public_read_failure(self):
+        fake = self.prepared()
+        fake.public_failure = True
+        with self.assertRaises(SafeError):
+            self.run_flow(fake, execute='dns')
+        self.assertEqual(json.loads(self.path.read_text())['steps']['public-infra']['result'], 'failed')
+        self.assertFalse(fake.executions)
+        fake.public_failure = False
+        before = fake.public_reads
+        fake.calls.clear()
+        self.assertEqual(self.run_flow(fake, execute='dns'), 0)
+        self.assertGreater(fake.public_reads, before)
+        self.assertIn('alb-policy', fake.calls)
+        self.assertIn('targets', fake.calls)
+        self.assertEqual(fake.executions, ['dns'])
+
+    def test_without_eligibility_history_dns_true_is_rejected(self):
+        fake = DNSResumeFake()
+        fake.dns_enabled = True
+        with self.assertRaises(SafeError):
+            self.run_flow(fake, execute='dns')
+        self.assertEqual(fake.public_reads, 0)
+        self.assertFalse(fake.executions)
+
+    def test_other_cluster_attempts_do_not_grant_eligibility(self):
+        fake = self.prepared()
+        state = json.loads(self.path.read_text())
+        for key in ('public-infra', 'alb-policy', 'targets'):
+            for attempt in state['steps'][key]['attempts']:
+                attempt['binding'] = 'b' * 64
+        self.path.write_text(json.dumps(state))
+        with self.assertRaises(SafeError):
+            self.run_flow(fake, execute='dns')
+        self.assertEqual(fake.public_reads, 0)
+        self.assertFalse(fake.executions)
+
+    def test_still_unhealthy_targets_never_execute_dns(self):
+        fake = self.prepared()
+        fake.targets_healthy = False
+        for _ in range(2):
+            fake.calls.clear()
+            before = fake.public_reads
+            self.assertEqual(self.run_flow(fake, execute='dns'), 2)
+            self.assertGreater(fake.public_reads, before)
+            self.assertIn('alb-policy', fake.calls)
+            self.assertEqual(fake.calls[-1], 'targets')
+            self.assertFalse(fake.executions)
+
+
 class PlanAndCli(unittest.TestCase):
     def test_plan_only_has_zero_external_calls_or_state_writes(self):
         with patch.object(lc, 'Live', side_effect=AssertionError('must not initialize')), patch.object(lc, 'save', side_effect=AssertionError('must not write')):

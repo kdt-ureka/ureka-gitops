@@ -194,7 +194,12 @@ Terraform plan은 생성·적용 양쪽에서 실제 변경 목록과 아래 범
 다른 단계나 기존 standalone operate에서 만든 plan은 받아들이지 않으므로 해당 lifecycle 단계에서
 새 plan을 만들어 검토한다. 생성 단계의 open 전환은 허용하지 않는다. 초기 infra 생성 전에 이전
 공개/DNS 설정을 false·testers로 정리한다. public-infra는 DNS=false로 적용하고, 이후 정책·targets
-검증을 마친 기록이 있을 때만 DNS=true 상태로 재개할 수 있다(앞 단계의 실제 상태 검사도 유지).
+검증을 마친 **현재 클러스터 binding의 과거 성공/건너뜀 시도**가 있을 때만 DNS=true 상태로
+재개할 수 있다. 직전 검사가 waiting/failed여도 과거 완료 이력은 지우지 않으며, 실제 공개
+인프라·정책·targets를 매번 다시 확인한다. 복구되지 않았으면 DNS 실행으로 진행하지 않는다.
+클러스터 binding이 다른 이력이나 binding을 기록하지 않은 기존 시도는 자격으로 쓰지 않는다.
+그런 기록만 있는 경우 DNS=false로 앞 단계를 정상 재검증한 뒤 DNS=true로 진행한다.
+상태 파일을 편집하여 완료를 강제하지 않는다.
 
 예를 들어 첫 미완료 단계가 prod DB라면:
 

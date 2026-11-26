@@ -392,9 +392,12 @@ class Live(Operator):
             if v['mode'] != 'testers':
                 raise SafeError('이 도구는 testers만 지원합니다. open 전환은 별도 공개 승인 절차를 따르세요.')
             if key == 'public-infra' and v['dns']:
-                # DNS enablement is a later resume only; a fresh public-infra stage requires false.
-                if not all(state.get('steps', {}).get(k, {}).get('result') in ('success', 'skipped')
-                           for k in ('public-infra', 'alb-policy', 'targets')):
+                # Resume eligibility survives transient failures, but belongs to this cluster only.
+                binding = state.get('binding')
+                if (not binding or binding != self.binding()
+                        or not all(any(a.get('binding') == binding and a.get('result') in ('success', 'skipped')
+                                       for a in state.get('steps', {}).get(k, {}).get('attempts', []))
+                                   for k in ('public-infra', 'alb-policy', 'targets'))):
                     raise SafeError('공개 인프라 단계는 public_dns_enabled=false가 필요합니다.')
             if not v['public'] or (key == 'dns' and not v['dns']):
                 return False
@@ -714,7 +717,10 @@ def workflow(args, live, path):
                 entry['result'] = outcome
             finally:
                 entry['result'] = outcome
-                entry['attempts'].append(dict(started=start, finished=now(), seconds=round(time.monotonic()-wall, 3), result=outcome))
+                attempt = dict(started=start, finished=now(), seconds=round(time.monotonic()-wall, 3), result=outcome)
+                if step.key in ('public-infra', 'alb-policy', 'targets'):
+                    attempt['binding'] = state['binding']
+                entry['attempts'].append(attempt)
                 save(path, state)
                 if outcome == 'failed':
                     print('실패 단계:', step.key, step.title)
