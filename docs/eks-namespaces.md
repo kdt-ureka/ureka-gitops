@@ -83,7 +83,7 @@ kind(1.36.1)는 시험용 Pod로만 확인했고, EKS 1.37 호환은 아직 확�
 - LimitRange(컨테이너 하나, 두 환경 같음)
   - 값을 적지 않으면 요청 50m·64Mi, 상한 500m·256Mi가 들어간다. 최대는 1코어·1Gi다.
   - 지금 가장 큰 컨테이너는 1코어·768Mi(auth·content·ops)이고, ingest Job과 Prometheus가 정확히 1Gi다.
-  - 관측은 observability 네임스페이스라 이 LimitRange 대상이 아니다. dev/prod로 옮기면 Quota·PVC까지 다시 계산한다.
+  - 관측은 monitoring 네임스페이스(`argocd/eks/observability-app.yaml`)라 이 LimitRange 대상이 아니다. dev/prod로 옮기면 Quota·PVC까지 다시 계산한다.
 
 ### 클러스터 용량 (t3.large 2대, 추정)
 

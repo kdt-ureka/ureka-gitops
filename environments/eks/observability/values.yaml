@@ -1,0 +1,44 @@
+# EKS 관측 값(gitops#37 첫 단계). 차트 charts/ureka-observability는 EC2와 같은 것을 쓴다.
+# 이미지·자원은 EC2(environments/ec2/observability/values.yaml)와 같다. 빈 digest는 차트 렌더링을 거절한다.
+# 자원 요청 합 250m·1024Mi는 docs/eks-namespaces.md 용량 계산에 들어 있다.
+components:
+  prometheus:
+    repository: prom/prometheus
+    tag: v3.16.0
+    digest: sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+    port: 9090
+    uid: 65534
+    resources:
+      requests: {cpu: 100m, memory: 512Mi}
+      limits: {cpu: 500m, memory: 1Gi}
+  grafana:
+    repository: grafana/grafana
+    tag: 13.3.1
+    digest: sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
+    port: 3000
+    uid: 472
+    resources:
+      requests: {cpu: 100m, memory: 384Mi}
+      limits: {cpu: 500m, memory: 512Mi}
+  kube-state-metrics:
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
+    tag: v2.20.0
+    digest: sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b
+    port: 8080
+    uid: 65534
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: 200m, memory: 256Mi}
+# storageclass/gp3.yaml(EBS gp3, 암호화). PVC는 차트 고정값 그대로 Prometheus 5Gi + Grafana 1Gi, 보관 3일·2GB.
+storageClassName: gp3
+# 이번 단계는 앱 지표를 끈다. 꺼져 있으면 appNamespace는 쓰이지 않는다(dev·prod에 아무것도 만들지 않는다).
+# 다음 단계 메모: EKS는 dev·prod 둘인데 차트는 appNamespace 하나만 받는다. 켜기 전에 차트가 목록을 받도록 고친다
+# (수집 대상 namespaces와 Pod 조회 Role). 지표 포트 허용은 EKS에서 charts/ureka-networkpolicy(metrics.enabled)가
+# 이미 monitoring/obs-prometheus로 열게 되어 있으므로, 이 차트가 같은 정책을 또 만들지 않게 한다.
+appNamespace: dev
+appMetrics:
+  enabled: false
+  chatEnabled: false
+  tokenSecret: ureka-metrics-tokens
+# monitoring 네임스페이스에 사람이 만든다(argocd/eks/observability-app.yaml 머리말). admin-user/admin-password 키. Git에 값 없음.
+grafanaAdminSecret: ureka-grafana-admin
