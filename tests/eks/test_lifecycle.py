@@ -59,6 +59,11 @@ class Fake:
         self.executions.append(step.key)
         self.complete.add(step.key)
 
+    def prepare_down_step(self, key, state):
+        self.executions.append(key)
+        if key != 'data-removed':
+            self.complete.add(key)
+
 
 class Workflow(unittest.TestCase):
     def setUp(self):
@@ -173,6 +178,22 @@ class Workflow(unittest.TestCase):
         self.run_flow(fake, direction='down')
         self.assertEqual(fake.calls[-1], 'ingress-removed')
 
+    def test_shutdown_preparation_stops_at_data_review(self):
+        fake = Fake(['access', 'context'])
+        options = args(direction='down')
+        options.prepare_down = True
+        self.assertEqual(lc.workflow(options, fake, self.path), 2)
+        self.assertEqual(fake.executions, ['ingress-removed', 'alb-gone', 'apps-removed', 'data-removed'])
+        self.assertNotIn('destroy', fake.calls)
+        self.assertEqual(json.loads(self.path.read_text())['steps']['data-removed']['result'], 'waiting')
+
+    def test_shutdown_preparation_cannot_bypass_preflight(self):
+        fake = Fake(['access'])
+        options = args(direction='down')
+        options.prepare_down = True
+        self.assertEqual(lc.workflow(options, fake, self.path), 2)
+        self.assertEqual(fake.executions, [])
+
     def test_down_absence_not_assumed_clean(self):
         fake = Fake()
         fake.present = False
@@ -199,6 +220,131 @@ class Workflow(unittest.TestCase):
         with self.assertRaises(SafeError):
             self.run_flow(Fake())
 
+
+
+class ShutdownPreparation(unittest.TestCase):
+    def setUp(self):
+        self.live = object.__new__(lc.Live)
+        self.live.args = args(direction='down')
+
+    def app(self, name):
+        namespace, path = lc.SHUTDOWN_APPS[name]
+        return {
+            'metadata': {'name': name, 'uid': 'uid', 'resourceVersion': '2'},
+            'spec': {'destination': {'server': 'https://kubernetes.default.svc', 'namespace': namespace},
+                     'source': {'repoURL': lc.GITOPS_REPO, 'path': path, 'targetRevision': 'main'}},
+        }
+
+    def test_root_and_namespace_are_deleted_without_argocd_cascade(self):
+        for name in (lc.ROOT_APP, 'ureka-eks-namespace-dev'):
+            self.live.app = Mock(return_value=self.app(name))
+            self.live.run = Mock()
+            self.live.delete_shutdown_app(name)
+            self.live.run.assert_called_once()
+            cmd, body = self.live.run.call_args.args
+            self.assertIn('--raw', cmd)
+            self.assertEqual(json.loads(body)['propagationPolicy'], 'Orphan')
+            self.assertEqual(json.loads(body)['preconditions'], {'uid': 'uid', 'resourceVersion': '2'})
+
+    def test_ingress_cascades_only_after_finalizer_patch(self):
+        current = self.app(lc.INGRESS_APP)
+        self.live.app = Mock(return_value=current)
+        updated = self.app(lc.INGRESS_APP)
+        updated['metadata'].update(finalizers=[lc.APP_FINALIZER], resourceVersion='3')
+        self.live.run = Mock(side_effect=[json.dumps(updated), ''])
+        self.live.delete_shutdown_app(lc.INGRESS_APP)
+        patch, delete = [call.args for call in self.live.run.call_args_list]
+        self.assertIn('patch', patch[0])
+        self.assertEqual(json.loads(patch[1])[1]['value'], [lc.APP_FINALIZER])
+        self.assertEqual(json.loads(delete[1])['preconditions']['resourceVersion'], '3')
+
+    def test_chat_accepts_both_expected_releases(self):
+        name = 'ureka-chat-eks-dev'
+        app = self.app(name)
+        source = app['spec'].pop('source')
+        app['spec']['sources'] = [dict(source, helm={'releaseName': release})
+                                  for release in ('chat', 'chat-worker')]
+        self.live.check_shutdown_app(name, app)
+        app['spec']['sources'].append(dict(source, helm={'releaseName': 'auth'}))
+        with self.assertRaises(SafeError):
+            self.live.check_shutdown_app(name, app)
+
+    def test_unknown_apps_and_pvcs_stop_inventory(self):
+        for inventory in (
+            {'applications': [{'metadata': {'name': 'unknown'}}]},
+            {'pvc': [{'metadata': {'name': 'retained'}}]},
+        ):
+            self.live.items = lambda kind, ns: inventory.get(kind, [])
+            with self.assertRaises(SafeError):
+                self.live.shutdown_inventory()
+
+    def test_apps_cleanup_stops_if_load_balancer_returns(self):
+        self.live.destination = Mock()
+        self.live.shutdown_inventory = Mock()
+        self.live.albs = Mock(return_value=[{'name': 'still-running'}])
+        self.live.delete_shutdown_app = Mock()
+        with self.assertRaises(lc.ShutdownPreparationError):
+            self.live.prepare_down_step('apps-removed', {})
+        self.live.delete_shutdown_app.assert_not_called()
+
+
+class DataDetachPlan(unittest.TestCase):
+    def setUp(self):
+        old_rule = {'protocol': 'tcp', 'from_port': 5432, 'to_port': 5432,
+                    'security_groups': ['sg-node'], 'cidr_blocks': [], 'self': False}
+        self.ec2_rule = dict(old_rule, security_groups=['sg-ec2'])
+        self.change = {'actions': ['update'],
+                       'before': {'id': 'sg-rds', 'ingress': [old_rule, self.ec2_rule], 'egress': []},
+                       'after': {'id': 'sg-rds', 'ingress': [self.ec2_rule], 'egress': []},
+                       'after_unknown': {'ingress': [{'security_groups': [False]}]}}
+        self.plan = {'applyable': True, 'complete': True, 'resource_changes': [
+            {'mode': 'managed', 'address': 'aws_security_group.rds', 'change': self.change}]}
+
+    def test_only_the_eks_ingress_rule_may_be_removed(self):
+        lc.check_data_detach_plan(self.plan, 'sg-rds', 'sg-node')
+        self.change['after']['ingress'] = []
+        with self.assertRaises(SafeError):
+            lc.check_data_detach_plan(self.plan, 'sg-rds', 'sg-node')
+
+    def test_unknown_after_value_is_rejected(self):
+        self.change['after_unknown']['ingress'][0]['security_groups'] = [True]
+        with self.assertRaises(SafeError):
+            lc.check_data_detach_plan(self.plan, 'sg-rds', 'sg-node')
+
+    def test_database_change_is_rejected(self):
+        self.plan['resource_changes'].append(
+            {'mode': 'managed', 'address': 'aws_db_instance.unexpected', 'change': {'actions': ['delete']}})
+        with self.assertRaises(SafeError):
+            lc.check_data_detach_plan(self.plan, 'sg-rds', 'sg-node')
+
+    def test_only_validated_plan_is_published_without_applying_or_editing_tfvars(self):
+        live = object.__new__(lc.Live)
+        live.outputs = lambda stack='eks': ({'node_security_group_id': 'sg-node'} if stack == 'eks'
+                                            else {'security_group_id': 'sg-rds'})
+        live.data_vars = lambda: {'nodes': ['sg-node']}
+        def terraform(command):
+            if command[2] == 'workspace':
+                return 'default'
+            if command[2] == 'plan':
+                self.assertIn('-var=eks_node_security_group_ids=[]', command)
+                Path(command[-1].split('=', 1)[1]).write_bytes(b'synthetic plan')
+                return 'local plan output'
+            self.assertEqual(command[2], 'show')
+            return json.dumps(self.plan)
+        live.run = terraform
+        with tempfile.TemporaryDirectory() as workdir:
+            root = Path(workdir)
+            artifacts = root / '.local/eks'
+            artifacts.mkdir(parents=True)
+            with patch.object(lc, 'ROOT', root), contextlib.redirect_stdout(io.StringIO()):
+                live.plan_data_detach()
+                self.assertEqual(len(list(artifacts.glob('*/saved.tfplan'))), 1)
+                self.change['after']['ingress'] = []
+                with self.assertRaises(lc.ShutdownPreparationError):
+                    live.plan_data_detach()
+            self.assertEqual(len(list(artifacts.glob('*/saved.tfplan'))), 1)
+            self.assertEqual(len(list(artifacts.glob('*/plan.log'))), 2)
+            self.assertFalse(list(artifacts.glob('*/unverified.tfplan')))
 
 
 class DNSResumeFake(Fake):
