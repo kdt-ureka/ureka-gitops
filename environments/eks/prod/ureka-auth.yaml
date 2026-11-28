@@ -8,8 +8,8 @@
 image:
   requireRegistry: true
   repository: ureka/auth
-  tag: sha-6a9754b32bc81ca08779c8eb602c2e58b55b9d0c
-  digest: sha256:be8906705b5c7d370e1085df0fc7e36b82ecbe351be7d40a1b6230d7dc96367c
+  tag: sha-a6781f6b305965274ba785416597b8b0b0440985
+  digest: sha256:1a44e32b7c9d6d9ba085b2bd4c50dd26f7947da5f32904348dbc6c8ab6bdd4ff
   pullPolicy: IfNotPresent
 
 # JVM: limit 768Mi + base의 -Xmx256m(EC2 dev와 같은 값). EKS에서 kubectl top으로 다시 잰다.
