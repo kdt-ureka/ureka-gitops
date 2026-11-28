@@ -18,7 +18,7 @@ network/data의 선후행 작업은 별도다. 운영 도구 추가 전 저장�
   #64 ALB 컨트롤러 설치 시 IMDS 조회 대신 `region`·`vpcId`를 명시한다.
 - 노드 역할은 WorkerNodePolicy와 ECR PullOnly. WorkerNodePolicy에는 Pod Identity 관련 권한이 포함될 수 있지만 agent/association은 설치하지 않는다. CNI·EBS는 별도 IRSA 역할(정확한 SA sub와 STS aud). 앱 IAM·ESO·SQS는 #63에서 부여한다.
 - CNI `enableNetworkPolicy=true`; 정책 자체와 EKS 차단 재시험은 #49. 기본 standard 시작 모드에서는 정책 적용 전 잠깐 허용될 수 있으므로 strict 모드는 DNS 허용 등 부팅 검증 뒤 #49에서 결정한다. 이 옵션만 켠 상태가 default-deny는 아니다.
-- CoreDNS·kube-proxy·EBS CSI. CNI는 노드 전에, 나머지는 노드 후 설치한다. EBS CSI만으로 StorageClass/PVC가 만들어지지 않는다. #43 이후 `gp3` StorageClass(encrypted, WaitForFirstConsumer)와 관측 차트 설정을 별도로 준비한다. EBS는 AZ에 묶이므로 볼륨 복구·배치 시험 필요.
+- CoreDNS·kube-proxy·EBS CSI. CNI는 노드 전에, 나머지는 노드 후 설치한다. EBS CSI만으로 StorageClass/PVC가 만들어지지 않는다. `gp3` StorageClass(encrypted, WaitForFirstConsumer)와 관측 설정은 `argocd/eks/observability-app.yaml`(gitops#37, 수동 Sync)에 있다. EBS는 AZ에 묶이므로 볼륨 복구·배치 시험 필요.
 - audit만 CloudWatch 7일. Kubernetes audit에는 요청 메타데이터가 포함될 수 있다. 로그 접근 권한·수집량을 확인한다. 클러스터 삭제 보호 없음. 지원 종료 전 버전을 다시 검토한다.
 
 다음은 서울·24시간·USD·세금 제외 **예산 추정**이다. 동적 리전 요율을 이번 작업에서 AWS API로 확인하지 않았다. CN이 계산기로 재확인한다.

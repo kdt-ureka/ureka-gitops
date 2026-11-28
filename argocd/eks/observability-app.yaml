@@ -1,0 +1,42 @@
+# EKS 관측 설치(gitops#37 첫 단계): Prometheus·Grafana·kube-state-metrics. 앱 지표(auth·content)는 아직 끈다.
+# 차트는 EC2와 같은 charts/ureka-observability, 값은 environments/eks/observability/values.yaml.
+# root 앱에는 넣지 않는다. CN이 EKS에서 손으로 한 번 등록·Sync한다(argo-rollouts·external-secrets와 같은 방식).
+#   kubectl --context ureka-eks apply -f argocd/eks/observability-app.yaml
+# Grafana 관리자 Secret(ureka-grafana-admin, admin-user/admin-password 키)은 Git에 없다. monitoring 네임스페이스에 사람이 만든다.
+#   Secret이 생길 때까지 Grafana Pod만 대기한다(Prometheus·kube-state-metrics는 뜬다). EC2용 scripts/ec2/prepare-observability-secrets.py는 context·네임스페이스가 달라 그대로 못 쓴다.
+# 네임스페이스는 monitoring이다(설계서 7절, charts/ureka-networkpolicy의 지표 포트 허용 대상과 같은 이름). EC2는 observability.
+# 화면은 ClusterIP만 있다. 볼 때는 관리자가 port-forward를 연다.
+#   kubectl --context ureka-eks -n monitoring port-forward svc/obs-grafana 3000:3000
+# 비용: Sync하면 EBS gp3 6Gi(5Gi+1Gi)가 생긴다. PVC는 자동으로 지워지지 않으므로 EKS를 끄기 전에 사람이 지운다(scripts/eks/README.md 삭제 순서).
+# 디스크는 AZ에 묶인다. 그 AZ의 노드가 없으면 Prometheus·Grafana는 Pending으로 남는다(2대 구성은 HA가 아니다).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ureka-observability-eks
+  namespace: argocd
+spec:
+  # ClusterRole·ClusterRoleBinding·StorageClass를 만들어 ureka-eks-* 프로젝트(클러스터 자원 금지)에는 둘 수 없다. root 밖 다른 앱과 같이 default.
+  project: default
+  sources:
+    - repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+      targetRevision: main
+      path: charts/ureka-observability
+      helm:
+        releaseName: ureka-observability
+        valueFiles: [../../environments/eks/observability/values.yaml]
+    # gp3 StorageClass. 차트를 고치지 않으려고 따로 둔다. PVC가 이 이름을 쓴다.
+    - repoURL: https://github.com/kdt-ureka/ureka-gitops.git
+      targetRevision: main
+      path: environments/eks/observability/storageclass
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+    syncOptions:
+      - CreateNamespace=true
+  # 자동 sync/prune 없음. PVC 삭제는 별도 판단.

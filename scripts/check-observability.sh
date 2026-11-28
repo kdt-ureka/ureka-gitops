@@ -6,6 +6,7 @@ promtool="${PROMTOOL:-promtool}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 helm lint charts/ureka-observability --strict -f environments/ec2/observability/values.yaml
+helm lint charts/ureka-observability --strict -f environments/eks/observability/values.yaml
 helm template obs charts/ureka-observability -n observability \
   -f environments/ec2/observability/values.yaml --set appMetrics.enabled=true > "$work/manifest.yaml"
 python3 -m unittest discover -s tests/observability -v

@@ -1,0 +1,17 @@
+# EKS 관측 디스크용 StorageClass(gitops#37). EKS에는 EBS CSI 드라이버만 있고 StorageClass가 없다(docs/eks.md).
+# 관측 앱(argocd/eks/observability-app.yaml)이 차트와 함께 가져온다. 이 파일만으로는 디스크가 생기지 않고 비용도 없다.
+# 기본(default) 클래스로 표시하지 않는다. 이름을 적은 PVC만 쓴다.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true" # KMS 키를 적지 않으면 계정 기본 EBS 키(aws/ebs)를 쓴다.
+  csi.storage.k8s.io/fstype: ext4
+# Pod가 놓일 노드가 정해진 뒤 그 AZ에 디스크를 만든다. EBS는 AZ에 묶이므로 먼저 만들면 Pod가 다른 AZ 노드에 못 뜬다.
+volumeBindingMode: WaitForFirstConsumer
+# PVC를 지우면 EBS도 지워진다(요금 멈춤). 관측 PVC는 Argo CD가 자동으로 지우지 않으므로 사람이 지워야 한다.
+reclaimPolicy: Delete
+allowVolumeExpansion: true
