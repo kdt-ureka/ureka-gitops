@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Checkpoint runner for EKS up/down. No automatic mutation; existing tools own approvals.
+"""Checkpoint runner for EKS up/down. By default it only checks live state.
 
-Only --execute <the first pending step> permits a single existing mutating tool.
+--execute permits a single existing mutating tool. --prepare-down explicitly
+authorizes the Kubernetes shutdown preparation and saves a data plan for review.
 Manual-only checkpoints must be satisfied in live state, never by a --done flag.
-All subprocess output is captured, discarded and never copied to lifecycle state/logs.
+Raw subprocess output never goes into lifecycle state or the terminal.
 """
 import argparse
 from contextlib import contextmanager
@@ -21,6 +22,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 from operate import ROOT, Operator, SafeError
@@ -33,6 +35,10 @@ class Step:
     title: str
     hint: str
     tool: tuple = ()
+
+
+class ShutdownPreparationError(SafeError):
+    """Fixed operator messages independent of subprocess output."""
 
 
 UP = (
@@ -69,6 +75,29 @@ DOWN = (
     Step('residue', '잔존 자원 확인', 'NAT/EIP/ENI/EBS 및 공개 입구 WAF/SG/인증서/DNS 잔존을 운영 문서대로 별도 확인. 자동 삭제 금지.'),
 )
 SERVICES = ('auth', 'chat', 'content', 'ops', 'recommend', 'frontend')
+SHUTDOWN_ENVS = ('dev', 'prod')
+ROOT_APP = 'ureka-eks-root'
+INGRESS_APP = 'ureka-prod-public-ingress'
+APP_FINALIZER = 'resources-finalizer.argocd.argoproj.io'
+GITOPS_REPO = 'https://github.com/kdt-ureka/ureka-gitops.git'
+SHUTDOWN_APP_GROUPS = (
+    {f'ureka-{service}-eks-{env}': (env, 'charts/ureka-backend')
+     for env in SHUTDOWN_ENVS for service in SERVICES},
+    {f'ureka-eks-{kind}-{env}': (env, path.format(env=env))
+     for env in SHUTDOWN_ENVS for kind, path in (
+         ('data', 'environments/eks/{env}/data'),
+         ('networkpolicy', 'charts/ureka-networkpolicy'),
+         ('secrets', 'charts/ureka-eks-secrets'),
+     )},
+    {f'ureka-eks-namespace-{env}': (env, f'environments/eks/{env}/namespace')
+     for env in SHUTDOWN_ENVS},
+)
+SHUTDOWN_STEPS = frozenset(('ingress-removed', 'alb-gone', 'apps-removed', 'data-removed'))
+SHUTDOWN_APPS = {
+    ROOT_APP: ('argocd', 'argocd/eks/apps'),
+    INGRESS_APP: ('prod', 'charts/ureka-public-ingress'),
+    **{name: target for group in SHUTDOWN_APP_GROUPS for name, target in group.items()},
+}
 REGION = 'ap-northeast-2'
 # Managed addresses in the EKS stack only. New resources require an explicit scope review.
 INFRA_RESOURCES = frozenset("""
@@ -102,6 +131,39 @@ def check_phase_settings(phase, values):
             or (values.get('public'), values.get('dns')) != expected[phase]
             or type(values.get('public')) is not bool or type(values.get('dns')) is not bool):
         raise SafeError('공개/DNS 설정이 현재 단계와 다릅니다. testers·단계별 설정을 확인하세요.')
+
+
+def check_data_detach_plan(plan, data_sg, node_sg):
+    def has_unknown(value):
+        if isinstance(value, dict):
+            return any(map(has_unknown, value.values()))
+        if isinstance(value, list):
+            return any(map(has_unknown, value))
+        return value is True
+
+    changes = [r for r in plan.get('resource_changes', [])
+               if r.get('mode') == 'managed' and r['change']['actions'] != ['no-op']]
+    if (plan.get('errored') or plan.get('complete') is False or not plan.get('applyable')
+            or plan.get('resource_drift') or len(changes) != 1):
+        raise ShutdownPreparationError('RDS 보안 그룹 외 변경 또는 drift가 있거나 적용할 변경이 없습니다.')
+    resource = changes[0]
+    change = resource['change']
+    if resource['address'] != 'aws_security_group.rds' or change['actions'] != ['update']:
+        raise ShutdownPreparationError('RDS 보안 그룹 제자리 변경 한 건만 허용합니다.')
+    before, after = dict(change['before']), dict(change['after'])
+    old_rules = before.pop('ingress')
+    new_rules = after.pop('ingress')
+    unknown = change.get('after_unknown', {})
+    if before.get('id') != data_sg or before != after or has_unknown(unknown):
+        raise ShutdownPreparationError('RDS 보안 그룹 대상이 다르거나 다른 속성도 바뀝니다.')
+    detached = [rule for rule in old_rules if (
+        rule.get('security_groups') == [node_sg] and rule.get('protocol') == 'tcp'
+        and rule.get('from_port') == rule.get('to_port') == 5432
+        and not any(rule.get(key) for key in ('cidr_blocks', 'ipv6_cidr_blocks', 'prefix_list_ids', 'self'))
+    )]
+    if len(detached) != 1 or sorted(map(fingerprint, new_rules)) != sorted(
+            fingerprint(rule) for rule in old_rules if rule != detached[0]):
+        raise ShutdownPreparationError('현재 EKS 노드의 TCP 5432 허용 규칙 한 개 제거만 허용합니다.')
 
 
 def check_plan_scope(plan, phase, cluster_name):
@@ -251,6 +313,122 @@ class Live(Operator):
 
     def app(self, name):
         return self.get('application', name, 'argocd')
+
+    def shutdown_inventory(self):
+        apps = self.items('applications', 'argocd')
+        if self.items('pvc', '*') or any(
+                service.get('spec', {}).get('type') == 'LoadBalancer'
+                for service in self.items('service', '*')):
+            raise ShutdownPreparationError('PVC 또는 LoadBalancer Service가 남아 있어 사람 확인이 필요합니다.')
+        for app in apps:
+            name = app['metadata']['name']
+            if name in SHUTDOWN_APPS:
+                self.check_shutdown_app(name, app)
+            elif name not in ('argo-rollouts', 'external-secrets', 'aws-load-balancer-controller'):
+                raise ShutdownPreparationError('자동 종료 대상 밖의 Argo CD 앱이 있습니다.')
+
+    def check_shutdown_app(self, name, app):
+        namespace, path = SHUTDOWN_APPS[name]
+        spec = app['spec']
+        sources = spec.get('sources') or [spec['source']]
+        if (app['metadata'].get('ownerReferences')
+                or spec['destination'] != {'server': 'https://kubernetes.default.svc', 'namespace': namespace}
+                or any(source.get('repoURL') != GITOPS_REPO or source.get('path') != path
+                       or source.get('targetRevision') != 'main' for source in sources)):
+            raise ShutdownPreparationError('등록된 Argo CD 앱의 소유자·소스·대상이 예상과 다릅니다.')
+        if path == 'charts/ureka-backend':
+            service = name[len('ureka-'):].removesuffix(f'-eks-{namespace}')
+            releases = ['chat', 'chat-worker'] if service == 'chat' else [service]
+            if sorted(source.get('helm', {}).get('releaseName', '') for source in sources) != releases:
+                raise ShutdownPreparationError('서비스 앱의 Helm 릴리스가 예상과 다릅니다.')
+        finalizers = app['metadata'].get('finalizers') or []
+        if app['metadata'].get('deletionTimestamp'):
+            finalizers = [item for item in finalizers if item != 'orphan']
+        non_cascading = name == ROOT_APP or name in SHUTDOWN_APP_GROUPS[-1]
+        if finalizers and (non_cascading or finalizers != [APP_FINALIZER]):
+            raise ShutdownPreparationError('자동 종료에서 처리할 수 없는 Argo CD finalizer가 있습니다.')
+
+    def delete_shutdown_app(self, name):
+        app = self.app(name)
+        if not app:
+            return
+        self.check_shutdown_app(name, app)
+        meta = app['metadata']
+        if meta.get('deletionTimestamp'):
+            return
+        cascade = name != ROOT_APP and name not in SHUTDOWN_APP_GROUPS[-1]
+        if cascade and not meta.get('finalizers'):
+            patch = [
+                {'op': 'test', 'path': '/metadata/resourceVersion', 'value': meta['resourceVersion']},
+                {'op': 'add', 'path': '/metadata/finalizers', 'value': [APP_FINALIZER]},
+            ]
+            app = json.loads(self.run(self.k('patch', 'applications.argoproj.io', name, '-n', 'argocd',
+                                            '--type=json', '--patch-file=/dev/stdin', '-o', 'json'),
+                                      json.dumps(patch)))
+            meta = app['metadata']
+        options = {'apiVersion': 'v1', 'kind': 'DeleteOptions',
+                   'propagationPolicy': 'Background' if cascade else 'Orphan',
+                   'preconditions': {key: meta[key] for key in ('uid', 'resourceVersion')}}
+        uri = '/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/' + name
+        self.run(self.k('delete', '--raw', uri, '-f', '-'), json.dumps(options))
+
+    def wait_shutdown(self, done, seconds=300):
+        deadline = time.monotonic() + seconds
+        while not done():
+            if time.monotonic() >= deadline:
+                raise ShutdownPreparationError('정리 대기 시간이 지났습니다. 상태를 확인한 뒤 같은 명령으로 재개하세요.')
+            time.sleep(5)
+
+    def prepare_down_step(self, key, state):
+        self.destination()
+        if key == 'ingress-removed':
+            self.shutdown_inventory()
+            self.delete_shutdown_app(INGRESS_APP)
+        elif key == 'apps-removed':
+            self.shutdown_inventory()
+            if self.albs() or not self.check('ingress-removed', state):
+                raise ShutdownPreparationError('공개 입구가 남아 있어 업무 앱을 지우지 않습니다.')
+            self.delete_shutdown_app(ROOT_APP)
+            self.wait_shutdown(lambda: self.app(ROOT_APP) is None)
+            for group in SHUTDOWN_APP_GROUPS:
+                for name in group:
+                    self.delete_shutdown_app(name)
+                self.wait_shutdown(lambda: all(self.app(name) is None for name in group))
+        elif key == 'data-removed':
+            self.plan_data_detach()
+            return
+        self.wait_shutdown(lambda: self.check(key, state))
+
+    def plan_data_detach(self):
+        node_sg = self.outputs()['node_security_group_id']
+        data_sg = self.outputs('data')['security_group_id']
+        if self.data_vars()['nodes'] not in ([], [node_sg]):
+            raise ShutdownPreparationError('data 설정에 현재 EKS 외의 노드 보안 그룹이 들어 있습니다.')
+        tf = ['terraform', '-chdir=infra/environments/data']
+        if self.run(tf + ['workspace', 'show']).strip() != 'default':
+            raise ShutdownPreparationError('data는 default workspace만 지원합니다.')
+        directory = Path(tempfile.mkdtemp(prefix='data-detach-', dir=ROOT / '.local/eks'))
+        saved = directory / 'saved.tfplan'
+        draft = directory / 'unverified.tfplan'
+        log_path = directory / 'plan.log'
+        try:
+            log = self.run(tf + ['plan', '-input=false', '-no-color', '-lock-timeout=60s',
+                                 '-var=eks_node_security_group_ids=[]', '-out=' + str(draft)])
+            log_path.write_text(log)
+            os.chmod(log_path, 0o600)
+            plan = json.loads(self.run(tf + ['show', '-json', str(draft)]))
+            check_data_detach_plan(plan, data_sg, node_sg)
+            os.chmod(draft, 0o600)
+            draft.rename(saved)
+        finally:
+            draft.unlink(missing_ok=True)
+            if not saved.exists():
+                if log_path.exists():
+                    print('검증에 실패한 data plan의 로컬 로그:', log_path.relative_to(ROOT))
+                else:
+                    directory.rmdir()
+        print('검토할 data plan:', saved.relative_to(ROOT))
+        print('plan.log 검토 후 data tfvars의 eks_node_security_group_ids=[]를 저장하고, 검토한 saved.tfplan만 data 스택에 적용하세요.')
 
     def deployment(self, name, ns):
         d = self.get('deployment', name, ns)
@@ -703,6 +881,11 @@ def workflow(args, live, path):
                 # Fresh checks, even for previously successful steps; never trust a step flag.
                 if live.check(step.key, state) and not force_verify:
                     outcome = 'skipped'
+                elif getattr(args, 'prepare_down', False) and step.key in SHUTDOWN_STEPS:
+                    print('종료 준비:', step.key, step.title, flush=True)
+                    live.prepare_down_step(step.key, state)
+                    outcome = ('waiting' if step.key == 'data-removed' or not live.check(step.key, state)
+                               else 'success')
                 elif args.execute == step.key and not executed:
                     print('실행 중:', step.key, step.title, flush=True)
                     live.execute(step, state)
@@ -743,6 +926,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('direction', choices=('up', 'down'))
     parser.add_argument('--plan-only', action='store_true')
+    parser.add_argument('--prepare-down', action='store_true',
+                        help='공개 입구·업무 앱 정리 후 data 변경 plan까지만 생성')
     parser.add_argument('--run-id', help='같은 날짜에 별도 실행할 때 YYYYMMDD-HHMMSS 형식 지정')
     parser.add_argument('--profile', default=os.environ.get('UREKA_OPS_PROFILE', ''))
     parser.add_argument('--cluster-name', default='ureka-eks')
@@ -756,6 +941,9 @@ def main(argv=None):
     parser.add_argument('--confirm-env', choices=('dev', 'prod'))
     parser.add_argument('--confirm-cluster')
     args = parser.parse_args(argv)
+    if args.prepare_down and (args.direction != 'down' or args.execute or args.review_dir or args.confirm
+                             or args.confirm_cluster != args.cluster_name):
+        parser.error('--prepare-down은 down --confirm-cluster <대상 클러스터>와 함께 단독 실행하세요.')
     if args.plan_only:
         for i, s in enumerate(UP if args.direction == 'up' else DOWN, 1):
             print(f'{i:02d}. {s.key}: {s.title}\n   전제/확인: {s.hint}')
@@ -772,6 +960,9 @@ def main(argv=None):
             raise SafeError('run-id는 YYYYMMDD 또는 YYYYMMDD-HHMMSS 형식입니다.')
         args.expected_account_id = account
         return workflow(args, Live(args), ROOT / '.local/eks' / f'{args.direction}-{run_id}' / 'state.json')
+    except ShutdownPreparationError as error:
+        print('종료 준비 중단:', error, file=sys.stderr)
+        return 1
     except (SafeError, OSError, ValueError, KeyError, TypeError, IndexError, KeyboardInterrupt):
         # Exceptions can embed a sensitive path/value; deliberately do not interpolate them.
         print('중단: 입력·권한·연결·기존 상태를 확인하세요. 민감한 원본 출력은 표시하지 않습니다.', file=sys.stderr)

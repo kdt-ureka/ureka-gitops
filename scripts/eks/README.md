@@ -179,6 +179,26 @@ backend 초기화 후에도 이 대조를 다시 수행하며, 다르면 정리 
 | 삭제 | Ingress 앱·리소스 없음 → 클러스터 태그 ALB 0 → root/업무 앱·Pod/LB/PVC 정리 → data 외부 SG 참조 없음 → `--execute destroy --confirm-cleanup ureka-eks`로 새 삭제 plan. 검토 후 경로·해시·동일 cleanup 확인을 붙여 apply |
 | 잔존 | EKS 출력/클러스터 없음, Terraform EKS 태그 자원·알려진 WAF 부재 검사. 태그 없는 NAT/EIP/ENI/EBS·컨트롤러 자원·인증서·DNS는 운영 문서로 직접 조사한 뒤 `--confirm-residue ureka-eks`. 태그 조회만으로 전체 정리를 보증하지 않음 |
 
+### 종료 준비 자동 실행
+
+실제 사용이 끝났고 필요한 백업을 확인한 뒤에만 실행한다. 첫 삭제부터 외부 접속이 끊긴다.
+
+```sh
+python3 scripts/eks/lifecycle.py down --profile ureka-admin \
+  --prepare-down --confirm-cluster ureka-eks
+```
+
+대상 확인 → 공개 Ingress 앱과 하위 리소스 정리 → ALB 삭제 대기 → root 앱을 자식 앱 보존
+방식으로 삭제 → 지정된 업무 앱 정리 → 기존 RDS SG의 EKS 노드 TCP 5432 규칙 하나를 빼는
+data plan 저장까지 진행한다. 네임스페이스 앱을 지울 때 네임스페이스 자체는 보존한다.
+PVC, LoadBalancer Service 또는 목록 밖 Argo CD 앱이 있으면 사람이 처리할 때까지 멈춘다.
+중간에 실패하거나 대기 시간이 지나면 같은 작업 ID와 명령으로 현재 상태를 다시 확인해 재개한다.
+
+`검토할 data plan:`이 나오면 같은 폴더의 `plan.log`를 비공개로 검토한다. 변경이 승인되면
+data의 `terraform.tfvars`에 `eks_node_security_group_ids = []`를 저장하고, 기존 data 절차대로
+표시된 `saved.tfplan`을 **data 스택에 직접 적용**한다. `--prepare-down`은 data 변경을 적용하거나
+EKS destroy를 실행하지 않는다. data 적용 이후는 기존 `down --execute destroy` 절차를 따른다.
+
 Terraform plan은 생성·적용 양쪽에서 실제 변경 목록과 아래 범위를 검사한다.
 허용한 EKS managed 주소 목록은 `lifecycle.py`에 고정하며, 알 수 없는 자원·모듈의 변경은 거절한다.
 기존 operate의 최신 main·plan 해시·주체·1시간·재사용 방지·cleanup 검사는 그대로 수행한다.
